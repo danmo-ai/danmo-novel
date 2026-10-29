@@ -1,0 +1,50 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Danmo Novel",
+  "version": "0.1.0",
+  "identifier": "com.danmo.novel",
+  "build": {
+    "beforeDevCommand": "cd ../frontend && npm run dev",
+    "devUrl": "http://localhost:5804/",
+    "beforeBuildCommand": "cd ../frontend && npm run build",
+    "frontendDist": "../../out/frontend/dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Danmo Novel",
+        "width": 1280,
+        "height": 800,
+        "titleBarStyle": "Visible",
+        "url": "/",
+        "visible": true
+      }
+    ],
+    "security": {
+      "csp": null,
+      "dangerousDisableAssetCspModification": true
+    }
+  },
+  "bundle": {
+    "createUpdaterArtifacts": true,
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "externalBin": [
+      "bin/danmo-novel-backend"
+    ]
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDZBRTJFNDhBNUNCNTExQTkKUldTcEViVmNpdVRpYXJlRFl0MWhxa0Z6OFUrQk5kck5LZUtsVEQ3dS93ZGJlQklZdDU2STE2UXMK",
+      "endpoints": [
+        "https://github.com/danmo-ai/danmo-novel/releases/latest/download/latest.json"
+      ]
+    }
+  }
+}

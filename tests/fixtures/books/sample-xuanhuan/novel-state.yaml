@@ -1,0 +1,15 @@
+title: "试炼长生"
+genre: "玄幻"
+subgenre: ""
+stage: units
+last_committed_ch: 0
+next_action: write
+active_unit: "v01-U1"
+time_system: story_day
+qc_profile: general
+continuation_mode: false
+gates:
+  knowledge: pass
+  asset: pass
+  qc: unknown
+blockers: []

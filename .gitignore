@@ -1,0 +1,15 @@
+out/
+node_modules/
+*.log
+.DS_Store
+.env
+.env.*
+!.env.example
+db/
+dist/
+coverage/
+/tmp/
+desktop/src-tauri/bin/
+desktop/src-tauri/target/
+desktop/src-tauri/gen/
+desktop/src-tauri/keys/updater.key

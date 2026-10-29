@@ -1,0 +1,11 @@
+{
+  "libraryRoot": "",
+  "modelAssignments": [
+    { "role": "plan", "modelId": "" },
+    { "role": "outline", "modelId": "" },
+    { "role": "write", "modelId": "" },
+    { "role": "review", "modelId": "" },
+    { "role": "local_edit", "modelId": "" }
+  ],
+  "llmHttpTimeoutSec": 600
+}
