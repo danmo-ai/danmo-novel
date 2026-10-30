@@ -1,47 +1,16 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { useAppStore } from '@/stores/app'
+import { isProtagonist, parseCastRelations } from '@/utils/castRelations'
 
 const emit = defineEmits<{ open: [stem: string] }>()
 const store = useAppStore()
 const selected = ref('')
 
-type Relation = { from: string; to: string; type: string; current: string; formal: boolean }
 const book = computed(() => store.currentBook)
 const cards = computed(() => book.value?.cast || [])
-const normalizeRole = (role?: string) => {
-  const r = (role || '').toLowerCase()
-  if (['protagonist', 'hero', 'main'].includes(r)) return 'protagonist'
-  if (['antagonist', 'volume_antagonist', 'villain'].includes(r)) return 'volume_antagonist'
-  return 'recurring'
-}
-const protagonist = computed(() => cards.value.find((c) => normalizeRole(c.role) === 'protagonist'))
-const relations = computed<Relation[]>(() => {
-  const result: Relation[] = []
-  const seen = new Set<string>()
-  for (const card of cards.value) {
-    const raw = card.raw || ''
-    const section = raw.match(/##\s*(?:关系|人物关系)[^\n]*\n([\s\S]*?)(?=\n##\s|$)/)?.[1] || ''
-    for (const line of section.split('\n')) {
-      if (!line.trim().startsWith('|') || /^\s*\|?\s*:?-+/.test(line)) continue
-      const cells = line.trim().replace(/^\||\|$/g, '').split('|').map((s) => s.trim())
-      if (cells.length < 2 || ['对方', '角色', '人物'].includes(cells[0])) continue
-      const target = cells[0].replace(/[`\s]/g, '')
-      if (!cards.value.some((c) => c.stem === target)) continue
-      const key = [card.stem, target].sort().join('|')
-      if (seen.has(key)) continue
-      seen.add(key)
-      result.push({ from: card.stem, to: target, type: cells[1], current: cells[2] || '', formal: true })
-    }
-    if (!protagonist.value || card.stem === protagonist.value.stem) continue
-    const text = raw.match(/(?:与主角关系|关键关系)[：:]\s*(.+)/)?.[1]
-      || raw.match(/关系钩[：:]\s*(.+)/)?.[1]
-    if (text) {
-      result.push({ from: card.stem, to: protagonist.value.stem, type: '与主角', current: text, formal: false })
-    }
-  }
-  return result
-})
+const protagonist = computed(() => cards.value.find((c) => isProtagonist(c.role)))
+const relations = computed(() => parseCastRelations(cards.value))
 const nodes = computed(() => {
   const center = protagonist.value
   const others = cards.value.filter((c) => c.stem !== center?.stem)
@@ -65,7 +34,11 @@ function choose(stem: string) { selected.value = selected.value === stem ? '' : 
 <template>
   <section class="relation-view">
     <div class="relation-head">
-      <div><h3>人物关系图</h3><p>实线为正式关系表；虚线为人物卡中的文字关系，需补全关系表。</p><p v-if="!protagonist" class="graph-warning">未识别 protagonist 主角，暂按人物总览排列；文字关系暂不连边。</p></div>
+      <div>
+        <h3>人物关系图</h3>
+        <p>实线为正式「## 关系」表（对方填 stem）；虚线为关系锚点 / 与主角关系等文字关系。</p>
+        <p v-if="!protagonist" class="graph-warning">未识别 protagonist 主角，暂按人物总览排列。</p>
+      </div>
       <span>{{ relations.length }} 条关系 · {{ cards.length }} 人物</span>
     </div>
     <div v-if="!cards.length" class="empty">还没有人物卡。</div>
@@ -74,7 +47,7 @@ function choose(stem: string) { selected.value = selected.value === stem ? '' : 
         <svg viewBox="0 0 700 520" role="img" aria-label="人物关系图">
           <g v-for="(link, i) in links" :key="i">
             <line :x1="link.a!.x" :y1="link.a!.y" :x2="link.b!.x" :y2="link.b!.y" :class="['relation-edge', { informal: !link.formal }]">
-              <title>{{ name(link.from) }} → {{ name(link.to) }} · {{ link.current }}</title>
+              <title>{{ name(link.from) }} → {{ name(link.to) }} · {{ link.current || link.type }}</title>
             </line>
           </g>
           <g v-for="node in nodes" :key="node.card.stem" class="graph-node" :class="{ center: node.center, selected: selected === node.card.stem }" @click="choose(node.card.stem)">
@@ -91,10 +64,15 @@ function choose(stem: string) { selected.value = selected.value === stem ? '' : 
           <p v-if="selectedCard.tagline" class="card-tagline">{{ selectedCard.tagline }}</p>
           <button @click="emit('open', selectedCard.stem)">打开人物卡</button>
           <div v-for="r in relations.filter(x => x.from === selected || x.to === selected)" :key="r.from + r.to" class="relation-item">
-            <strong>{{ name(r.from) }} ↔ {{ name(r.to) }}</strong><p>{{ r.current }}</p><small>{{ r.formal ? '正式关系表' : '待补关系表' }}</small>
+            <strong>{{ name(r.from) }} ↔ {{ name(r.to) }}</strong>
+            <p>{{ r.type }}<template v-if="r.current"> · {{ r.current }}</template></p>
+            <small>{{ r.formal ? '正式关系表' : '文字关系' }}</small>
           </div>
         </template>
-        <div v-else class="empty"><p>点击人物节点查看关系。</p><p v-if="!relations.length">还没有关系。请在人物卡添加「关系」表，或填写「与主角关系」。</p></div>
+        <div v-else class="empty">
+          <p>点击人物节点查看关系。</p>
+          <p v-if="!relations.length">还没有关系。请在人物卡添加「## 关系」表（对方填 stem），或写「关系锚点 / 与主角关系」。</p>
+        </div>
       </aside>
     </div>
   </section>

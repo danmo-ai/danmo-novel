@@ -346,7 +346,7 @@ async function scaffoldMissing() {
         <template v-for="group in [activeGroup]" :key="group">
           <h3>{{ group }}</h3>
           <template v-if="group === '人物与关系'">
-            <button :class="{ active: specialView === 'relations' }" @click="chooseSpecial('relations')"><span>人物关系图</span><small>正式关系表为 canon；文字关系为辅助</small></button>
+            <button :class="{ active: specialView === 'relations' }" @click="chooseSpecial('relations')"><span>人物关系图</span><small>正式表对方填 stem；关系锚点/与主角关系为虚线</small></button>
             <button v-for="c in book?.cast || []" :key="c.stem" :class="{ active: selectedCast === c.stem, candidate: c.status === 'candidate' }" @click="chooseCast(c.stem)">
               <span>{{ c.name }}<i class="cast-role" :data-role="c.role">{{ roleLabel(c.role) }}</i><i v-if="c.status === 'candidate'" class="cand-mark">候选</i></span>
               <small v-if="c.tagline">{{ c.tagline }}</small>

@@ -17,9 +17,9 @@ const advisory = computed(() => findings.value.filter((f) => f.severity !== 'blo
   <section class="review-workspace">
     <div class="view-title">
       <div><p class="eyebrow">Quality</p><h2>审校与定稿</h2><p>本地硬门和 AI 建议分开呈现；只有接受的修订才能进入正文。</p></div>
-      <div class="review-actions">
-        <button class="primary" :disabled="busy || !selectedUnit?.hasProse" @click="emit('generate', 'review')">审校 {{ selectedUnit?.unitId || '当前单元' }}</button>
-        <button :disabled="busy || !selectedUnit?.hasProse" @click="emit('generate', 'finalize')">本地定稿检查</button>
+      <div class="review-actions" v-if="selectedUnit">
+        <button class="primary" :disabled="busy || !selectedUnit.hasProse" @click="emit('generate', 'review')">审校 {{ selectedUnit.unitId }}</button>
+        <button :disabled="busy || !selectedUnit.hasProse" @click="emit('generate', 'finalize')">{{ selectedUnit.status === 'reviewed' ? '重跑定稿' : '定稿' }} {{ selectedUnit.unitId }}</button>
       </div>
     </div>
     <div class="review-stats">

@@ -35,6 +35,9 @@ func PlanSystemPromptForMode(mode string) string {
 人物卡 status 一律 candidate；必须有 protagonist。
 人物卡字段：stem（英文小写连字符）、name（纯姓名，不含括号说明）、role（protagonist / volume_antagonist / recurring）、tagline（≤20 字）、cardMarkdown。
 cardMarkdown 第一行必须是 "# "+纯姓名，并含 ` + "`tagline`:" + ` 与 ` + "`role`:" + `。
+cardMarkdown 必须含「## 关系」Markdown 表，列顺序固定：对方 | 类型 | 当前。
+「对方」只能填对方 stem（英文小写连字符），禁止填中文名；类型写关系类别（搭档/宿敌/上司等）；当前写一句话现状。
+主角至少 3–8 条核心关系；每个配角至少 1 条连向主角或本卷关键人物。可用「与主角关系」短句作辅助，但不能代替关系表。
 输出严格 JSON：
 {"cast":[...],"bookOutlineMarkdown":"...","settings":{"files":{"book-bible.md":"...","canon/world.md":"...","canon/goldfinger.md":"...","canon/platform-positioning.md":"...","canon/writing-rules.md":"...","canon/style-fingerprint.md":"...","canon/reveal-schedule.md":"...","canon/author-lore.md":"...","canon/locked-terms.yaml":"..."}}}
 settings.files 必须覆盖上述全部路径；作者底牌只写在 author-lore；禁止输出 volumeOutlineMarkdown。`

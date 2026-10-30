@@ -76,6 +76,7 @@ async function copyAll() {
         <h3>{{ unit.title || '单元正文' }}</h3>
       </div>
       <div class="prose-actions">
+        <slot name="actions" />
         <button class="copy-all" @click="copyAll">{{ copiedAll ? '✓ 已复制全部' : '复制全部' }}</button>
         <button v-if="canWrite" @click="emit('edit')">编辑</button>
       </div>
@@ -117,7 +118,7 @@ async function copyAll() {
 .prose-head { display: flex; justify-content: space-between; align-items: flex-end; gap: 16px; padding-bottom: 2px; }
 .prose-head small { color: var(--accent); font-size: 11px; font-weight: 600; letter-spacing: .03em; }
 .prose-head h3 { margin: 6px 0 0; font-family: var(--font-prose); font-size: 24px; line-height: 1.3; }
-.prose-actions { display: flex; gap: 8px; flex-shrink: 0; }
+.prose-actions { display: flex; gap: 8px; flex-shrink: 0; flex-wrap: wrap; justify-content: flex-end; align-items: center; max-width: min(100%, 520px); }
 
 .chapter-tabs { display: flex; gap: 10px; overflow-x: auto; padding: 2px 2px 6px; }
 .chapter-tabs button { display: grid; gap: 3px; padding: 10px 18px; border-radius: 12px; white-space: nowrap; border: 1px solid var(--line); background: rgba(255,255,255,.65); color: var(--ink-soft); text-align: center; flex-shrink: 0; }

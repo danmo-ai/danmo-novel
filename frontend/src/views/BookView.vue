@@ -9,6 +9,7 @@ import BibleWorkspace from '@/components/book/BibleWorkspace.vue'
 import ReviewWorkspace from '@/components/book/ReviewWorkspace.vue'
 import UnitProse from '@/components/book/UnitProse.vue'
 import UnitContract from '@/components/book/UnitContract.vue'
+import UnitFlowActions from '@/components/book/UnitFlowActions.vue'
 import RunConfirmDialog from '@/components/book/RunConfirmDialog.vue'
 import { planModeLabel as sharedPlanModeLabel, runKindLabel } from '@/utils/runLabels'
 
@@ -82,9 +83,10 @@ const primaryInfo = computed(() => {
     }
     return { label: `生成卷纲 · 第 ${p.volume || 1} 卷`, description: '根据总纲生成当前卷纲，并只播种缺失单元', target, stage: '卷纲' }
   }
-  if (p.kind === 'outline') return { label: `生成 ${target} 细纲`, description: '第 1 步 · 补全单元写作合同（欲望/阻碍/选择/场面）', target, stage: '细纲' }
-  if (p.kind === 'write') return { label: `写 ${target} 正文`, description: '第 2 步 · 按合同生成候选稿；定稿后才开下一单元', target, stage: '写作' }
-  if (p.kind === 'review') return { label: `审校 ${target}`, description: '第 3 步 · 本地硬门 + 一次 AI 审校，通过后定稿', target, stage: '审校' }
+  if (p.kind === 'outline') return { label: `生成 ${target} 细纲`, description: '第 1 步 · 补全单元写作合同；也可在单元栏随时重写细纲', target, stage: '细纲' }
+  if (p.kind === 'write') return { label: `写 ${target} 正文`, description: '第 2 步 · 按合同生成候选稿；有正文后可在单元栏重写', target, stage: '写作' }
+  if (p.kind === 'review') return { label: `审校 ${target}`, description: '第 3 步 · AI 审校；通过后在单元栏点「定稿」回写账本', target, stage: '审校' }
+  if (p.kind === 'finalize') return { label: `定稿 ${target}`, description: '第 4 步 · 本地定稿检查；接受后回写账本', target, stage: '定稿' }
   return { label: '继续创作', description: '执行下一步', target, stage: stageLabels[p.kind] || '写作' }
 })
 
@@ -268,7 +270,22 @@ async function primaryAction() {
     else startPlan('volume', p.volume || 1)
     return
   }
-  await start(p.kind)
+  await runUnitAction(p.kind as 'outline' | 'write' | 'review' | 'finalize')
+}
+
+/** 对当前选中单元启动生产/重做；审校与定稿会切到审校页便于看结果。 */
+function runUnitAction(kind: 'outline' | 'write' | 'review' | 'finalize') {
+  if (!selectedUnit.value || busy.value) return
+  if (kind === 'review' || kind === 'finalize') view.value = 'review'
+  else if (kind === 'outline' || kind === 'write') view.value = 'write'
+  start(kind)
+}
+
+function runFlowStep(key: string) {
+  if (!selectedUnit.value) return
+  if (key === 'outline' || key === 'write' || key === 'review' || key === 'finalize') {
+    runUnitAction(key)
+  }
 }
 
 async function accept(c: Candidate) {
@@ -369,11 +386,18 @@ function roleLabel(role?: string) {
         <div class="flow-guide">
           <div class="flow-steps">
             <template v-for="(s, i) in FLOW_STEPS" :key="s.key">
-              <span class="flow-step" :class="{ active: flowState.active === i, done: flowState.done >= i }" :title="s.desc">{{ s.label }}</span>
+              <button
+                type="button"
+                class="flow-step"
+                :class="{ active: flowState.active === i, done: flowState.done >= i }"
+                :disabled="busy || !selectedUnit || store.currentBook.summary.readOnly"
+                :title="selectedUnit ? `${s.desc} · 对 ${selectedUnit.unitId}` : s.desc"
+                @click="runFlowStep(s.key)"
+              >{{ s.label }}</button>
               <span v-if="i < FLOW_STEPS.length - 1" class="flow-arrow">→</span>
             </template>
           </div>
-          <p class="flow-note">逐单元闭环：一个单元走完细纲→正文→审校→定稿，再开下一个。定稿回写人物状态与伏笔，下一单元细纲才能读到最新事实。</p>
+          <p class="flow-note">点步骤或下方按钮：对<strong>当前选中单元</strong>生成/重做。定稿接受后回写账本，再开下一单元。</p>
         </div>
         <div class="tree-head"><span>单元</span><span class="tree-count">{{ store.currentBook.units.length }}</span></div>
         <div v-for="g in volumeGroups" :key="g.volume" class="volume-group">
@@ -431,6 +455,15 @@ function roleLabel(role?: string) {
                 <UnitContract :unit="selectedUnit" compact />
               </details>
             </template>
+            <template #actions>
+              <UnitFlowActions
+                :unit="selectedUnit"
+                :busy="busy"
+                :read-only="store.currentBook.summary.readOnly"
+                emphasize
+                @run="runUnitAction"
+              />
+            </template>
           </UnitProse>
           <div v-else>
             <div class="editor-toolbar">
@@ -452,9 +485,15 @@ function roleLabel(role?: string) {
                 <h3>{{ selectedUnit.title || '未完成单元合同' }}</h3>
               </div>
               <div class="unit-work-actions">
-                <button v-if="!editingOutline" :disabled="busy" @click="start('outline')">生成 / 重写细纲</button>
-                <button v-if="!editingOutline" @click="editingOutline = true">编辑细纲</button>
-                <button v-if="!editingOutline && selectedUnit.status === 'accepted'" class="primary" :disabled="busy" @click="start('write')">写正文</button>
+                <UnitFlowActions
+                  v-if="!editingOutline"
+                  :unit="selectedUnit"
+                  :busy="busy"
+                  :read-only="store.currentBook.summary.readOnly"
+                  emphasize
+                  @run="runUnitAction"
+                />
+                <button v-if="!editingOutline" @click="editingOutline = true">手工编辑细纲</button>
               </div>
             </header>
             <template v-if="!editingOutline">
@@ -488,13 +527,24 @@ function roleLabel(role?: string) {
       </section>
 
       <aside v-if="view === 'write'" class="context-panel">
+        <section v-if="selectedUnit" class="side-card panel side-actions">
+          <h4>当前单元 · {{ selectedUnit.unitId }}</h4>
+          <p class="side-note">正向与重做同一组按钮；生成结果先入下方候选，接受后才落盘。</p>
+          <UnitFlowActions
+            :unit="selectedUnit"
+            :busy="busy"
+            :read-only="store.currentBook.summary.readOnly"
+            emphasize
+            @run="runUnitAction"
+          />
+        </section>
         <section class="side-card panel">
-          <h4>下一步</h4>
+          <h4>全书下一步</h4>
           <div class="next-step">
             <span class="next-kind">{{ stageLabels[store.primary?.kind || ''] || store.primary?.kind }}</span>
             <strong>{{ store.primary?.unitId || `第 ${store.primary?.volume} 卷` }}</strong>
           </div>
-          <p class="side-note">细纲、人物、连续性事实按阶段自动挂载，作者底牌不进正文。</p>
+          <p class="side-note">页顶大按钮跟这一步；与左侧选中单元可能不同。</p>
         </section>
         <section class="side-card panel">
           <h4>本卷人物 <span class="side-count">{{ store.currentBook.cast?.length || 0 }}</span></h4>
@@ -512,7 +562,6 @@ function roleLabel(role?: string) {
           </button>
         </section>
         <section class="side-card panel side-actions">
-          <button :disabled="busy" @click="start('outline')">写细纲</button>
           <button :disabled="busy" @click="startPlan(hasBookOutline ? 'reinit' : 'init')">
             {{ hasBookOutline ? '重新立项' : '立项' }}
           </button>
@@ -638,7 +687,9 @@ h1 { font-family: var(--font-prose); margin: 6px 0 0; font-size: 30px; line-heig
 /* 单元工作流引导 */
 .flow-guide { padding: 10px 10px 14px; border-bottom: 1px solid var(--line); margin-bottom: 10px; }
 .flow-steps { display: flex; align-items: center; gap: 3px; flex-wrap: wrap; }
-.flow-step { font-size: 10px; padding: 3px 8px; border-radius: 20px; background: rgba(20,35,31,.05); color: var(--ink-soft); white-space: nowrap; }
+.flow-step { font-size: 10px; padding: 3px 8px; border-radius: 20px; border: 1px solid transparent; background: rgba(20,35,31,.05); color: var(--ink-soft); white-space: nowrap; cursor: pointer; }
+.flow-step:hover:not(:disabled) { border-color: rgba(15,107,92,.35); color: var(--ink); }
+.flow-step:disabled { opacity: .45; cursor: not-allowed; }
 .flow-step.active { background: var(--accent); color: white; font-weight: 700; }
 .flow-step.done { background: rgba(31,122,77,.15); color: var(--ok); }
 .flow-arrow { color: var(--ink-soft); font-size: 10px; opacity: .5; }
@@ -677,7 +728,9 @@ h1 { font-family: var(--font-prose); margin: 6px 0 0; font-size: 30px; line-heig
 .cast-more { margin-top: 10px; width: 100%; border: none; background: transparent; color: var(--accent); font-size: 12px; padding: 6px; }
 .cast-more:hover:not(:disabled) { background: rgba(15,107,92,.06); }
 .side-actions { display: grid; gap: 8px; }
-.side-actions button { width: 100%; padding: 10px; }
+.side-actions :deep(.unit-flow-actions) { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.side-actions :deep(.unit-flow-actions button) { width: 100%; padding: 10px; }
+.side-actions > button { width: 100%; padding: 10px; }
 
 /* 无正文单元：细纲工作区 */
 .unit-work { padding: 24px 26px; display: grid; gap: 20px; }

@@ -344,6 +344,8 @@ func ExtractCastForWriteWithIdentity(card domain.CastCard, pov, identity string)
 	}
 	if v := bulletValue(raw, "与主角关系"); v != "" {
 		out = append(out, "关系："+v)
+	} else if rel := firstFormalRelationLine(raw); rel != "" {
+		out = append(out, "关系："+rel)
 	}
 	if len(out) == 1 {
 		return clip(raw, 500)
@@ -417,6 +419,27 @@ func ExtractLockedTerms(raw, volumeID string) string {
 		return "按卷锁词已配置；无额外当前卷锁词。"
 	}
 	return "当前卷锁词：见 canon/locked-terms.yaml 的 locked_until（到期卷 " + strings.Join(out, ", ") + "）。"
+}
+
+func firstFormalRelationLine(raw string) string {
+	section := mdSection(raw, "## 关系")
+	if section == "" {
+		section = mdSection(raw, "## 人物关系")
+	}
+	for _, row := range tableRows(section) {
+		if len(row) < 2 || row[0] == "对方" || row[0] == "角色" || row[0] == "人物" {
+			continue
+		}
+		cur := ""
+		if len(row) > 2 {
+			cur = row[2]
+		}
+		if cur != "" {
+			return row[0] + " · " + row[1] + " · " + cur
+		}
+		return row[0] + " · " + row[1]
+	}
+	return ""
 }
 
 func mdSection(raw, heading string) string {

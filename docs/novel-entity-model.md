@@ -20,7 +20,7 @@
 | 卷纲 | `outline/volumes/vNN.md` | 卷目标、时间线、本卷人物 stem、单元索引表、终局边界 | 细纲、写作、审校 | 生成/重写卷纲接受 |
 | 单元合同 | `outline/units/vNN-UN.yaml` | `desire/obstacle/choice/payoff`、`scenes`、`pov`、`story_day`、`gap_from_prev`、`next_hook`、`info_control`、`state_deltas` | 写正文、审校、定稿 | 细纲接受（字段完整保留）；卷纲只播种缺失单元 |
 | 人物卡 | `canon/cast/<stem>.md` | `stem / name（纯姓名）/ tagline（一句话身份说明）/ role / 三锚点 / 不知 / 台词 / 关系表` | 细纲、写作、审校 | 立项/重新立项接受；定稿只更新允许变化部分 |
-| 人物关系 | 人物卡 `## 关系` 表 | `from/to/type/current` | 细纲、在场人物写作 | 定稿接受，双边同步；**正式表为 canon，文字描述仅辅助** |
+| 人物关系 | 人物卡 `## 关系` 表（对方填 stem） | `from/to/type/current` | 细纲、在场人物写作、设定页关系图 | 立项写入；定稿可推进；**正式表为 canon**；`关系锚点`/`与主角关系` 仅辅助虚线 |
 | 身份时间线 | `canon/identity-timeline.yaml` | `stem / role_title / org / from_unit / to_unit`（单元边界对齐） | 写作、审校（本单元身份注入快照）、细纲校验 | 作者编辑；身份转换只在单元边界 |
 | 世界规则 | `canon/world.md` | 力量、代价、上限、势力、日常、法律 | 立项、场景写作、审校 | 立项/重新立项；优化设定 |
 | 资源/金手指 | `canon/goldfinger.md` | `kind / cost / limits / last_uses` | 写作、审校 | 定稿更新使用记录 |

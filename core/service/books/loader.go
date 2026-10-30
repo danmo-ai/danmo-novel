@@ -481,6 +481,7 @@ func SelectPrimaryAction(snap domain.BookSnapshot) (kind domain.TaskKind, unitID
 		return domain.TaskWrite, ready[0].UnitID, vol
 	}
 	if len(drafted) > 0 {
+		// 草稿单元：下一步优先审校；定稿在写作/审校页单元操作栏常驻，不从 primary 省略。
 		return domain.TaskReview, drafted[0].UnitID, vol
 	}
 	return domain.TaskPlan, "", vol + 1

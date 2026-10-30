@@ -9,6 +9,7 @@ import (
 
 	"github.com/danmo-ai/danmo-novel/core/domain"
 	"github.com/danmo-ai/danmo-novel/core/resource/novel"
+	"github.com/danmo-ai/danmo-novel/core/service/books"
 )
 
 const ContractVersion = "novel-v1"
@@ -616,8 +617,8 @@ func extractPOV(raw string) string {
 	return ""
 }
 
-// extractOnStageRelations returns formal relation-table rows between on-stage
-// stems, parsed from the 「关系 / 人物关系」 table section of each cast card.
+// extractOnStageRelations returns relation edges between on-stage stems.
+// Prefers formal ## 关系 tables; also accepts 关系锚点 / 与主角关系 prose via books.ParseCastRelations.
 func extractOnStageRelations(cast []domain.CastCard, onStage []string) string {
 	on := map[string]bool{}
 	for _, s := range onStage {
@@ -627,30 +628,22 @@ func extractOnStageRelations(cast []domain.CastCard, onStage []string) string {
 	for _, c := range cast {
 		byStem[c.Stem] = c
 	}
-	seen := map[string]bool{}
 	var out []string
-	for _, stem := range onStage {
-		card, ok := byStem[stem]
-		if !ok {
+	for _, rel := range books.ParseCastRelations(cast) {
+		if !on[rel.From] || !on[rel.To] {
 			continue
 		}
-		section := mdSection(card.Raw, "## 关系")
-		if section == "" {
-			section = mdSection(card.Raw, "## 人物关系")
-		}
-		for _, row := range tableRows(section) {
-			target := strings.Trim(row[0], "` ")
-			if !on[target] || target == stem {
-				continue
+		a := byStem[rel.From]
+		b := byStem[rel.To]
+		label := rel.Type
+		if rel.Current != "" {
+			if label != "" {
+				label += " · " + rel.Current
+			} else {
+				label = rel.Current
 			}
-			key := strings.Join([]string{stem, target}, "|")
-			if seen[key] {
-				continue
-			}
-			seen[key] = true
-			rel := strings.Join(row[1:], " / ")
-			out = append(out, fmt.Sprintf("%s ↔ %s：%s", CleanName(card.Name), target, rel))
 		}
+		out = append(out, fmt.Sprintf("%s ↔ %s：%s", CleanName(a.Name), CleanName(b.Name), label))
 	}
 	return strings.Join(out, "\n")
 }
