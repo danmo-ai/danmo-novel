@@ -269,6 +269,7 @@ async function saveAssignments() {
             <option value="">自动</option>
             <option value="openai">openai</option><option value="deepseek">deepseek</option>
             <option value="qwen">qwen</option><option value="kimi">kimi</option>
+            <option value="kimi_code">kimi_code</option><option value="kimi_k3">kimi_k3</option>
             <option value="glm">glm</option><option value="minimax">minimax</option>
             <option value="gemini">gemini</option><option value="grok">grok</option>
           </select>
@@ -280,7 +281,14 @@ async function saveAssignments() {
         </div>
         <div v-for="m in form.models" :key="m.name" class="model-edit-row">
           <span>{{ m.name }}</span>
-          <input v-model="m.protocolDialect" placeholder="dialect" />
+          <select v-model="m.protocolDialect">
+            <option value="">自动</option>
+            <option value="openai">openai</option><option value="deepseek">deepseek</option>
+            <option value="qwen">qwen</option><option value="kimi">kimi</option>
+            <option value="kimi_code">kimi_code</option><option value="kimi_k3">kimi_k3</option>
+            <option value="glm">glm</option><option value="minimax">minimax</option>
+            <option value="gemini">gemini</option><option value="grok">grok</option>
+          </select>
           <input v-model="m.enabled" type="checkbox" />
         </div>
         <div class="modal-actions">
@@ -321,7 +329,7 @@ async function saveAssignments() {
 .modal label { display: grid; gap: 6px; font-size: 13px; color: var(--ink-soft); }
 .model-tools { display: flex; gap: 8px; flex-wrap: wrap; }
 .model-tools input { flex: 1; }
-.model-edit-row { display: grid; grid-template-columns: 1fr 100px 30px; gap: 8px; align-items: center; font-size: 13px; }
+.model-edit-row { display: grid; grid-template-columns: 1fr 130px 30px; gap: 8px; align-items: center; font-size: 13px; }
 .modal-actions { display: flex; justify-content: flex-end; gap: 10px; }
 @media (max-width: 900px) { .settings-grid { grid-template-columns: 1fr; } }
 </style>
