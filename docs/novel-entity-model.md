@@ -7,7 +7,7 @@
 | 层 | 内容 | LLM 可见范围 |
 |---|---|---|
 | 稳定 Canon | 人物卡、世界规则、资源、总纲、卷纲、单元合同 | 按阶段、按当前任务选择性读取（字段级抽取，不是整份塞入） |
-| 作者底牌 | 终局真相、未揭规则、角色秘密、未来反转 | 规划/改纲可用；**写正文、续写、审校禁读**（Context Builder 层强制，fail-fast） |
+| 作者底牌 | 终局真相、未揭规则、角色秘密、未来反转 | 立项/重新立项/优化设定可用；**写正文、续写、审校禁读**（Context Builder 层强制，fail-fast） |
 | 公开连载事实 | 读者已知事实、人物当前状态、公开伏笔、已定稿时间 | 写作和审校读取；**只能由定稿接受更新** |
 
 ## 实体总表
@@ -15,20 +15,20 @@
 | 实体 | 文件 / 位置 | 核心字段 | 用于 | 写回时机 |
 |---|---|---|---|---|
 | 书籍状态 | `novel-state.yaml` | `book_id / genre / stage / active_unit / time_system / last_committed_ch / next_action` | 所有阶段的流程控制 | 任务状态变化、定稿 |
-| 作者意图 Bible | `book-bible.md` | 读者承诺、logline、主角目标、故事引擎、终局方向、风格卡 | 规划；写作只取相关约束 | 立项与作者编辑 |
-| 全书总纲 | `outline/book_outline.md` | 核心悬念、分卷目标、伏笔计划 | 规划、新卷细纲 | 卷规划接受 |
-| 卷纲 | `outline/volumes/vNN.md` | 卷目标、时间线、本卷人物 stem、单元索引表、终局边界 | 细纲、写作、审校 | 卷纲接受 |
-| 单元合同 | `outline/units/vNN-UN.yaml` | `desire/obstacle/choice/payoff`、`scenes`、`pov`、`story_day`、`gap_from_prev`、`next_hook`、`info_control`、`state_deltas` | 写正文、审校、定稿 | 细纲接受（字段完整保留） |
-| 人物卡 | `canon/cast/<stem>.md` | `stem / name（纯姓名）/ tagline（一句话身份说明）/ role / 三锚点 / 不知 / 台词 / 关系表` | 细纲、写作、审校 | 规划接受；定稿只更新允许变化部分 |
+| 作者意图 Bible | `book-bible.md` | 读者承诺、logline、主角目标、故事引擎、终局方向、风格卡 | 立项；写作只取相关约束 | 立项/重新立项接受；优化设定 |
+| 全书总纲 | `outline/book_outline.md` | 核心悬念、分卷目标、伏笔计划 | 立项、新卷细纲 | 立项/重新立项接受 |
+| 卷纲 | `outline/volumes/vNN.md` | 卷目标、时间线、本卷人物 stem、单元索引表、终局边界 | 细纲、写作、审校 | 生成/重写卷纲接受 |
+| 单元合同 | `outline/units/vNN-UN.yaml` | `desire/obstacle/choice/payoff`、`scenes`、`pov`、`story_day`、`gap_from_prev`、`next_hook`、`info_control`、`state_deltas` | 写正文、审校、定稿 | 细纲接受（字段完整保留）；卷纲只播种缺失单元 |
+| 人物卡 | `canon/cast/<stem>.md` | `stem / name（纯姓名）/ tagline（一句话身份说明）/ role / 三锚点 / 不知 / 台词 / 关系表` | 细纲、写作、审校 | 立项/重新立项接受；定稿只更新允许变化部分 |
 | 人物关系 | 人物卡 `## 关系` 表 | `from/to/type/current` | 细纲、在场人物写作 | 定稿接受，双边同步；**正式表为 canon，文字描述仅辅助** |
 | 身份时间线 | `canon/identity-timeline.yaml` | `stem / role_title / org / from_unit / to_unit`（单元边界对齐） | 写作、审校（本单元身份注入快照）、细纲校验 | 作者编辑；身份转换只在单元边界 |
-| 世界规则 | `canon/world.md` | 力量、代价、上限、势力、日常、法律 | 规划、场景写作、审校 | 作者编辑或明确 canon change |
+| 世界规则 | `canon/world.md` | 力量、代价、上限、势力、日常、法律 | 立项、场景写作、审校 | 立项/重新立项；优化设定 |
 | 资源/金手指 | `canon/goldfinger.md` | `kind / cost / limits / last_uses` | 写作、审校 | 定稿更新使用记录 |
-| 平台定位 | `canon/platform-positioning.md` | 平台、读者、篇幅、更新、红线 | 规划、写作节奏、审校 | 立项与编辑 |
+| 平台定位 | `canon/platform-positioning.md` | 平台、读者、篇幅、更新、红线 | 立项、写作节奏、审校 | 立项与编辑 |
 | 风格指纹 | `canon/style-fingerprint.md` | POV、句段、对话、感官、禁语 | 写作、局部编辑、审校 | 作者编辑 |
 | 写作规则 | `canon/writing-rules.md` | 单元/章规模、格式、衔接、禁令 | 写作、审校 | 生产规则编辑 |
-| 作者底牌 | `canon/author-lore.md` | 真相、秘密、反转、最早解锁卷 | 规划、改纲 | 作者编辑；**正文/审校禁读** |
-| 揭示计划 | `canon/reveal-schedule.md` | 信息、可暗示内容、最早确认卷、状态 | 规划、细纲、写作、审校 | 揭示推进后 |
+| 作者底牌 | `canon/author-lore.md` | 真相、秘密、反转、最早解锁卷 | 立项、优化设定 | 立项/重新立项；**正文/审校禁读** |
+| 揭示计划 | `canon/reveal-schedule.md` | 信息、可暗示内容、最早确认卷、状态 | 立项、细纲、写作、审校 | 立项/重新立项；揭示推进后 |
 | 锁词 | `canon/locked-terms.yaml` | `locked_until / compliance / aliases` | 写作约束、定稿扫描 | 解锁时先移除再写正文 |
 | 读者事实 | `continuity/facts.md` `## Public facts` | `shown_fact/inference/rumor/misdirection、first_seen` | 写作、审校 | 定稿接受 |
 | 人物当前状态 | `continuity/facts.md` `### Cast snapshot` | 职位、位置、伤势、资源、知情范围、当前关系 | 写作、审校 | 定稿通过 `state_deltas` 更新 |
@@ -64,7 +64,30 @@ proposed → accepted → drafted → reviewed
 
 ## 人物来源与临时人物机制
 
-人物卡只有一个 canon 来源：**规划（plan）生成 + 接受**，或作者手建/晋升。细纲与写作可以引入新人物，但走「候选 → 作者批准 → 晋升 canon」路径，**绝不自动插入 canon**。
+人物卡只有一个 canon 来源：**立项 / 重新立项（plan）生成 + 接受**，或作者手建/晋升。细纲与写作可以引入新人物，但走「候选 → 作者批准 → 晋升 canon」路径，**绝不自动插入 canon**。卷纲模式不写人物卡。
+
+## 设定分层与重写依据
+
+| 层 | 文件 | 重写依据 | 正文是否注入 |
+|---|---|---|---|
+| **总纲派生** | 总纲、bible、人物卡、揭示计划、world、goldfinger、底牌 | 必须带总纲及相关结构（只读） | 人物压缩卡、揭示按卷截取进正文/审校 |
+| **生产约束** | writing-rules、style、platform、locked-terms | 可独立优化（规则/风格） | 写作规则/风格/锁词 |
+| **连载账本** | continuity/、novel-state | 不重写；定稿回写 | 字段级抽取 |
+
+- `rewrite_entity` 按目标类型组依据：人物卡→总纲+卷纲+揭示+公开状态；揭示计划→总纲+卷纲+公开账本；工艺类不带总纲。
+- 揭示计划正文/审校按当前卷注入「可暗示/可确认 + 禁止写穿」，不含底牌细节。
+- 卷纲上下文人物收敛为本卷在场 + 主角 + 上一卷在场，不灌全书卡。
+
+## 操作分层（立项 / 卷纲 / 局部优化）
+
+| 操作 | TaskSpec | 生成范围 | 接受写盘 |
+|---|---|---|---|
+| **立项** | `kind=plan mode=init` | 总纲派生设定成套 + 人物 | 只写总纲/白名单设定/候选人物；不写卷纲、不播种单元 |
+| **重新立项** | `kind=plan mode=reinit` | 与立项对等 | 覆盖总纲/设定/人物；`preservePaths` 勾选文件保留不覆盖；不碰卷纲/正文/账本 |
+| **生成/重写卷纲** | `kind=plan mode=volume` | 当前卷纲 + 单元索引；跨卷附上一卷截取 | 只写当前卷文件；只播种缺失单元 |
+| **重写设定 / 重写人物卡** | `kind=rewrite_entity` | 单个实体 + 依据包 | 仅该文件；依据只读 |
+
+主流程依据：是否完成立项看 `outline/book_outline.md`；有总纲无卷纲时主按钮为「生成卷纲」。
 
 | 类型 | 来源 | 状态 | 能否进 on_stage |
 |---|---|---|---|
@@ -160,12 +183,12 @@ proposed → accepted → drafted → reviewed
 |---|---|---|
 | 写正文 | **按章修复**：单章硬门不过（字数/破折号/英文泄漏），只重生成该章，其他章不动；回注 evidence+suggestion+原文 | 每章最多 1 次修复（`repair-ch{N}`） |
 | 细纲 | 一次定向修复：回注具体哪个单元哪个字段缺失/越界，要求只补该字段 | generate + 1 repair |
-| 规划 | 一次：回注结构错误（缺单元索引表/缺 protagonist） | generate + 1 repair |
+| 立项/重新立项/重写卷纲 | 一次：回注结构错误（缺设定/缺单元索引表/缺 protagonist） | generate + 1 repair |
 | 实体重写 | 一次：输出为空或 JSON 解析失败 | generate + 1 repair |
 | 审校 | **不 retry**：审校是评估不是生成，失败报作者 | MaxCalls=1 |
 | 局部编辑/定稿 | **不 retry**：局部编辑失败直接报；定稿不走 LLM | MaxCalls=1 |
 
-修复指令（`repairPrompt` + `detailedFindings`）要求模型：保留已通过部分原样、只修指出的问题、返回完整合规 JSON。错误信息带 evidence（差多少）+ suggestion（怎么改），不是只有标题。
+修复证据写入 user JSON 的 `repair` 字段（`MergeRepairIntoUserPayload` + `detailedFindings`）：保留已通过部分原样、只修指出的问题、返回完整合规 JSON。错误信息带 evidence（差多少）+ suggestion（怎么改），不是只有标题。
 
 ## 关键代码位置
 
@@ -174,7 +197,7 @@ proposed → accepted → drafted → reviewed
 | 字段级抽取 | `core/service/context/extract.go` |
 | 上下文组装 + 禁读校验 | `core/service/context/builder.go` |
 | 定稿账本回写 | `core/service/books/accept_finalize.go` |
-| 规划接受（角色规范化、单元播种） | `core/service/books/accept_plan.go` |
+| 立项/卷纲接受（写盘白名单：立项=总纲+设定+人物；卷纲=当前卷+缺失单元） | `core/service/books/accept_plan.go` |
 | 细纲序列化（字段完整保留） | `core/service/runs/service.go` `serializeUnitYAML` |
 | 书籍加载 / `time_system` | `core/service/books/loader.go` |
 | UI 设定页（用途标签、命名） | `frontend/src/components/book/BibleWorkspace.vue` |

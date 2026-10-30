@@ -12,7 +12,7 @@ const emit = defineEmits<{
   openUnit: [unit: UnitInfo]
   save: [path: string, content: string]
   generate: [kind: string]
-  rewrite: [spec: { targetPath: string; entityKind: string; title: string }]
+  plan: [mode: 'init' | 'reinit' | 'volume', volume?: number]
 }>()
 const store = useAppStore()
 const activeVolume = ref(0)
@@ -50,28 +50,48 @@ function unitSummary(u: UnitInfo) {
 
 type MarkdownSection = { title: string; body: string }
 function mdTitle(raw: string) {
-  return raw.split('\n').find((l) => /^#\s+/.test(l))?.replace(/^#\s+/, '') || ''
+  const lines = raw.split('\n')
+  const h1 = lines.find((l) => /^#\s+/.test(l))?.replace(/^#\s+/, '')
+  if (h1) return h1.trim()
+  // 总纲常以「## 全书总纲…」起笔，没有单独 # 标题。
+  return lines.find((l) => /^##\s+/.test(l))?.replace(/^##\s+/, '').trim() || ''
 }
 function mdSections(raw: string): MarkdownSection[] {
   const result: MarkdownSection[] = []
   let title = ''
   let body: string[] = []
   for (const line of raw.split('\n')) {
-    const match = line.match(/^##\s+(.+)/)
+    // 认 ## / ###：总纲常用 ### 一句话 / ### 分卷走向。
+    const match = line.match(/^#{2,3}\s+(.+)/)
     if (match) {
       if (title) result.push({ title, body: body.join('\n').trim() })
-      title = match[1]
+      title = match[1].trim()
       body = []
     } else if (title) body.push(line)
   }
   if (title) result.push({ title, body: body.join('\n').trim() })
   return result
 }
+function findSectionMeta(raw: string, names: string[]) {
+  const sections = mdSections(raw)
+  for (const name of names) {
+    const exact = sections.find((s) => s.title === name || s.title.startsWith(name))
+    if (exact) return { title: exact.title, body: exact.body }
+  }
+  for (const name of names) {
+    const fuzzy = sections.find((s) => s.title.includes(name))
+    if (fuzzy) return { title: fuzzy.title, body: fuzzy.body }
+  }
+  return { title: '', body: '' }
+}
 function findSection(raw: string, names: string[]) {
-  return mdSections(raw).find((s) => names.some((name) => s.title.includes(name)))?.body || ''
+  return findSectionMeta(raw, names).body
 }
 function cleanInline(text: string) {
   return text.replace(/\*\*/g, '').replace(/`/g, '').trim()
+}
+function proseBlock(raw: string) {
+  return cleanInline(raw.replace(/\n+/g, ' '))
 }
 function bullets(raw: string) {
   return raw.split('\n').filter((l) => /^\s*[-*]\s+/.test(l)).map((l) => cleanInline(l.replace(/^\s*[-*]\s+/, ''))).filter(Boolean)
@@ -86,7 +106,8 @@ function tableRows(raw: string) {
 const STEM_RE = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/
 function castStems(raw: string): string[] {
   return bullets(raw)
-    .map((s) => s.replace(/`/g, '').split(/\s+[（(]/)[0].trim())
+    // 支持 "- wen-nianci：说明" / "- stem (role)"；只取 stem 标识。
+    .map((s) => s.replace(/`/g, '').split(/[\s：:（(]/)[0].trim())
     .filter((s) => STEM_RE.test(s))
 }
 const volumeView = computed(() => {
@@ -102,12 +123,23 @@ const volumeView = computed(() => {
 })
 const bookView = computed(() => {
   const raw = bookOutline.value
+  const premise = proseBlock(findSection(raw, ['一句话', '一句话故事', '核心梗概', 'logline']))
+  const appeal = findSectionMeta(raw, ['核心快感', '读者承诺', '作者意图', '核心卖点'])
+  const engine = bullets(findSection(raw, ['双线引擎', '故事引擎', '主引擎']))
+  const suspense = bullets(findSection(raw, ['核心悬念', '主悬念']))
+  const volumeBody = findSection(raw, ['分卷走向', '分卷规划', '卷规划'])
+  const volumeBullets = bullets(volumeBody)
+  const volumeSections = mdSections(raw)
+    .filter((s) => /第\s*\d+\s*卷/.test(s.title))
+    .map((s) => `${cleanInline(s.title)}：${proseBlock(s.body)}`.replace(/：$/, ''))
   return {
     title: mdTitle(raw),
-    premise: cleanInline(findSection(raw, ['一句话', '一句话故事', '核心梗概'])),
-    promise: cleanInline(findSection(raw, ['读者承诺', '作者意图'])),
-    suspense: bullets(findSection(raw, ['核心悬念', '主悬念'])),
-    volumes: mdSections(raw).filter((s) => /第\s*\d+\s*卷|分卷/.test(s.title)),
+    premise,
+    promise: proseBlock(appeal.body),
+    promiseLabel: /快感|卖点/.test(appeal.title) ? '核心快感' : '读者承诺',
+    engine,
+    suspense,
+    volumes: volumeBullets.length ? volumeBullets : volumeSections,
   }
 })
 function castName(stem: string) {
@@ -135,9 +167,9 @@ function statusText(s: string) {
         <p>卷级分配，单元落笔。单元合同与正文在「写作」页生产。</p>
       </div>
       <div class="view-actions">
-        <button :disabled="busy" @click="emit('generate', 'plan')">规划</button>
-        <button v-if="volume && !editing" :disabled="book?.summary.readOnly" @click="emit('rewrite', { targetPath: `outline/volumes/${volumeId(volume.volume)}.md`, entityKind: 'volume', title: `第 ${volume.volume} 卷卷纲` })">重写卷纲</button>
-        <button class="primary" :disabled="saving" @click="startEdit('volume')">编辑卷纲</button>
+        <button :disabled="busy || book?.summary.readOnly" @click="emit('plan', bookOutline ? 'reinit' : 'init')">
+          {{ bookOutline ? '重新立项' : '立项' }}
+        </button>
       </div>
     </div>
 
@@ -158,15 +190,19 @@ function statusText(s: string) {
         <div class="book-body">
           <div class="book-body-head"><button class="text-button" @click="startEdit('book')">编辑全书大纲</button></div>
           <div v-if="bookOutline" class="book-summary">
+            <div v-if="bookView.title" class="book-title-line"><small>总纲</small><p>{{ bookView.title }}</p></div>
             <div v-if="bookView.premise" class="book-premise"><small>一句话故事</small><p>{{ bookView.premise }}</p></div>
-            <div v-if="bookView.promise"><small>读者承诺</small><p>{{ bookView.promise }}</p></div>
+            <div v-if="bookView.promise"><small>{{ bookView.promiseLabel }}</small><p>{{ bookView.promise }}</p></div>
+            <div v-if="bookView.engine.length"><small>故事引擎</small><ul><li v-for="item in bookView.engine" :key="item">{{ item }}</li></ul></div>
             <div v-if="bookView.suspense.length"><small>核心悬念</small><ul><li v-for="item in bookView.suspense" :key="item">{{ item }}</li></ul></div>
+            <div v-if="bookView.volumes.length" class="book-volumes"><small>分卷走向</small><ul><li v-for="item in bookView.volumes" :key="item">{{ item }}</li></ul></div>
+            <p v-if="!bookView.premise && !bookView.promise && !bookView.volumes.length" class="muted">未能解析出结构小节；下方可阅读原文，或按「一句话 / 核心快感 / 分卷走向」补标题。</p>
           </div>
           <details class="narrative-source">
             <summary>阅读完整总纲</summary>
             <pre class="markdown">{{ bookOutline }}</pre>
           </details>
-          <p v-if="!bookOutline" class="muted">暂无全书大纲，可在规划候选中生成。</p>
+          <p v-if="!bookOutline" class="muted">暂无全书总纲，请通过「立项」或「重新立项」生成。</p>
         </div>
       </details>
 
@@ -176,54 +212,62 @@ function statusText(s: string) {
         </button>
       </div>
 
-      <article v-if="volume" class="volume-document panel">
+      <article v-if="bookOutline" class="volume-document panel">
         <header>
-          <div><small>当前卷</small><h3>{{ volumeView.title }}</h3></div>
-          <button class="text-button" @click="startEdit('volume')">编辑卷纲</button>
+          <div><small>当前卷</small><h3>{{ volume ? volumeView.title : '第 1 卷' }}</h3></div>
+          <div class="volume-actions">
+            <button :disabled="busy || book?.summary.readOnly" @click="emit('plan', 'volume', volume?.volume || 1)">
+              {{ volume ? '重写卷纲' : '生成卷纲' }}
+            </button>
+            <button v-if="volume" class="primary" :disabled="saving" @click="startEdit('volume')">编辑卷纲</button>
+          </div>
         </header>
-        <div class="volume-structure">
-          <section class="volume-goal">
-            <small>本卷目标</small>
-            <ul v-if="volumeView.goals.length"><li v-for="goal in volumeView.goals" :key="goal">{{ goal }}</li></ul>
-            <p v-else class="muted">尚未填写卷目标</p>
-          </section>
-          <section class="volume-cast">
-            <small>本卷人物 · {{ volumeView.cast.length }}</small>
-            <div v-if="volumeView.cast.length" class="cast-chips"><span v-for="stem in volumeView.cast" :key="stem" :title="stem">{{ castName(stem) }}</span></div>
-            <p v-else class="cast-empty">本卷人物未以 stem 列表声明。请在卷纲「本卷人物」章节用 <code>- wen-nianci</code> 形式逐行列出，人物弧等说明文字放其他章节。</p>
-          </section>
-          <section v-if="volumeView.ending.length" class="volume-ending">
-            <small>卷末状态与边界</small><ul><li v-for="item in volumeView.ending" :key="item">{{ item }}</li></ul>
-          </section>
-        </div>
-        <div class="volume-unit-index">
-          <div class="index-heading">
-            <div class="unit-view-tabs">
-              <button :class="{ active: unitViewMode === 'index' }" @click="unitViewMode = 'index'">单元索引 · {{ units.length }}</button>
-              <button :class="{ active: unitViewMode === 'timeline' }" @click="unitViewMode = 'timeline'">剧情时钟</button>
+        <template v-if="volume">
+          <div class="volume-structure">
+            <section class="volume-goal">
+              <small>本卷目标</small>
+              <ul v-if="volumeView.goals.length"><li v-for="goal in volumeView.goals" :key="goal">{{ goal }}</li></ul>
+              <p v-else class="muted">尚未填写卷目标</p>
+            </section>
+            <section class="volume-cast">
+              <small>本卷人物 · {{ volumeView.cast.length }}</small>
+              <div v-if="volumeView.cast.length" class="cast-chips"><span v-for="stem in volumeView.cast" :key="stem" :title="stem">{{ castName(stem) }}</span></div>
+              <p v-else class="cast-empty">本卷人物未以 stem 列表声明。请在卷纲「本卷人物」章节用 <code>- wen-nianci</code> 形式逐行列出，人物弧等说明文字放其他章节。</p>
+            </section>
+            <section v-if="volumeView.ending.length" class="volume-ending">
+              <small>卷末状态与边界</small><ul><li v-for="item in volumeView.ending" :key="item">{{ item }}</li></ul>
+            </section>
+          </div>
+          <div class="volume-unit-index">
+            <div class="index-heading">
+              <div class="unit-view-tabs">
+                <button :class="{ active: unitViewMode === 'index' }" @click="unitViewMode = 'index'">单元索引 · {{ units.length }}</button>
+                <button :class="{ active: unitViewMode === 'timeline' }" @click="unitViewMode = 'timeline'">剧情时钟</button>
+              </div>
+              <span>点击跳到写作页生产合同与正文</span>
             </div>
-            <span>点击跳到写作页生产合同与正文</span>
+            <StoryTimeline v-if="unitViewMode === 'timeline'" :volume="volume.volume" @open="emit('openUnit', $event)" />
+            <div v-else class="index-table-wrap">
+              <table>
+                <thead><tr><th>单元</th><th>章范围</th><th>一句话功能</th><th>终局边界</th><th>下一钩</th><th>状态</th></tr></thead>
+                <tbody><tr v-for="row in volumeView.units" :key="row.id" @click="openIndexedUnit(row.id)">
+                  <td data-label="单元">{{ row.id }}</td><td data-label="章范围">{{ row.range }}</td><td data-label="功能">{{ row.purpose }}</td><td data-label="终局边界">{{ row.boundary }}</td><td data-label="下一钩">{{ row.hook }}</td>
+                  <td data-label="状态"><span class="status" :data-status="unitStatus(row.id)">{{ statusText(unitStatus(row.id)) }}</span></td>
+                </tr></tbody>
+              </table>
+            </div>
           </div>
-          <StoryTimeline v-if="unitViewMode === 'timeline'" :volume="volume.volume" @open="emit('openUnit', $event)" />
-          <div v-else class="index-table-wrap">
-            <table>
-              <thead><tr><th>单元</th><th>章范围</th><th>一句话功能</th><th>终局边界</th><th>下一钩</th><th>状态</th></tr></thead>
-              <tbody><tr v-for="row in volumeView.units" :key="row.id" @click="openIndexedUnit(row.id)">
-                <td data-label="单元">{{ row.id }}</td><td data-label="章范围">{{ row.range }}</td><td data-label="功能">{{ row.purpose }}</td><td data-label="终局边界">{{ row.boundary }}</td><td data-label="下一钩">{{ row.hook }}</td>
-                <td data-label="状态"><span class="status" :data-status="unitStatus(row.id)">{{ statusText(unitStatus(row.id)) }}</span></td>
-              </tr></tbody>
-            </table>
-          </div>
-        </div>
-        <details class="narrative-source volume-source">
-          <summary>阅读完整卷纲与节奏说明</summary>
-          <pre class="markdown">{{ volume.raw }}</pre>
-        </details>
+          <details class="narrative-source volume-source">
+            <summary>阅读完整卷纲与节奏说明</summary>
+            <pre class="markdown">{{ volume.raw }}</pre>
+          </details>
+        </template>
+        <p v-else class="muted volume-empty">总纲已就绪。点「生成卷纲」为第 1 卷建立单元索引；已有正文与账本不会被覆盖。</p>
       </article>
     </template>
 
     <div v-if="!bookOutline && !volume && !units.length" class="empty-state panel">
-      <h3>还没有大纲</h3><p>先运行「规划」，生成并批准卷纲后，这里会展示总纲、卷纲和单元索引。</p>
+      <h3>还没有大纲</h3><p>先「立项」生成总纲、设定与人物；批准后再单独「生成卷纲」。</p>
     </div>
   </section>
 </template>
@@ -235,6 +279,7 @@ function statusText(s: string) {
 .view-title p { margin: 0; color: var(--ink-soft); font-size: 13px; }
 .eyebrow { color: var(--accent) !important; font-size: 11px !important; letter-spacing: .12em; text-transform: uppercase; }
 .view-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.volume-empty { padding: 8px 0 4px; }
 .book-overview { overflow: hidden; }
 .book-overview summary { display: flex; justify-content: space-between; align-items: center; padding: 16px 20px; cursor: pointer; list-style: none; }
 .book-overview summary small, .volume-document small, .contract-hero small { display: block; color: var(--accent); font-size: 11px; margin-bottom: 4px; }
@@ -245,6 +290,8 @@ function statusText(s: string) {
 .book-summary { display: grid; gap: 16px; padding: 8px 0 18px; }
 .book-summary small, .volume-structure small, .index-heading small { color: var(--accent); font-size: 11px; font-weight: 600; }
 .book-summary p, .book-summary li { color: var(--ink-soft); font-size: 14px; line-height: 1.8; }
+.book-title-line p { color: var(--ink); font-weight: 600; }
+.book-volumes ul { display: grid; gap: 8px; }
 .book-summary p { margin: 6px 0 0; }
 .book-summary ul, .volume-structure ul { margin: 8px 0 0; padding-left: 20px; }
 .book-premise p { font-family: var(--font-prose); font-size: 20px; color: var(--ink); line-height: 1.6; }
@@ -255,8 +302,9 @@ function statusText(s: string) {
 .volume-tabs button, .unit-context button { white-space: nowrap; }
 .volume-tabs button.active, .unit-context button.active { color: white; background: var(--accent); border-color: var(--accent); }
 .volume-document { overflow: hidden; }
-.volume-document header { display: flex; justify-content: space-between; align-items: center; padding: 16px 20px; border-bottom: 1px solid var(--line); }
+.volume-document header { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 16px 20px; border-bottom: 1px solid var(--line); }
 .volume-document h3 { margin: 0; font-family: var(--font-prose); }
+.volume-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 .volume-structure { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(180px, .8fr); gap: 20px; padding: 20px; }
 .volume-structure li { color: var(--ink-soft); font-size: 13px; line-height: 1.8; margin-bottom: 6px; }
 .volume-cast { border-left: 1px solid var(--line); padding-left: 20px; }

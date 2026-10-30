@@ -2,13 +2,17 @@
 import { computed, onMounted, ref } from 'vue'
 import { api } from '@/api/client'
 import type { ContextPacket } from '@/types'
+import { runKindLabel } from '@/utils/runLabels'
+import { useAppStore } from '@/stores/app'
+
+const store = useAppStore()
 
 const props = defineProps<{
   spec: Record<string, any>
   title: string
   modelLabel: string
 }>()
-const emit = defineEmits<{ confirm: [payload: { instruction: string; knowledgeIds: string[] }]; cancel: [] }>()
+const emit = defineEmits<{ confirm: [payload: { instruction: string; knowledgeIds: string[]; preservePaths: string[] }]; cancel: [] }>()
 
 const loading = ref(true)
 const loadError = ref('')
@@ -18,12 +22,57 @@ const expandedBlock = ref('')
 const knowledgeDocs = ref<{ id: string; title: string; summary: string; bytes: number }[]>([])
 const selectedKnowledge = ref<Set<string>>(new Set())
 const knowledgeOpen = ref(false)
+const preserve = ref<Set<string>>(new Set())
+const preserveOpen = ref(true)
 
-const KIND_LABEL: Record<string, string> = {
-  plan: '规划', outline: '细纲', write: '写正文', review: '审校',
-  revise: '修订', finalize: '定稿', rewrite_entity: '重写优化', local_edit: '局部编辑',
-}
-const kindLabel = computed(() => KIND_LABEL[props.spec.kind] || props.spec.kind)
+const isReinit = computed(() => props.spec.kind === 'plan' && props.spec.mode === 'reinit')
+const isDerivedRewrite = computed(() => {
+  if (props.spec.kind !== 'rewrite_entity') return false
+  const p = String(props.spec.targetPath || '')
+  return p.startsWith('canon/cast/') || p === 'canon/reveal-schedule.md' || p === 'canon/author-lore.md'
+    || p === 'canon/world.md' || p === 'canon/goldfinger.md' || p === 'book-bible.md'
+})
+const basisBlocks = computed(() => (packet.value?.blocks || []).filter((b) => b.id.startsWith('basis-')))
+const contentBlocks = computed(() => (packet.value?.blocks || []).filter((b) => !b.id.startsWith('basis-')))
+const preserveOptions = computed(() => {
+  const files = store.currentBook?.files || {}
+  const paths: string[] = []
+  if (files['outline/book_outline.md']) paths.push('outline/book_outline.md')
+  for (const p of ['book-bible.md', 'canon/world.md', 'canon/goldfinger.md', 'canon/reveal-schedule.md', 'canon/author-lore.md',
+    'canon/platform-positioning.md', 'canon/writing-rules.md', 'canon/style-fingerprint.md', 'canon/locked-terms.yaml']) {
+    if (files[p]) paths.push(p)
+  }
+  for (const c of store.currentBook?.cast || []) paths.push(`canon/cast/${c.stem}.md`)
+  return paths
+})
+
+const kindLabel = computed(() => {
+  if (props.spec.kind === 'rewrite_entity' && props.spec.entityKind === 'cast') return '重写人物卡'
+  return runKindLabel(props.spec.kind, props.spec.mode)
+})
+const riskNote = computed(() => {
+  if (props.spec.kind === 'plan' && props.spec.mode === 'reinit') {
+    const n = preserve.value.size
+    return `重新立项重写总纲派生层；接受只覆盖未保留项${n ? `（已保留 ${n} 项精修文件）` : ''}；不写卷纲、不改单元/正文/账本。`
+  }
+  if (props.spec.kind === 'plan' && props.spec.mode === 'init') {
+    return '立项一次生成总纲派生层（总纲+人物+揭示+底牌+世界）；不含卷纲。'
+  }
+  if (props.spec.kind === 'plan' && props.spec.mode === 'volume') {
+    const vol = Number(String(props.spec.volumeId || 'v01').replace(/^v0*/, '')) || 1
+    if (vol >= 2) {
+      return `只写当前卷纲，播种缺失单元。上下文含第 ${vol - 1} 卷承接与相关人物（非全书卡）；不改总纲/设定/正文。`
+    }
+    return '只写当前卷纲，播种缺失单元；不改总纲/设定/人物/正文。'
+  }
+  if (isDerivedRewrite.value) {
+    return '总纲派生设定：已附总纲等依据（只读）。接受仅写当前文件。'
+  }
+  if (props.spec.kind === 'rewrite_entity') {
+    return '生产约束可独立优化；接受仅写当前文件。'
+  }
+  return ''
+})
 const totalBytes = computed(() => (packet.value?.blocks || []).reduce((s, b) => s + b.bytes, 0))
 
 onMounted(async () => {
@@ -45,9 +94,15 @@ function toggleKnowledge(id: string) {
   else s.add(id)
   selectedKnowledge.value = s
 }
+function togglePreserve(path: string) {
+  const s = new Set(preserve.value)
+  if (s.has(path)) s.delete(path)
+  else s.add(path)
+  preserve.value = s
+}
 
 function confirm() {
-  emit('confirm', { instruction: instruction.value.trim(), knowledgeIds: [...selectedKnowledge.value] })
+  emit('confirm', { instruction: instruction.value.trim(), knowledgeIds: [...selectedKnowledge.value], preservePaths: [...preserve.value] })
 }
 </script>
 
@@ -69,13 +124,20 @@ function confirm() {
       </div>
 
       <div class="dlg-context">
-        <small class="ctx-label">将发送给模型的内容（字段级抽取，作者底牌不进入）</small>
+        <small class="ctx-label">将发送给模型的内容（依据只读；接受才写盘）</small>
         <p v-if="loading" class="ctx-loading">正在构建上下文预览…</p>
         <p v-else-if="loadError" class="ctx-error">{{ loadError }}</p>
         <template v-else-if="packet">
           <div class="ctx-system"><small>系统提示词</small><p>{{ packet.systemPrompt }}</p></div>
+          <div v-if="basisBlocks.length" class="ctx-group">
+            <small class="ctx-group-label">重写依据（只读，不写回）</small>
+            <details v-for="b in basisBlocks" :key="b.id" class="ctx-block basis" :open="expandedBlock === b.id" @toggle="expandedBlock = ($event.target as HTMLDetailsElement).open ? b.id : ''">
+              <summary><span class="ctx-block-label">{{ b.label }}</span><span class="ctx-block-meta">{{ b.source }} · {{ b.bytes }} B</span></summary>
+              <pre>{{ b.content }}</pre>
+            </details>
+          </div>
           <div class="ctx-blocks">
-            <details v-for="b in packet.blocks" :key="b.id" class="ctx-block" :open="expandedBlock === b.id" @toggle="expandedBlock = ($event.target as HTMLDetailsElement).open ? b.id : ''">
+            <details v-for="b in contentBlocks" :key="b.id" class="ctx-block" :open="expandedBlock === b.id" @toggle="expandedBlock = ($event.target as HTMLDetailsElement).open ? b.id : ''">
               <summary><span class="ctx-block-label">{{ b.label }}</span><span class="ctx-block-meta">{{ b.source }} · {{ b.bytes }} B</span></summary>
               <pre>{{ b.content }}</pre>
             </details>
@@ -83,9 +145,23 @@ function confirm() {
         </template>
       </div>
 
+      <div v-if="isReinit && preserveOptions.length" class="dlg-preserve">
+        <button class="preserve-toggle" @click="preserveOpen = !preserveOpen">
+          <span>接受时保留精修文件（不覆盖）{{ preserve.size ? ` · 已选 ${preserve.size}` : '' }}</span>
+          <span>{{ preserveOpen ? '收起' : '展开' }}</span>
+        </button>
+        <div v-if="preserveOpen" class="preserve-list">
+          <p class="preserve-note">勾选后，重新立项接受时这些文件保持现状；其余总纲派生设定按候选覆盖。</p>
+          <label v-for="p in preserveOptions" :key="p" class="preserve-item" :class="{ selected: preserve.has(p) }">
+            <input type="checkbox" :checked="preserve.has(p)" @change="togglePreserve(p)" />
+            <span>{{ p }}</span>
+          </label>
+        </div>
+      </div>
+
       <div class="dlg-knowledge" v-if="knowledgeDocs.length">
         <button class="knowledge-toggle" @click="knowledgeOpen = !knowledgeOpen">
-          <span>参考知识（可选，作者资料库）{{ selectedKnowledge.size ? ` · 已选 ${selectedKnowledge.size} 篇` : '' }}</span>
+          <span>参考知识（可选，内置 + 作者资料库）{{ selectedKnowledge.size ? ` · 已选 ${selectedKnowledge.size} 篇` : '' }}</span>
           <span>{{ knowledgeOpen ? '收起' : '展开' }}</span>
         </button>
         <div v-if="knowledgeOpen" class="knowledge-list">
@@ -97,6 +173,8 @@ function confirm() {
           </label>
         </div>
       </div>
+
+      <p v-if="riskNote" class="dlg-risk">{{ riskNote }}</p>
 
       <div class="dlg-instruction">
         <label>追加指令（可选，会附加到本次调用的用户提示）</label>
@@ -118,6 +196,7 @@ function confirm() {
 .dlg-head small { color: var(--accent); font-size: 11px; font-weight: 700; letter-spacing: .05em; }
 .dlg-head h3 { margin: 6px 0 0; font-family: var(--font-prose); font-size: 22px; }
 .dlg-close { border: none; background: transparent; font-size: 22px; color: var(--ink-soft); padding: 0 4px; }
+.dlg-risk { margin: 0 24px 12px; padding: 10px 12px; background: color-mix(in srgb, var(--accent) 10%, transparent); border-radius: 8px; color: var(--ink-soft); font-size: 13px; line-height: 1.5; }
 .dlg-meta { display: flex; gap: 24px; padding: 0 24px 16px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
 .meta-item { display: grid; gap: 2px; }
 .meta-item small { color: var(--ink-soft); font-size: 10px; }
@@ -135,6 +214,16 @@ function confirm() {
 .ctx-block-label { font-size: 12px; font-weight: 600; }
 .ctx-block-meta { font-size: 10px; color: var(--ink-soft); }
 .ctx-block pre { margin: 0; padding: 12px; font: 11px/1.7 ui-monospace, monospace; white-space: pre-wrap; color: var(--ink-soft); max-height: 260px; overflow: auto; border-top: 1px solid var(--line); }
+.ctx-group { margin-bottom: 12px; }
+.ctx-group-label { color: var(--accent); font-size: 11px; font-weight: 700; display: block; margin-bottom: 6px; }
+.ctx-block.basis summary { background: rgba(15,107,92,.06); }
+.dlg-preserve { border-top: 1px solid var(--line); }
+.preserve-toggle { display: flex; justify-content: space-between; align-items: center; width: 100%; border: none; background: transparent; padding: 14px 24px; text-align: left; font-size: 13px; }
+.preserve-toggle span:last-child { color: var(--accent); font-size: 12px; }
+.preserve-list { padding: 0 24px 14px; max-height: 220px; overflow: auto; }
+.preserve-note { margin: 0 0 10px; font-size: 11px; color: var(--ink-soft); line-height: 1.6; }
+.preserve-item { display: flex; gap: 10px; align-items: center; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; margin-bottom: 4px; font-size: 12px; cursor: pointer; }
+.preserve-item.selected { border-color: var(--accent); background: rgba(15,107,92,.05); }
 .dlg-knowledge { border-top: 1px solid var(--line); }
 .knowledge-toggle { display: flex; justify-content: space-between; align-items: center; width: 100%; border: none; background: transparent; padding: 14px 24px; text-align: left; font-size: 13px; color: var(--ink); }
 .knowledge-toggle span:last-child { color: var(--accent); font-size: 12px; }

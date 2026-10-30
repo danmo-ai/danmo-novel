@@ -48,7 +48,7 @@ make pack-macos-desktop  # also pack-linux-desktop / pack-windows-desktop
 
 - LLM client/dialects migrated from Danmo Work (`core/adapter/llm`).
 - Novel five-stage contracts inspired by `core/resource/plugins/novel` in Danmo Work.
-- Prompt knowledge: `core/resource/novel/`.
+- Prompt knowledge: `core/resource/novel/` (built-in Markdown in `knowledge/`, embedded by `knowledge.go`).
 
 ## Product references
 

@@ -1,6 +1,6 @@
 package novel
 
-const KnowledgeVersion = "kb-novel-2026.10"
+const KnowledgeVersion = "kb-novel-2026.10.1"
 
 func WriteSystemPrompt() string {
 	return `你是长篇网文写手。只根据 CONTEXT 写单元正文，不要工具调用，不要解释。
@@ -22,13 +22,32 @@ on_stage ⊆ 本卷人物；pov ∈ on_stage；每章至少 2 个 scenes。不�
 }
 
 func PlanSystemPrompt() string {
-	return `你是小说主编。输出规划候选 JSON：cast / bookOutlineMarkdown / volumeOutlineMarkdown。
-人物卡 status 一律 candidate；必须有 protagonist。不要写细纲 scenes，不要写正文。
-人物卡字段：stem（英文小写连字符）、name（纯姓名，不含任何括号说明）、role（protagonist / volume_antagonist / recurring）、tagline（一句话身份说明，如「痕迹检验专家」「白家第一代」「青沟子矿矿长」，不超过 20 字，不含 role 本身）、cardMarkdown。
-cardMarkdown 第一行必须是 "# "+纯姓名，第二段写 `+"`tagline`: 一句话说明"+`；姓名与说明分离，不要把说明写进姓名。
-volumeOutlineMarkdown 的「本卷人物」必须写准角色 stem 列表。
-「单元索引」必须是 Markdown 表，列顺序固定为：unit_id | 章范围 | 一句话功能 | 终局边界 | 下一钩类型。
-unit_id 必须为 v01-U1、v01-U2 形式，章范围必须为 1-3、4-6 等数字范围；禁止用自然数单元号或中文列名代替。`
+	return PlanSystemPromptForMode("volume")
+}
+
+// PlanSystemPromptForMode returns the system prompt for 立项/重新立项/重写卷纲.
+// System holds only fixed rules and output schema; book data arrives in the user JSON payload.
+func PlanSystemPromptForMode(mode string) string {
+	switch mode {
+	case "init", "reinit":
+		return `你是小说主编。不要写细纲 scenes，不要写正文，不要写卷纲，不要工具调用。
+只根据 user JSON 数据包产出立项结果。
+人物卡 status 一律 candidate；必须有 protagonist。
+人物卡字段：stem（英文小写连字符）、name（纯姓名，不含括号说明）、role（protagonist / volume_antagonist / recurring）、tagline（≤20 字）、cardMarkdown。
+cardMarkdown 第一行必须是 "# "+纯姓名，并含 ` + "`tagline`:" + ` 与 ` + "`role`:" + `。
+输出严格 JSON：
+{"cast":[...],"bookOutlineMarkdown":"...","settings":{"files":{"book-bible.md":"...","canon/world.md":"...","canon/goldfinger.md":"...","canon/platform-positioning.md":"...","canon/writing-rules.md":"...","canon/style-fingerprint.md":"...","canon/reveal-schedule.md":"...","canon/author-lore.md":"...","canon/locked-terms.yaml":"..."}}}
+settings.files 必须覆盖上述全部路径；作者底牌只写在 author-lore；禁止输出 volumeOutlineMarkdown。`
+	default:
+		return `你是小说主编。只写当前卷纲，不要写细纲 scenes，不要写正文，不要改设定，不要工具调用。
+只根据 user JSON 数据包产出卷纲。
+若数据包含上一卷截取/公开账本，只作承接：延续未回收伏笔与卷末边界，不复述已写正文，不改既成事实。
+volumeOutlineMarkdown 须含「本卷目标」「本卷人物」stem 列表、「单元索引」Markdown 表、「卷末状态/终局边界」。
+单元索引列顺序固定：unit_id | 章范围 | 一句话功能 | 终局边界 | 下一钩类型。
+unit_id 必须为当前卷号形式（如 v02-U1）；章范围为 1-3、4-6 等数字范围。
+输出严格 JSON：{"volumeOutlineMarkdown":"..."}
+禁止输出 settings、cast、bookOutlineMarkdown。`
+	}
 }
 
 func ReviewSystemPrompt() string {

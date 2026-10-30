@@ -3,6 +3,7 @@ import { computed, onMounted, ref } from 'vue'
 import { api } from '@/api/client'
 import { useAppStore } from '@/stores/app'
 import type { Run } from '@/types'
+import { KIND_LABELS, runKindLabel } from '@/utils/runLabels'
 
 const store = useAppStore()
 const runs = ref<Run[]>([])
@@ -14,10 +15,7 @@ const statusFilter = ref('')
 const query = ref('')
 const expanded = ref('')
 
-const kindLabels: Record<string, string> = {
-  plan: '规划', outline: '细纲', write: '正文', review: '审校', revise: '修订', finalize: '定稿',
-  local_edit: '局部编辑', continue: '续写', expand: '扩写', polish: '润色', rewrite_selection: '选区改写',
-}
+const kindLabels = KIND_LABELS
 const statusLabels: Record<string, string> = {
   pending: '排队', running: '运行中', waiting_accept: '待接受', succeeded: '成功', failed: '失败', cancelled: '已取消',
 }
@@ -41,7 +39,17 @@ function bookTitle(id: string) { return store.books.find((b) => b.id === id)?.ti
 function date(iso: string) { return new Date(iso).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' }) }
 function duration(run: Run) { const ms = (run.calls || []).reduce((n, c) => n + (c.durationMs || 0), 0); return ms ? `${(ms / 1000).toFixed(1)}s` : '—' }
 function tokens(run: Run, key: 'promptTokens' | 'completionTokens') { return (run.calls || []).reduce((n, c) => n + (c[key] || 0), 0) }
-function target(run: Run) { return run.spec.unitId || run.spec.volumeId || (run.spec.chapter ? `第 ${run.spec.chapter} 章` : '全书') }
+function target(run: Run) {
+  const spec = run.spec || {}
+  // plan 任务目标是全书或卷，忽略误带的 unitId（历史记录里常被写成 U1）。
+  if (run.kind === 'plan') {
+    if (spec.mode === 'volume' || spec.volumeId) return spec.volumeId || '当前卷'
+    return '全书'
+  }
+  if (run.kind === 'rewrite_entity') return spec.targetPath || '设定'
+  if (run.kind === 'outline' && spec.volumeId && !spec.unitId) return spec.volumeId
+  return spec.unitId || spec.volumeId || (spec.chapter ? `第 ${spec.chapter} 章` : '全书')
+}
 async function load() {
   loading.value = true
   try {
@@ -67,7 +75,7 @@ onMounted(load)
     </div>
     <div class="filters panel">
       <select v-model="bookFilter" aria-label="书籍"><option value="">全部书籍</option><option v-for="b in store.books" :key="b.id" :value="b.id">{{ b.title }}</option></select>
-      <select v-model="kindFilter" aria-label="类型"><option value="">全部类型</option><option v-for="(label, id) in kindLabels" :key="id" :value="id">{{ label }}</option></select>
+      <select v-model="kindFilter" aria-label="类型"><option value="">全部类型</option><option v-for="(label, id) in kindLabels" :key="id" :value="id">{{ id === 'plan' ? '立项 / 卷纲' : label }}</option></select>
       <select v-model="modelFilter" aria-label="模型"><option value="">全部模型</option><option v-for="m in models" :key="m" :value="m">{{ m }}</option></select>
       <select v-model="statusFilter" aria-label="状态"><option value="">全部状态</option><option v-for="(label, id) in statusLabels" :key="id" :value="id">{{ label }}</option></select>
       <input v-model="query" placeholder="搜索书籍、单元、模型或错误" aria-label="搜索" />
@@ -80,7 +88,7 @@ onMounted(load)
       <article v-for="r in filtered" :key="r.id" class="run-record">
         <button class="run-row" @click="expanded = expanded === r.id ? '' : r.id">
           <span class="time-book"><strong>{{ bookTitle(r.bookId) }}</strong><small>{{ date(r.createdAt) }}</small></span>
-          <span class="kind-target"><strong>{{ kindLabels[r.kind] || r.kind }}</strong><small>{{ target(r) }}</small></span>
+          <span class="kind-target"><strong>{{ runKindLabel(r.kind, r.spec?.mode) }}</strong><small>{{ target(r) }}</small></span>
           <span class="model" :title="r.modelId">{{ r.modelId }}</span>
           <span class="tokens"><strong>{{ tokens(r, 'promptTokens').toLocaleString() }}</strong><small>/ {{ tokens(r, 'completionTokens').toLocaleString() }}</small></span>
           <span class="calls"><strong>{{ r.callsUsed }}/{{ r.policy?.maxCalls || '—' }}</strong><small>{{ duration(r) }}</small></span>

@@ -72,6 +72,22 @@ func TestApplyProtocolDialectRequest_KimiK3(t *testing.T) {
 	if _, ok := bodyMed["thinking"]; ok {
 		t.Fatal("kimi_k3 must not set thinking object for medium")
 	}
+
+	bodyFixed := map[string]any{
+		"temperature":       0.7,
+		"top_p":             0.9,
+		"presence_penalty":  0.1,
+		"frequency_penalty": 0.2,
+	}
+	applyProtocolDialectRequest(bodyFixed, domain.ProtocolDialectKimiK3, "high", nil)
+	for _, k := range []string{"temperature", "top_p", "presence_penalty", "frequency_penalty"} {
+		if _, ok := bodyFixed[k]; ok {
+			t.Fatalf("kimi_k3 must omit fixed sampling field %s", k)
+		}
+	}
+	if bodyFixed["reasoning_effort"] != "high" {
+		t.Fatalf("reasoning_effort: %v", bodyFixed["reasoning_effort"])
+	}
 }
 
 func TestApplyProtocolDialectRequest_DeepSeek(t *testing.T) {

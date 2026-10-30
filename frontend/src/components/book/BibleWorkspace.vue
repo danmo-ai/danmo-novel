@@ -13,21 +13,21 @@ const editing = ref(false)
 const draft = ref('')
 const showSecrets = ref(false)
 const navOpen = ref(false)
-const activeGroup = ref('故事设定')
+const activeGroup = ref('总纲派生')
 const specialView = ref<'relations' | null>(null)
 const book = computed(() => store.currentBook)
 
 type Doc = { path: string; label: string; group: string; description: string; secret?: boolean; usage: string }
 const definitions: Doc[] = [
-  { path: 'book-bible.md', label: '作者意图与读者承诺', group: '故事设定', description: '读者承诺、主角目标、故事引擎与终局储备卷号', usage: '规划' },
-  { path: 'canon/world.md', label: '世界观与力量规则', group: '故事设定', description: '力量/代价、势力地图、日常物质、禁忌与法律', usage: '规划 · 正文 · 审校' },
-  { path: 'canon/goldfinger.md', label: '金手指与资源', group: '故事设定', description: '能力、代价、上限与最近使用；主角详细卡仍在人物页', usage: '正文 · 审校' },
-  { path: 'canon/platform-positioning.md', label: '平台与篇幅定位', group: '故事设定', description: '平台、目标读者、更新与开篇承诺', usage: '规划 · 正文 · 审校' },
-  { path: 'canon/writing-rules.md', label: '写作规则', group: '故事设定', description: '单元与单章生产约束', usage: '正文 · 审校' },
-  { path: 'canon/style-fingerprint.md', label: '风格指纹', group: '故事设定', description: 'POV、句段、对话、感官与反模式', usage: '正文 · 局部编辑 · 审校' },
-  { path: 'canon/reveal-schedule.md', label: '揭示计划', group: '故事设定', description: '信息何时可暗示、何时可确认', usage: '规划 · 细纲 · 正文 · 审校' },
-  { path: 'canon/locked-terms.yaml', label: '锁词与合规红线', group: '作者底牌', description: '按卷解锁的真名/真相词与永久禁词', usage: '正文约束 · 定稿扫描' },
-  { path: 'canon/author-lore.md', label: '作者底牌与终局真相', group: '作者底牌', description: '未来反转、真实规则、角色秘密；写正文禁止加载', secret: true, usage: '规划 · 改纲（正文/审校禁读）' },
+  { path: 'book-bible.md', label: '作者意图与读者承诺', group: '总纲派生', description: '读者承诺、主角目标、故事引擎；重写携带总纲作依据', usage: '立项 · 重写带总纲' },
+  { path: 'canon/world.md', label: '世界观与力量规则', group: '总纲派生', description: '力量/代价、势力地图、禁忌；重写携带总纲', usage: '立项 · 重写带总纲' },
+  { path: 'canon/goldfinger.md', label: '金手指与资源', group: '总纲派生', description: '能力、代价、上限；重写携带总纲', usage: '立项 · 重写带总纲' },
+  { path: 'canon/reveal-schedule.md', label: '揭示计划', group: '总纲派生', description: '信息何时可暗示/确认；按卷注入正文与审校', usage: '立项 · 细纲 · 正文 · 审校 · 重写带总纲' },
+  { path: 'canon/platform-positioning.md', label: '平台与篇幅定位', group: '生产约束', description: '平台、目标读者、更新与开篇承诺', usage: '立项 · 可独立优化' },
+  { path: 'canon/writing-rules.md', label: '写作规则', group: '生产约束', description: '单元与单章生产约束', usage: '正文 · 审校 · 可独立优化' },
+  { path: 'canon/style-fingerprint.md', label: '风格指纹', group: '生产约束', description: 'POV、句段、对话、感官与反模式', usage: '正文 · 局部编辑 · 审校 · 可独立优化' },
+  { path: 'canon/locked-terms.yaml', label: '锁词与合规红线', group: '作者底牌', description: '按卷解锁的真名/真相词与永久禁词', usage: '正文约束 · 定稿扫描 · 仅手工' },
+  { path: 'canon/author-lore.md', label: '作者底牌与终局真相', group: '作者底牌', description: '未来反转、真实规则、角色秘密；写正文禁止加载', secret: true, usage: '立项 · 重写带总纲（正文/审校禁读）' },
   { path: 'continuity/facts.md', label: '读者事实与连载游标', group: '连续性账本', description: '公开事实、Cast snapshot、连载游标', usage: '正文 · 审校 · 定稿回写' },
   { path: 'continuity/facts.md#relations', label: '人物当前状态', group: '连续性账本', description: 'Cast snapshot：职位、位置、伤势、资源、知情范围；由定稿接受回写', usage: '正文 · 审校 · 定稿回写' },
   { path: 'continuity/facts.md#open-loops', label: '伏笔与开放债务', group: '连续性账本', description: 'FS-id 的 planted / advanced / paid / dropped 状态', usage: '正文 · 审校 · 定稿回写' },
@@ -50,7 +50,7 @@ const dynamicDocs = computed<RuntimeDoc[]>(() => [...summaries.value, ...commits
   raw: book.value?.files[path] || '', exists: true,
 })))
 const allDocs = computed(() => [...docs.value, ...dynamicDocs.value])
-const groups = ['故事设定', '人物与关系', '作者底牌', '连续性账本']
+const groups = ['总纲派生', '生产约束', '人物与关系', '作者底牌', '连续性账本']
 const summaries = computed(() => Object.keys(book.value?.files || {}).filter((p) => /^continuity\/summaries\/[^/]+\.md$/.test(p)).sort())
 const commits = computed(() => Object.keys(book.value?.files || {}).filter((p) => /^continuity\/commits\/[^/]+\.md$/.test(p)).sort())
 const currentDoc = computed(() => allDocs.value.find((d) => d.path === selectedPath.value) || docs.value[0])
@@ -163,7 +163,7 @@ const STATE_LABELS: Record<string, string> = {
   time_system: '时间系统', qc_profile: '质检档案', continuation_mode: '续写模式',
 }
 const STAGE_TEXT: Record<string, string> = {
-  planning: '规划中', outlining: '细纲中', units: '单元生产', writing: '写作中', done: '完结',
+  planning: '立项中', outlining: '细纲中', units: '单元生产', writing: '写作中', done: '完结',
 }
 
 function parseState(raw: string): { fields: StateField[]; gates: GateField[]; blockers: string[] } {
@@ -259,10 +259,35 @@ async function promoteCast() {
   } catch (e) { store.fail(e) } finally { promoting.value = false }
 }
 
+const OPTIMIZE_BLOCKLIST = new Set([
+  'continuity/facts.md',
+  'continuity/facts.md#relations',
+  'continuity/facts.md#open-loops',
+  'novel-state.yaml',
+  'canon/locked-terms.yaml',
+])
+const canOptimize = computed(() => {
+  if (selectedCast.value) return true
+  const path = currentFilePath.value
+  if (!path || path.includes('#') || OPTIMIZE_BLOCKLIST.has(path)) return false
+  if (path.startsWith('continuity/')) return false
+  return true
+})
+const optimizeLabel = computed(() => selectedCast.value ? '重写人物卡' : '重写设定')
+const optimizeHint = computed(() => {
+  if (selectedCast.value) return '携带总纲/卷纲/揭示计划/公开状态作依据；接受仅写本卡'
+  const p = currentFilePath.value
+  if (p === 'canon/reveal-schedule.md') return '携带总纲/卷纲/公开账本；正文按卷注入约束'
+  if (p === 'canon/world.md' || p === 'canon/goldfinger.md' || p === 'book-bible.md' || p === 'canon/author-lore.md') {
+    return '总纲派生：携带总纲等依据；接受仅写本文件'
+  }
+  return '生产约束可独立优化；接受仅写本文件'
+})
+
 function requestRewrite() {
   const path = currentFilePath.value
-  if (!path || path.includes('#')) {
-    store.note('请先在完整文件中选择要重写的实体')
+  if (!path || path.includes('#') || !canOptimize.value) {
+    store.note('当前项请手工编辑；连续性账本与锁词不提供 AI 优化')
     return
   }
   const kind = selectedCast.value ? 'cast'
@@ -299,7 +324,7 @@ async function scaffoldMissing() {
       <div class="view-actions">
         <button v-if="missingCount" @click="scaffoldMissing">补齐 {{ missingCount }} 项模板</button>
         <button v-if="selectedCast && currentCast?.status === 'candidate'" class="promote-btn" :disabled="book?.summary.readOnly || promoting" @click="promoteCast">{{ promoting ? '晋升中…' : '晋升 canon' }}</button>
-        <button v-if="!specialView && currentRaw && !editing" :disabled="book?.summary.readOnly" @click="requestRewrite">重写优化</button>
+        <button v-if="!specialView && currentRaw && !editing && canOptimize" :disabled="book?.summary.readOnly" :title="optimizeHint" @click="requestRewrite">{{ optimizeLabel }}</button>
         <button v-if="!specialView" class="primary" :disabled="props.saving || (!currentDoc && !selectedCast)" @click="editing ? save() : startEdit()">{{ editing ? '保存更改' : '编辑当前' }}</button>
       </div>
     </div>
@@ -327,7 +352,7 @@ async function scaffoldMissing() {
               <small v-if="c.tagline">{{ c.tagline }}</small>
               <small v-else class="cast-stem">{{ c.stem }}</small>
             </button>
-            <p v-if="!book?.cast?.length" class="nav-empty">批准规划后人物卡进入这里。</p>
+            <p v-if="!book?.cast?.length" class="nav-empty">批准立项后人物卡进入这里。</p>
           </template>
           <template v-else-if="group === '连续性账本'">
             <button v-for="d in docs.filter(x => x.group === group)" :key="d.path" :class="{ active: !selectedCast && currentDoc?.path === d.path }" @click="chooseDoc(d.path)">
@@ -448,7 +473,7 @@ async function scaffoldMissing() {
               <pre>{{ currentRaw }}</pre>
             </details>
           </template>
-          <div v-else-if="!editing" class="empty-state"><h3>还没有内容</h3><p>可以新建模板，或批准规划候选后写入。</p></div>
+          <div v-else-if="!editing" class="empty-state"><h3>还没有内容</h3><p>可以新建模板，或批准立项候选后写入。</p></div>
           <textarea v-if="editing" v-model="draft" class="source-editor" spellcheck="false" />
           <button v-if="editing" class="cancel" @click="editing = false">取消编辑</button>
         </template>

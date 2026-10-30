@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/danmo-ai/danmo-novel/core/domain"
 	"gopkg.in/yaml.v3"
@@ -29,102 +30,202 @@ type unitSeed struct {
 	Function string `json:"function"`
 }
 
-// AcceptPlan writes the approved plan and seeds proposed unit contracts.
-// It is called only after explicit author acceptance.
+// AcceptPlan writes the approved plan after explicit author acceptance.
+// Mode controls write scope:
+//   - init/reinit: book outline + whitelist settings + cast in candidate only
+//   - volume: current volume outline + missing unit skeletons only
+// Never deletes or overwrites: other volumes, existing unit contracts, prose,
+// continuity/, identity timeline, unlisted cast, or production cursors.
 func AcceptPlan(root string, cand domain.Candidate) error {
-	if cand.VolumeID == "" {
-		return fmt.Errorf("missing volume id")
-	}
-	outline := cand.PlanMarkdown["volume_outline"]
-	if strings.TrimSpace(outline) == "" {
-		return fmt.Errorf("volume outline is empty")
-	}
-	if err := os.MkdirAll(filepath.Join(root, "outline", "volumes"), 0o755); err != nil {
-		return err
-	}
-	if md := cand.PlanMarkdown["book_outline"]; md != "" {
-		if err := os.WriteFile(filepath.Join(root, "outline", "book_outline.md"), []byte(md), 0o644); err != nil {
-			return err
+	mode := strings.TrimSpace(cand.Mode)
+	if mode == "" {
+		if len(cand.PlanSettings) > 0 || strings.TrimSpace(cand.PlanMarkdown["book_outline"]) != "" {
+			mode = domain.PlanModeInit
+		} else {
+			mode = domain.PlanModeVolume
 		}
 	}
-	volPath := filepath.Join(root, "outline", "volumes", cand.VolumeID+".md")
-	if err := os.WriteFile(volPath, []byte(outline), 0o644); err != nil {
-		return err
+	full := mode == domain.PlanModeInit || mode == domain.PlanModeReinit
+	if full {
+		return acceptPlanBook(root, cand)
+	}
+	return acceptPlanVolume(root, cand)
+}
+
+func acceptPlanBook(root string, cand domain.Candidate) error {
+	if strings.TrimSpace(cand.PlanMarkdown["book_outline"]) == "" {
+		return fmt.Errorf("立项缺少全书总纲")
+	}
+	for _, path := range PlanSettingsPaths {
+		if strings.TrimSpace(cand.PlanSettings[path]) == "" {
+			return fmt.Errorf("立项缺少设定: %s", path)
+		}
+		if !IsPlanSettingsPath(path) {
+			return fmt.Errorf("不允许的设定路径: %s", path)
+		}
+	}
+	for path := range cand.PlanSettings {
+		if !IsPlanSettingsPath(path) {
+			return fmt.Errorf("不允许的设定路径: %s", path)
+		}
 	}
 
 	var cast []planCast
 	_ = json.Unmarshal([]byte(cand.PlanMarkdown["cast_json"]), &cast)
-	castDir := filepath.Join(root, "canon", "cast")
-	if err := os.MkdirAll(castDir, 0o755); err != nil {
-		return err
+	for i := range cast {
+		cast[i].Role = normalizeRole(cast[i].Role)
+	}
+	hasProtagonist := false
+	for _, c := range cast {
+		if c.Role == "protagonist" {
+			hasProtagonist = true
+			break
+		}
+	}
+	if !hasProtagonist {
+		return fmt.Errorf("立项必须包含 protagonist")
+	}
+
+	preserved := map[string]bool{}
+	for _, p := range cand.PreservePaths {
+		p = strings.TrimSpace(strings.ReplaceAll(p, "\\", "/"))
+		if p != "" {
+			preserved[p] = true
+		}
+	}
+	writes := map[string][]byte{}
+	if !preserved["outline/book_outline.md"] {
+		writes["outline/book_outline.md"] = []byte(cand.PlanMarkdown["book_outline"])
+	}
+	for path, body := range cand.PlanSettings {
+		if preserved[path] {
+			continue
+		}
+		writes[path] = []byte(body)
 	}
 	for _, c := range cast {
 		if c.Stem == "" || c.Name == "" {
 			continue
 		}
-		md := c.CardMarkdown
-		// 姓名与一句话说明分离：name 纯姓名，tagline 单独字段。
-		name, note := splitNameTagline(c.Name)
-		tagline := strings.TrimSpace(c.Tagline)
-		if tagline == "" {
-			tagline = note
+		rel := "canon/cast/" + c.Stem + ".md"
+		if preserved[rel] {
+			continue
 		}
-		if md == "" {
-			md = fmt.Sprintf("# %s\n\n`status`: canon\n`role`: %s\n", name, c.Role)
-		} else if strings.HasPrefix(md, "#") {
-			// Normalize model card heading to the canonical single-H1 pure name.
-			lines := strings.Split(md, "\n")
-			lines[0] = "# " + name
-			md = strings.Join(lines, "\n")
-		}
-		if tagline != "" && !strings.Contains(md, "`tagline`:") {
-			md += fmt.Sprintf("`tagline`: %s\n", tagline)
-		}
-		md = strings.Replace(md, "`status`: candidate", "`status`: canon", 1)
-		if !strings.Contains(md, "`status`:") {
-			md += "\n`status`: canon\n"
-		}
-		if c.Role != "" && !strings.Contains(md, "`role`:") {
-			md += fmt.Sprintf("`role`: %s\n", c.Role)
-		}
-		if err := os.WriteFile(filepath.Join(castDir, c.Stem+".md"), []byte(md), 0o644); err != nil {
-			return err
-		}
+		writes[rel] = []byte(renderCastCard(c))
 	}
+	return commitPlanWrites(root, writes, map[string]string{
+		"stage": "planning", "next_action": "plan",
+	})
+}
 
-	// role 统一规范为 protagonist / volume_antagonist / recurring，兼容旧值。
-	for i := range cast {
-		cast[i].Role = normalizeRole(cast[i].Role)
+func acceptPlanVolume(root string, cand domain.Candidate) error {
+	if cand.VolumeID == "" {
+		return fmt.Errorf("missing volume id")
 	}
-
+	if len(cand.PlanSettings) > 0 {
+		return fmt.Errorf("重写卷纲不得写入设定")
+	}
+	outline := cand.PlanMarkdown["volume_outline"]
+	if strings.TrimSpace(outline) == "" {
+		return fmt.Errorf("volume outline is empty")
+	}
 	seeds := ParseUnitSeeds(outline, cand.VolumeID)
 	if len(seeds) == 0 {
 		return fmt.Errorf("卷纲没有可识别的单元索引；请使用 unit_id / 章范围 / 一句话功能 表")
 	}
-	unitDir := filepath.Join(root, "outline", "units")
-	if err := os.MkdirAll(unitDir, 0o755); err != nil {
-		return err
+
+	writes := map[string][]byte{
+		"outline/volumes/" + cand.VolumeID + ".md": []byte(outline),
 	}
 	for _, s := range seeds {
-		u := map[string]any{
+		rel := "outline/units/" + s.UnitID + ".yaml"
+		abs := filepath.Join(root, filepath.FromSlash(rel))
+		if _, err := os.Stat(abs); err == nil {
+			// Never overwrite existing unit contracts (prose progress preserved).
+			continue
+		}
+		body, err := yaml.Marshal(map[string]any{
 			"unit_id": s.UnitID, "status": "proposed", "title_working": s.Title,
 			"function": s.Function, "chapter_range": []int{s.From, s.To},
 			"desire": "", "obstacle": "", "choice": "", "payoff": "",
 			"on_stage": []string{}, "pov": "", "scenes": []any{},
 			"next_hook": map[string]any{"type": ""},
 			"story_day": "", "gap_from_prev": "", "info_control": "",
-		}
-		b, err := yaml.Marshal(u)
+		})
 		if err != nil {
 			return err
 		}
-		if err := os.WriteFile(filepath.Join(unitDir, s.UnitID+".yaml"), b, 0o644); err != nil {
+		writes[rel] = body
+	}
+	return commitPlanWrites(root, writes, map[string]string{
+		"stage": "outlining", "next_action": "outline",
+	})
+}
+
+func commitPlanWrites(root string, writes map[string][]byte, state map[string]string) error {
+	stamp := time.Now().UTC().Format("20060102-150405")
+	backupRoot := filepath.Join(root, "backups", "pre-accept-"+stamp)
+	stageRoot := filepath.Join(backupRoot, "staging")
+	if err := os.MkdirAll(stageRoot, 0o755); err != nil {
+		return err
+	}
+	for rel, body := range writes {
+		abs := filepath.Join(root, filepath.FromSlash(rel))
+		if raw, err := os.ReadFile(abs); err == nil {
+			bak := filepath.Join(backupRoot, filepath.FromSlash(rel))
+			if err := os.MkdirAll(filepath.Dir(bak), 0o755); err != nil {
+				return err
+			}
+			if err := os.WriteFile(bak, raw, 0o644); err != nil {
+				return err
+			}
+		}
+		staged := filepath.Join(stageRoot, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(staged), 0o755); err != nil {
+			return err
+		}
+		if err := os.WriteFile(staged, body, 0o644); err != nil {
 			return err
 		}
 	}
-	return updateState(root, map[string]string{
-		"stage": "outlining", "next_action": "outline",
-	})
+	for rel, body := range writes {
+		abs := filepath.Join(root, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
+			return err
+		}
+		if err := os.WriteFile(abs, body, 0o644); err != nil {
+			return err
+		}
+	}
+	_ = os.RemoveAll(stageRoot)
+	return updateState(root, state)
+}
+
+func renderCastCard(c planCast) string {
+	name, note := splitNameTagline(c.Name)
+	tagline := strings.TrimSpace(c.Tagline)
+	if tagline == "" {
+		tagline = note
+	}
+	md := c.CardMarkdown
+	if md == "" {
+		md = fmt.Sprintf("# %s\n\n`status`: canon\n`role`: %s\n", name, c.Role)
+	} else if strings.HasPrefix(md, "#") {
+		lines := strings.Split(md, "\n")
+		lines[0] = "# " + name
+		md = strings.Join(lines, "\n")
+	}
+	if tagline != "" && !strings.Contains(md, "`tagline`:") {
+		md += fmt.Sprintf("`tagline`: %s\n", tagline)
+	}
+	md = strings.Replace(md, "`status`: candidate", "`status`: canon", 1)
+	if !strings.Contains(md, "`status`:") {
+		md += "\n`status`: canon\n"
+	}
+	if c.Role != "" && !strings.Contains(md, "`role`:") {
+		md += fmt.Sprintf("`role`: %s\n", c.Role)
+	}
+	return md
 }
 
 func ParseUnitSeeds(md, volumeID string) []unitSeed {

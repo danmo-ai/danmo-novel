@@ -10,6 +10,7 @@ import (
 
 	"github.com/danmo-ai/danmo-novel/core/domain"
 	"github.com/danmo-ai/danmo-novel/core/port"
+	"github.com/danmo-ai/danmo-novel/core/service/books"
 	contextsvc "github.com/danmo-ai/danmo-novel/core/service/context"
 	"github.com/danmo-ai/danmo-novel/core/service/gates"
 	"github.com/google/uuid"
@@ -20,23 +21,22 @@ type Runner struct {
 	// KnowledgeDocs are author-attached reference articles appended to the user
 	// prompt as method/style reference (never as canon facts).
 	KnowledgeDocs []string
+	// ModelMaxOut returns the assigned model's catalog max_output (0 = unknown).
+	ModelMaxOut func(modelID string) int
 }
 
 func New(llm port.LLMProvider) *Runner { return &Runner{LLM: llm} }
 
-// withKnowledge appends author-attached knowledge articles to the user prompt.
+func (r *Runner) modelMaxOut(modelID string) int {
+	if r == nil || r.ModelMaxOut == nil {
+		return 0
+	}
+	return r.ModelMaxOut(modelID)
+}
+
+// withKnowledge merges author-attached knowledge into the JSON user payload.
 func (r *Runner) withKnowledge(user string) string {
-	if len(r.KnowledgeDocs) == 0 {
-		return user
-	}
-	var b strings.Builder
-	b.WriteString(user)
-	b.WriteString("\n\n## 参考知识（作者附加，仅作方法/风格参考，不写入正文事实）\n")
-	for _, doc := range r.KnowledgeDocs {
-		b.WriteString("\n")
-		b.WriteString(doc)
-	}
-	return b.String()
+	return contextsvc.MergeKnowledgeIntoUserPayload(user, r.KnowledgeDocs)
 }
 
 type Result struct {
@@ -79,11 +79,15 @@ func (r *Runner) RunWrite(ctx context.Context, snap domain.BookSnapshot, unit do
 	}
 	var calls []domain.CallRecord
 	for ch := from; ch <= to; ch++ {
-		user := r.withKnowledge(packet.UserPrompt) + fmt.Sprintf("\n\n本次只写第 %d 章，chapters 数组只放这一章。", ch)
+		extra := map[string]any{
+			"chapter":     ch,
+			"chapterRule": fmt.Sprintf("本次只写第 %d 章，chapters 数组只放这一章。", ch),
+		}
 		if len(cand.Chapters) > 0 {
 			prev := cand.Chapters[len(cand.Chapters)-1]
-			user += fmt.Sprintf("\n\n上一章（第 %d 章）正文，仅供承接，不要重复输出：\n%s", prev.Chapter, prev.Body)
+			extra["previousChapter"] = map[string]any{"chapter": prev.Chapter, "body": prev.Body, "note": "仅供承接，不要重复输出"}
 		}
+		user := contextsvc.MergeExtraIntoUserPayload(r.withKnowledge(packet.UserPrompt), extra)
 		draft, rec, err := r.generateChapter(ctx, modelID, packet, user, ch, &calls)
 		if err != nil {
 			return Result{Calls: calls, Packet: packet}, err
@@ -133,37 +137,130 @@ func (r *Runner) RunOutline(ctx context.Context, snap domain.BookSnapshot, volum
 }
 
 func (r *Runner) RunPlan(ctx context.Context, snap domain.BookSnapshot, volume int, modelID string) (Result, error) {
-	packet := contextsvc.BuildPlanPacket(snap, volume)
+	return r.RunPlanMode(ctx, snap, volume, modelID, domain.PlanModeVolume, "")
+}
+
+// RunPlanMode runs 立项 / 重新立项 / 重写卷纲.
+func (r *Runner) RunPlanMode(ctx context.Context, snap domain.BookSnapshot, volume int, modelID, mode, instruction string, preservePaths ...[]string) (Result, error) {
+	var preserve []string
+	if len(preservePaths) > 0 {
+		preserve = preservePaths[0]
+	}
+	if mode == "" {
+		if books.HasBookOutline(snap) {
+			mode = domain.PlanModeVolume
+		} else {
+			mode = domain.PlanModeInit
+		}
+	}
+	full := mode == domain.PlanModeInit || mode == domain.PlanModeReinit
+	if !full {
+		if volume < 1 {
+			volume = 1
+		}
+		if !books.HasBookOutline(snap) {
+			return Result{}, fmt.Errorf("生成卷纲前需先完成立项（缺少 outline/book_outline.md）")
+		}
+	}
+	packet := contextsvc.BuildPlanPacketWithMode(snap, volume, mode, instruction, r.modelMaxOut(modelID))
 	return r.runJSON(ctx, snap, packet, modelID, domain.TaskPlan, "", "", func(raw string, cand *domain.Candidate) error {
 		var parsed struct {
 			Cast                  []map[string]any `json:"cast"`
 			BookOutlineMarkdown   string           `json:"bookOutlineMarkdown"`
 			VolumeOutlineMarkdown string           `json:"volumeOutlineMarkdown"`
+			Settings              *struct {
+				Files map[string]string `json:"files"`
+			} `json:"settings"`
 		}
 		if err := unmarshalJSON(raw, &parsed); err != nil {
 			return err
 		}
-		if strings.TrimSpace(parsed.VolumeOutlineMarkdown) == "" {
-			return fmt.Errorf("empty volume outline")
+		cand.Mode = mode
+		if mode == domain.PlanModeReinit && len(preserve) > 0 {
+			cand.PreservePaths = append([]string(nil), preserve...)
 		}
-		cand.PlanMarkdown = map[string]string{
-			"book_outline":   parsed.BookOutlineMarkdown,
-			"volume_outline": parsed.VolumeOutlineMarkdown,
+		cand.PlanMarkdown = map[string]string{}
+		if full {
+			if strings.TrimSpace(parsed.BookOutlineMarkdown) == "" {
+				return fmt.Errorf("empty book outline")
+			}
+			cand.PlanMarkdown["book_outline"] = parsed.BookOutlineMarkdown
+			b, _ := json.Marshal(parsed.Cast)
+			cand.PlanMarkdown["cast_json"] = string(b)
+			if parsed.Settings == nil || len(parsed.Settings.Files) == 0 {
+				return fmt.Errorf("立项必须输出 settings.files")
+			}
+			cand.PlanSettings = map[string]string{}
+			for _, path := range books.PlanSettingsPaths {
+				body := strings.TrimSpace(parsed.Settings.Files[path])
+				if body == "" {
+					return fmt.Errorf("缺少设定文件: %s", path)
+				}
+				cand.PlanSettings[path] = parsed.Settings.Files[path]
+			}
+			for path := range parsed.Settings.Files {
+				if !books.IsPlanSettingsPath(path) {
+					return fmt.Errorf("不允许的设定路径: %s", path)
+				}
+			}
+			// Ignore accidental volume output from init/reinit.
+		} else {
+			if strings.TrimSpace(parsed.VolumeOutlineMarkdown) == "" {
+				return fmt.Errorf("empty volume outline")
+			}
+			if parsed.Settings != nil && len(parsed.Settings.Files) > 0 {
+				return fmt.Errorf("重写卷纲不得输出 settings")
+			}
+			if len(parsed.Cast) > 0 {
+				return fmt.Errorf("重写卷纲不得输出 cast")
+			}
+			if strings.TrimSpace(parsed.BookOutlineMarkdown) != "" {
+				return fmt.Errorf("重写卷纲不得输出 bookOutlineMarkdown")
+			}
+			cand.PlanMarkdown["volume_outline"] = parsed.VolumeOutlineMarkdown
+			cand.VolumeID = packet.VolumeID
 		}
-		b, _ := json.Marshal(parsed.Cast)
-		cand.PlanMarkdown["cast_json"] = string(b)
 		return nil
 	}, func(cand domain.Candidate) gates.Report {
 		rep := gates.Report{OK: true, Counts: map[string]int{}}
-		if strings.TrimSpace(cand.PlanMarkdown["volume_outline"]) == "" {
+		if full {
+			if strings.TrimSpace(cand.PlanMarkdown["book_outline"]) == "" {
+				rep.OK = false
+				rep.Findings = append(rep.Findings, domain.ReviewFinding{ID: "plan-book", Severity: "blocking", Source: "local_gate", Title: "缺少全书总纲"})
+			}
+			for _, path := range books.PlanSettingsPaths {
+				if strings.TrimSpace(cand.PlanSettings[path]) == "" {
+					rep.OK = false
+					rep.Findings = append(rep.Findings, domain.ReviewFinding{ID: "plan-setting-" + path, Severity: "blocking", Source: "local_gate", Title: "缺少设定: " + path})
+				}
+			}
+			if strings.TrimSpace(cand.PlanMarkdown["cast_json"]) == "[]" || strings.TrimSpace(cand.PlanMarkdown["cast_json"]) == "" {
+				rep.OK = false
+				rep.Findings = append(rep.Findings, domain.ReviewFinding{ID: "plan-cast", Severity: "blocking", Source: "local_gate", Title: "未生成人物卡"})
+			} else if !castHasProtagonist(cand.PlanMarkdown["cast_json"]) {
+				rep.OK = false
+				rep.Findings = append(rep.Findings, domain.ReviewFinding{ID: "plan-protagonist", Severity: "blocking", Source: "local_gate", Title: "缺少 protagonist"})
+			}
+		} else if strings.TrimSpace(cand.PlanMarkdown["volume_outline"]) == "" {
 			rep.OK = false
 			rep.Findings = append(rep.Findings, domain.ReviewFinding{ID: "plan-volume", Severity: "blocking", Source: "local_gate", Title: "缺少卷纲"})
 		}
-		if strings.TrimSpace(cand.PlanMarkdown["cast_json"]) == "[]" || strings.TrimSpace(cand.PlanMarkdown["cast_json"]) == "" {
-			rep.Findings = append(rep.Findings, domain.ReviewFinding{ID: "plan-cast", Severity: "advisory", Source: "local_gate", Title: "未生成人物卡，需手工补充"})
-		}
 		return rep
 	})
+}
+
+func castHasProtagonist(castJSON string) bool {
+	var cast []map[string]any
+	if err := json.Unmarshal([]byte(castJSON), &cast); err != nil {
+		return false
+	}
+	for _, c := range cast {
+		role, _ := c["role"].(string)
+		if strings.EqualFold(strings.TrimSpace(role), "protagonist") {
+			return true
+		}
+	}
+	return false
 }
 
 func (r *Runner) RunReview(ctx context.Context, snap domain.BookSnapshot, unit domain.UnitInfo, modelID string) (Result, error) {
@@ -220,7 +317,9 @@ func (r *Runner) RunRevise(ctx context.Context, snap domain.BookSnapshot, unit d
 	packet.TaskKind = domain.TaskRevise
 	packet.Policy = contextsvc.DefaultPolicy(domain.TaskRevise, 0)
 	packet.SystemPrompt = "你是小说修订助手。只针对列出的审校问题改正文，返回 JSON {\"chapters\":[...],\"canonChanges\":[]}。不要新增自由审稿轮次。"
-	packet.UserPrompt += "\n\n请定向修订并返回完整 chapters。"
+	packet.UserPrompt = contextsvc.MergeExtraIntoUserPayload(packet.UserPrompt, map[string]any{
+		"reviseNote": "请定向修订并返回完整 chapters。",
+	})
 	return r.runJSON(ctx, snap, packet, modelID, domain.TaskRevise, unit.UnitID, unit.ProsePath, func(raw string, cand *domain.Candidate) error {
 		var parsed struct {
 			Chapters     []domain.ChapterDraft `json:"chapters"`
@@ -314,9 +413,14 @@ func (r *Runner) repairFailedChapters(ctx context.Context, modelID string, packe
 		if !ok {
 			continue
 		}
-		user := r.withKnowledge(packet.UserPrompt) +
-			fmt.Sprintf("\n\n第 %d 章未通过本地硬门，请定向修复这一章（其他章已合格，不需重写）：\n%s\n原章正文：\n%s\n\n只返回这一章的 JSON：{\"chapters\":[{\"chapter\":%d,\"title\":\"...\",\"body\":\"...\"}]}",
-				ch.Chapter, detailedFindings(fs), ch.Body, ch.Chapter)
+		user := contextsvc.MergeExtraIntoUserPayload(r.withKnowledge(packet.UserPrompt), map[string]any{
+			"chapter": ch.Chapter,
+			"repairChapter": map[string]any{
+				"findings": detailedFindings(fs),
+				"body":     ch.Body,
+				"rule":     fmt.Sprintf("第 %d 章未通过本地硬门，请定向修复这一章（其他章已合格，不需重写）；只返回这一章 JSON。", ch.Chapter),
+			},
+		})
 		fixed, rec, err := r.generateChapter(ctx, modelID, packet, user, ch.Chapter, calls)
 		rec.Step = fmt.Sprintf("repair-ch%d", ch.Chapter)
 		(*calls)[len(*calls)-1] = rec
@@ -354,7 +458,7 @@ func (r *Runner) runJSON(
 		}
 		user = r.withKnowledge(packet.UserPrompt)
 		if attempt > 1 {
-			user = r.withKnowledge(packet.UserPrompt) + repairPrompt(lastErr)
+			user = contextsvc.MergeRepairIntoUserPayload(user, lastErr)
 		}
 		raw, rec, err := r.chat(ctx, modelID, packet.SystemPrompt, user, packet.Policy)
 		if attempt > 1 {
@@ -414,7 +518,9 @@ func (r *Runner) chat(ctx context.Context, modelID, system, user string, policy 
 			{Role: "system", Content: system},
 			{Role: "user", Content: user},
 		},
-		GenParams: &port.ModelGenParams{MaxTokens: policy.MaxOutputTokens, Temperature: 0.7},
+		// Temperature 0 = omit; model catalog / provider default fills when needed.
+		// Kimi K3.x rejects non-1 temperature — dialect strips fixed sampling fields.
+		GenParams: &port.ModelGenParams{MaxTokens: policy.MaxOutputTokens},
 	}
 	resp, err := r.LLM.Chat(ctx, req)
 	rec.DurationMs = time.Since(start).Milliseconds()
@@ -497,17 +603,6 @@ func detailedFindings(fs []domain.ReviewFinding) string {
 		b.WriteString("\n")
 	}
 	return b.String()
-}
-
-// repairPrompt builds a 定向修复指令：告诉模型错在哪、差多少、怎么改，
-// 并要求保留已通过的部分，避免全量重生成把好的内容改坏。
-func repairPrompt(err error) string {
-	if err == nil {
-		return ""
-	}
-	return "\n\n---\n上一次输出未通过校验。请定向修复，不要推翻重写：\n" +
-		err.Error() +
-		"\n要求：1) 保留已通过的部分原样；2) 只修正上面指出的问题；3) 返回完整的、符合原格式要求的 JSON。"
 }
 
 func clip(s string, n int) string {

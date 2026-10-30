@@ -207,7 +207,8 @@ func parseVolumeCast(md string) []string {
 		}
 		stem := strings.TrimSpace(strings.TrimPrefix(s, "-"))
 		stem = strings.Trim(stem, "`")
-		if i := strings.IndexAny(stem, " \t（("); i > 0 {
+		// stem 后常接说明：空格 / 中英文冒号 / 括号。只取标识本身。
+		if i := strings.IndexAny(stem, " \t：:（("); i > 0 {
 			stem = stem[:i]
 		}
 		// 只接受合法 stem（英文小写连字符）；中文人名/散文一律跳过。
@@ -441,8 +442,17 @@ func CreateBookScaffold(libraryRoot, bookID, title, genre string) (string, error
 	return root, nil
 }
 
+// HasBookOutline reports whether the book has an accepted/authored book outline.
+func HasBookOutline(snap domain.BookSnapshot) bool {
+	return strings.TrimSpace(snap.Files["outline/book_outline.md"]) != ""
+}
+
 // SelectPrimaryAction mirrors workbench next-step rules at a coarse level.
+// Order: 无总纲→立项；有总纲无卷纲→生成卷纲；之后进入单元闭环。
 func SelectPrimaryAction(snap domain.BookSnapshot) (kind domain.TaskKind, unitID string, volume int) {
+	if !HasBookOutline(snap) {
+		return domain.TaskPlan, "", 1
+	}
 	if len(snap.Volumes) == 0 {
 		return domain.TaskPlan, "", 1
 	}

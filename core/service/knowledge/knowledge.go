@@ -1,20 +1,27 @@
 package knowledge
 
 import (
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/danmo-ai/danmo-novel/core/resource/novel"
 )
 
-// Doc is one author-owned reference article. Knowledge is NOT canon: it is
-// method/style/subject reference the author may attach to a call explicitly.
+// Doc is one reference article. Knowledge is NOT canon: it is method/style/
+// subject reference the author may attach to a call explicitly. Built-in
+// documents ship in the binary; same-ID local files are author-owned overlays.
 type Doc struct {
-	ID       string `json:"id"`      // filename without .md
-	Title    string `json:"title"`   // first H1 or id
-	Summary  string `json:"summary"` // first non-heading paragraph, clipped
-	Bytes    int    `json:"bytes"`
-	Category string `json:"category"` // general | genre | custom
+	ID         string `json:"id"`      // filename without .md
+	Title      string `json:"title"`   // first H1 or id
+	Summary    string `json:"summary"` // first non-heading paragraph, clipped
+	Bytes      int    `json:"bytes"`
+	Category   string `json:"category"` // general | genre | custom
+	Builtin    bool   `json:"builtin"`
+	Customized bool   `json:"customized"` // local content differs from the built-in version
 }
 
 // CategoryOf classifies by filename prefix: NN-genre-* → genre, NN-* → general,
@@ -33,48 +40,106 @@ func Root(libraryRoot string) string {
 	return filepath.Join(libraryRoot, "knowledge")
 }
 
-// List scans library/knowledge/*.md (flat, author-managed).
+// List merges built-in articles with the flat, author-managed local library.
+// A missing local file does not hide a built-in article; an edited local file
+// takes precedence and is never silently overwritten by a release upgrade.
 func List(libraryRoot string) ([]Doc, error) {
-	dir := Root(libraryRoot)
-	entries, err := os.ReadDir(dir)
-	if os.IsNotExist(err) {
-		return []Doc{}, nil
+	local, err := localDocuments(libraryRoot)
+	if err != nil {
+		return nil, err
+	}
+	builtins := novel.BuiltinKnowledge()
+	out := make([]Doc, 0, len(builtins)+len(local))
+	for _, article := range builtins {
+		raw := article.Content
+		customized := false
+		if localRaw, ok := local[article.ID]; ok {
+			raw = localRaw
+			customized = raw != article.Content
+			delete(local, article.ID)
+		}
+		out = append(out, newDoc(article.ID, raw, true, customized))
+	}
+	for id, raw := range local {
+		out = append(out, newDoc(id, raw, false, false))
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Title == out[j].Title {
+			return out[i].ID < out[j].ID
+		}
+		return out[i].Title < out[j].Title
+	})
+	return out, nil
+}
+
+func newDoc(id, raw string, builtin, customized bool) Doc {
+	return Doc{
+		ID: id, Title: titleOf(id, raw), Summary: summaryOf(raw), Bytes: len(raw),
+		Category: CategoryOf(id), Builtin: builtin, Customized: customized,
+	}
+}
+
+func localDocuments(libraryRoot string) (map[string]string, error) {
+	entries, err := os.ReadDir(Root(libraryRoot))
+	if errors.Is(err, fs.ErrNotExist) {
+		return map[string]string{}, nil
 	}
 	if err != nil {
 		return nil, err
 	}
-	var out []Doc
-	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".md") {
+	out := map[string]string{}
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".md") {
 			continue
 		}
-		id := strings.TrimSuffix(e.Name(), ".md")
-		raw, _ := os.ReadFile(filepath.Join(dir, e.Name()))
-		out = append(out, Doc{
-			ID:       id,
-			Title:    titleOf(id, string(raw)),
-			Summary:  summaryOf(string(raw)),
-			Bytes:    len(raw),
-			Category: CategoryOf(id),
-		})
+		raw, err := os.ReadFile(filepath.Join(Root(libraryRoot), entry.Name()))
+		if err != nil {
+			return nil, err
+		}
+		out[strings.TrimSuffix(entry.Name(), ".md")] = string(raw)
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Title < out[j].Title })
 	return out, nil
 }
 
-// Read returns the full article content for attaching to a packet.
+// Read returns the author's overlay, or the built-in article when no overlay
+// exists. Built-ins therefore work with an empty or read-only library root.
 func Read(libraryRoot, id string) (string, error) {
-	if id == "" || strings.ContainsAny(id, "/\\..") {
+	if !validID(id) {
 		return "", os.ErrInvalid
 	}
-	b, err := os.ReadFile(filepath.Join(Root(libraryRoot), id+".md"))
-	return string(b), err
+	raw, err := os.ReadFile(filepath.Join(Root(libraryRoot), id+".md"))
+	if err == nil {
+		return string(raw), nil
+	}
+	if !errors.Is(err, fs.ErrNotExist) {
+		return "", err
+	}
+	if builtin, ok := novel.BuiltinKnowledgeDocument(id); ok {
+		return builtin, nil
+	}
+	return "", err
+}
+
+// Restore removes only the local overlay, exposing the built-in article again.
+func Restore(libraryRoot, id string) (string, error) {
+	builtin, ok := novel.BuiltinKnowledgeDocument(id)
+	if !ok {
+		return "", os.ErrNotExist
+	}
+	if err := os.Remove(filepath.Join(Root(libraryRoot), id+".md")); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return "", err
+	}
+	return builtin, nil
+}
+
+func validID(id string) bool {
+	return id != "" && !strings.ContainsAny(id, "/\\") && !strings.Contains(id, "..")
 }
 
 // Write saves an article (author edits own copy; no candidate flow needed
 // because knowledge is not canon and never auto-enters context).
 func Write(libraryRoot, id, content string) error {
-	if id == "" || strings.ContainsAny(id, "/\\") || strings.Contains(id, "..") {
+	if !validID(id) {
 		return os.ErrInvalid
 	}
 	if err := os.MkdirAll(Root(libraryRoot), 0o755); err != nil {

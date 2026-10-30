@@ -7,6 +7,7 @@ import (
 
 	"github.com/danmo-ai/danmo-novel/core/domain"
 	"github.com/danmo-ai/danmo-novel/core/runtimepaths"
+	"github.com/danmo-ai/danmo-novel/core/service/llmconfig"
 )
 
 type Settings struct {
@@ -44,6 +45,9 @@ func Load() (*Manager, error) {
 	}
 	if m.settings.LibraryRoot == "" {
 		m.settings.LibraryRoot = runtimepaths.LibraryRoot()
+	}
+	if len(m.settings.DefaultModels) == 0 {
+		m.settings.DefaultModels = llmconfig.BuiltInDefaultModels()
 	}
 	return m, m.Save()
 }

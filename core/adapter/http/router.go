@@ -70,6 +70,14 @@ func NewRouter(app *App) *gin.Engine {
 			}
 			c.JSON(200, gin.H{"ok": true})
 		})
+		api.POST("/knowledge/:id/restore", func(c *gin.Context) {
+			raw, err := knowledge.Restore(app.Settings.Get().LibraryRoot, c.Param("id"))
+			if err != nil {
+				c.JSON(404, gin.H{"error": "built-in knowledge not found"})
+				return
+			}
+			c.JSON(200, gin.H{"id": c.Param("id"), "content": raw})
+		})
 		api.PUT("/settings/model-assignments", func(c *gin.Context) {
 			var body struct {
 				Assignments []domain.ModelAssignment `json:"assignments"`

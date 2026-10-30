@@ -18,6 +18,7 @@ import (
 	"github.com/danmo-ai/danmo-novel/core/service/books"
 	contextsvc "github.com/danmo-ai/danmo-novel/core/service/context"
 	"github.com/danmo-ai/danmo-novel/core/service/knowledge"
+	"github.com/danmo-ai/danmo-novel/core/service/llmconfig"
 	"github.com/danmo-ai/danmo-novel/core/service/pipeline"
 	"github.com/danmo-ai/danmo-novel/core/store/sqlite"
 	"github.com/google/uuid"
@@ -27,17 +28,32 @@ type Service struct {
 	Store    *sqlite.Store
 	Settings *config.Manager
 	LLM      port.LLMProvider
+	Models   *llmconfig.ModelRegistry
 	Pipeline *pipeline.Runner
 	mu       sync.Mutex
 	cancels  map[string]context.CancelFunc
 }
 
 func New(store *sqlite.Store, settings *config.Manager, llm port.LLMProvider) *Service {
-	return &Service{
+	s := &Service{
 		Store: store, Settings: settings, LLM: llm,
 		Pipeline: pipeline.New(llm),
 		cancels:  map[string]context.CancelFunc{},
 	}
+	s.Pipeline.ModelMaxOut = func(modelID string) int {
+		if s.Models == nil {
+			return 0
+		}
+		return s.Models.MaxOutputTokens(modelID)
+	}
+	return s
+}
+
+func (s *Service) modelMaxOut(modelID string) int {
+	if s == nil || s.Models == nil {
+		return 0
+	}
+	return s.Models.MaxOutputTokens(modelID)
 }
 
 func (s *Service) resolveModel(spec domain.TaskSpec) string {
@@ -139,10 +155,22 @@ func (s *Service) execute(ctx context.Context, run domain.Run, snap domain.BookS
 		}
 		res, err = s.Pipeline.RunOutline(ctx, snap, vnum, ids, modelID)
 	case domain.TaskPlan:
+		mode := strings.TrimSpace(run.Spec.Mode)
+		if mode == "" {
+			if books.HasBookOutline(snap) {
+				mode = domain.PlanModeVolume
+			} else {
+				mode = domain.PlanModeInit
+			}
+		}
 		vnum := 1
-		if len(snap.Volumes) > 0 {
+		if run.Spec.VolumeID != "" {
+			vnum, _ = strconv.Atoi(strings.TrimLeft(strings.TrimPrefix(run.Spec.VolumeID, "v"), "0"))
+			if vnum == 0 {
+				vnum = 1
+			}
+		} else if mode == domain.PlanModeVolume && len(snap.Volumes) > 0 {
 			vnum = snap.Volumes[len(snap.Volumes)-1].Volume
-			// if all units finalized, next volume; else current
 			allDone := true
 			for _, u := range snap.Units {
 				if u.Volume == vnum && u.Status != domain.UnitReviewed {
@@ -154,7 +182,7 @@ func (s *Service) execute(ctx context.Context, run domain.Run, snap domain.BookS
 				vnum++
 			}
 		}
-		res, err = s.Pipeline.RunPlan(ctx, snap, vnum, modelID)
+		res, err = s.Pipeline.RunPlanMode(ctx, snap, vnum, modelID, mode, run.Spec.Instruction, run.Spec.PreservePaths)
 	case domain.TaskReview:
 		unit, ok := findUnit(snap, run.Spec.UnitID)
 		if !ok {
@@ -264,11 +292,24 @@ func (s *Service) PreviewPacket(_ context.Context, spec domain.TaskSpec) (domain
 		}
 		return contextsvc.BuildOutlinePacket(snap, vnum, ids), nil
 	case domain.TaskPlan:
+		mode := strings.TrimSpace(spec.Mode)
+		if mode == "" {
+			if books.HasBookOutline(snap) {
+				mode = domain.PlanModeVolume
+			} else {
+				mode = domain.PlanModeInit
+			}
+		}
 		vnum := 1
-		if len(snap.Volumes) > 0 {
+		if spec.VolumeID != "" {
+			vnum, _ = strconv.Atoi(strings.TrimLeft(strings.TrimPrefix(spec.VolumeID, "v"), "0"))
+			if vnum == 0 {
+				vnum = 1
+			}
+		} else if mode == domain.PlanModeVolume && len(snap.Volumes) > 0 {
 			vnum = snap.Volumes[len(snap.Volumes)-1].Volume
 		}
-		return contextsvc.BuildPlanPacket(snap, vnum), nil
+		return contextsvc.BuildPlanPacketWithMode(snap, vnum, mode, spec.Instruction, s.modelMaxOut(s.resolveModel(spec))), nil
 	case domain.TaskReview:
 		unit, ok := findUnit(snap, spec.UnitID)
 		if !ok {
@@ -401,6 +442,14 @@ func (s *Service) Accept(ctx context.Context, cmd domain.AcceptCommand) (domain.
 			}
 		}
 	case domain.TaskPlan:
+		if run, rerr := s.Store.GetRun(ctx, cand.RunID); rerr == nil {
+			if cand.Mode == "" {
+				cand.Mode = run.Spec.Mode
+			}
+			if len(cand.PreservePaths) == 0 && len(run.Spec.PreservePaths) > 0 {
+				cand.PreservePaths = append([]string(nil), run.Spec.PreservePaths...)
+			}
+		}
 		if err := books.AcceptPlan(root, cand); err != nil {
 			return domain.Candidate{}, fmt.Errorf("accept plan: %w", err)
 		}

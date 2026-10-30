@@ -85,7 +85,9 @@ export interface Candidate {
   volumeId?: string
   chapters?: ChapterDraft[]
   unitOutlines?: any[]
+  mode?: string
   planMarkdown?: Record<string, string>
+  planSettings?: Record<string, string>
   replacement?: string
   findings?: ReviewFinding[]
   canonChanges?: any[]

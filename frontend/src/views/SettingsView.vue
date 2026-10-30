@@ -71,7 +71,7 @@ const testing = ref<Record<string, boolean>>({})
 const testResult = ref<Record<string, string>>({})
 // 阶段建议：该阶段对模型的能力要求与推理等级建议。
 const roles = [
-  { id: 'plan', label: '规划', hint: '全书/卷结构、人物关系与伏笔布局，需要强逻辑与长程一致性。建议推理强的模型，effort medium–high。', effort: 'medium' },
+  { id: 'plan', label: '立项', hint: '立项=总纲派生设定成套；重写设定携带依据；重新立项可保留精修文件。建议推理强的模型，effort medium–high。', effort: 'medium' },
   { id: 'outline', label: '细纲', hint: '单元合同的欲望/阻碍/选择与场面节拍，需要结构化输出与因果链。建议 effort medium。', effort: 'medium' },
   { id: 'write', label: '写作', hint: '正文 prose，文风与节奏优先；过长推理会稀释文气。建议文风好的模型，effort low–medium。', effort: 'low' },
   { id: 'review', label: '审校', hint: '找 OOC、连续性、写穿与 AI 味，需要严格比对与挑错能力。建议 effort medium–high。', effort: 'medium' },

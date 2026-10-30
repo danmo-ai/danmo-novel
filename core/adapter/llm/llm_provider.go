@@ -72,6 +72,9 @@ func (c *DefaultLLMProviderClient) Chat(ctx context.Context, req port.LLMChatReq
 				rp := registryParams
 				if gp.MaxTokens == 0 {
 					gp.MaxTokens = rp.MaxTokens
+				} else if rp.MaxTokens > 0 && gp.MaxTokens > rp.MaxTokens {
+					// Never request above the model's catalog max_output.
+					gp.MaxTokens = rp.MaxTokens
 				}
 				if gp.Temperature == 0 {
 					gp.Temperature = rp.Temperature

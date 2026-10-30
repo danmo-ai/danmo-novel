@@ -3,7 +3,7 @@ import { computed, onMounted, ref } from 'vue'
 import { useAppStore } from '@/stores/app'
 import { api } from '@/api/client'
 
-type Doc = { id: string; title: string; summary: string; bytes: number; category: string }
+type Doc = { id: string; title: string; summary: string; bytes: number; category: string; builtin: boolean; customized: boolean }
 const store = useAppStore()
 const docs = ref<Doc[]>([])
 const selectedId = ref('')
@@ -50,20 +50,53 @@ async function save() {
     content.value = draft.value
     editing.value = false
     await load()
-    store.note('已保存')
+    store.note('已保存到本地资料库；内置原文仍保留')
+  } catch (e) { store.fail(e) } finally { saving.value = false }
+}
+async function restore() {
+  if (!current.value?.builtin || !confirm('恢复为当前版本的内置原文？你在本地对这篇文章的修改将被移除。')) return
+  saving.value = true
+  try {
+    const res = await api.post<{ content: string }>(`/api/knowledge/${selectedId.value}/restore`)
+    content.value = res.content
+    draft.value = res.content
+    editing.value = false
+    await load()
+    store.note('已恢复为内置原文')
   } catch (e) { store.fail(e) } finally { saving.value = false }
 }
 const rendered = computed(() => renderMarkdown(content.value))
+type Block = { kind: string; text: string; items?: string[]; rows?: string[][] }
 function renderMarkdown(raw: string) {
-  const blocks: { kind: string; text: string; items?: string[] }[] = []
+  const blocks: Block[] = []
   let list: string[] = []
   const flush = () => { if (list.length) { blocks.push({ kind: 'ul', text: '', items: list }); list = [] } }
-  for (const line of raw.split('\n')) {
-    const t = line.trim()
+  const lines = raw.split('\n')
+  for (let i = 0; i < lines.length; i++) {
+    const t = lines[i].trim()
+    if (/^\|.+\|$/.test(t) && /^\|[\s:|-]+\|$/.test(lines[i + 1]?.trim() || '')) {
+      flush()
+      const rows: string[][] = []
+      const cells = (line: string) => line.trim().replace(/^\||\|$/g, '').split('|').map((cell) => cell.trim())
+      rows.push(cells(t))
+      i += 2
+      while (i < lines.length && /^\|.+\|$/.test(lines[i].trim())) { rows.push(cells(lines[i])); i++ }
+      i--
+      blocks.push({ kind: 'table', text: '', rows })
+      continue
+    }
     if (/^#{1,3}\s/.test(t)) { flush(); blocks.push({ kind: 'h' + t.match(/^#+/)![0].length, text: t.replace(/^#+\s*/, '') }); continue }
-    if (/^[-*]\s+/.test(t)) { list.push(t.replace(/^[-*]\s+/, '')); continue }
+    if (/^[-*]\s+(?!\[[ xX]\])/.test(t)) { list.push(t.replace(/^[-*]\s+/, '')); continue }
     flush()
-    if (t) blocks.push({ kind: 'p', text: t })
+    if (/^```/.test(t)) {
+      const code: string[] = []
+      while (i + 1 < lines.length && !lines[i + 1].trim().startsWith('```')) code.push(lines[++i])
+      i++
+      blocks.push({ kind: 'code', text: code.join('\n') })
+      continue
+    }
+    if (/^- \[[ xX]\]\s+/.test(t)) { list.push(t.replace(/^[-*]\s+/, '')); continue }
+    if (t) blocks.push({ kind: t.startsWith('>') ? 'quote' : 'p', text: t.replace(/^>\s?/, '') })
   }
   flush()
   return blocks
@@ -76,21 +109,21 @@ function renderMarkdown(raw: string) {
       <div>
         <p class="eyebrow">Knowledge Base</p>
         <h1>知识库</h1>
-        <p class="sub">作者的方法与题材参考资料。不是 canon，不会自动进入上下文——在创作确认窗口勾选后作为「方法/风格参考」附加。</p>
+        <p class="sub">内置创作方法与题材指南随版本提供，本地编辑会形成个人副本。知识不是 canon，只有在创作确认窗口勾选后才作为「方法/风格参考」附加。</p>
       </div>
       <span class="doc-count">{{ docs.length }} 篇</span>
     </header>
 
     <div class="kb-layout">
       <aside class="kb-nav panel">
-        <input v-model="search" class="kb-search" placeholder="搜索标题 / 内容" />
+        <input v-model="search" class="kb-search" placeholder="搜索标题 / 摘要" />
         <div class="kb-cats">
           <button v-for="c in CATEGORIES" :key="c.id" :class="{ active: activeCategory === c.id }" @click="activeCategory = c.id">{{ c.label }}</button>
         </div>
         <button v-for="d in filtered" :key="d.id" class="kb-item" :class="{ active: selectedId === d.id }" @click="select(d.id)">
           <strong>{{ d.title }}</strong>
           <small>{{ d.summary || d.id }}</small>
-          <span class="kb-meta">{{ d.category === 'genre' ? '题材' : d.category === 'general' ? '方法' : '自建' }} · {{ (d.bytes / 1024).toFixed(1) }}KB</span>
+          <span class="kb-meta">{{ d.category === 'genre' ? '题材' : d.category === 'general' ? '方法' : '自建' }} · {{ d.customized ? '已编辑' : d.builtin ? '内置' : '个人' }} · {{ (d.bytes / 1024).toFixed(1) }}KB</span>
         </button>
         <p v-if="!filtered.length" class="kb-empty">没有匹配的文章。</p>
       </aside>
@@ -98,8 +131,15 @@ function renderMarkdown(raw: string) {
       <article class="kb-content panel">
         <template v-if="current">
           <header class="kb-content-head">
-            <div><h2>{{ current.title }}</h2><span class="kb-path">knowledge/{{ current.id }}.md</span></div>
-            <button class="primary" :disabled="saving" @click="editing ? save() : (editing = true)">{{ editing ? (saving ? '保存中' : '保存') : '编辑' }}</button>
+            <div>
+              <div class="kb-title-row"><h2>{{ current.title }}</h2><span class="kb-badge" :class="{ edited: current.customized }">{{ current.customized ? '本地已编辑' : current.builtin ? '内置' : '作者自建' }}</span></div>
+              <span class="kb-path">{{ current.customized ? '本地副本覆盖 · ' : '' }}knowledge/{{ current.id }}.md</span>
+            </div>
+            <div class="kb-actions">
+              <button v-if="current.builtin && current.customized && !editing" :disabled="saving" @click="restore">{{ saving ? '恢复中' : '恢复内置' }}</button>
+              <button v-if="editing" @click="editing = false; draft = content">取消</button>
+              <button class="primary" :disabled="saving" @click="editing ? save() : (editing = true)">{{ editing ? (saving ? '保存中' : '保存副本') : '编辑' }}</button>
+            </div>
           </header>
           <textarea v-if="editing" v-model="draft" class="kb-editor" spellcheck="false" />
           <div v-else class="kb-body">
@@ -107,6 +147,9 @@ function renderMarkdown(raw: string) {
               <h3 v-if="b.kind.startsWith('h')" :class="b.kind">{{ b.text }}</h3>
               <p v-else-if="b.kind === 'p'">{{ b.text }}</p>
               <ul v-else-if="b.kind === 'ul'"><li v-for="(it, j) in b.items" :key="j">{{ it }}</li></ul>
+              <div v-else-if="b.kind === 'table'" class="kb-table-wrap"><table><thead><tr><th v-for="(cell, j) in b.rows?.[0]" :key="j">{{ cell }}</th></tr></thead><tbody><tr v-for="(row, ri) in b.rows?.slice(1)" :key="ri"><td v-for="(cell, ci) in row" :key="ci">{{ cell }}</td></tr></tbody></table></div>
+              <pre v-else-if="b.kind === 'code'" class="kb-code">{{ b.text }}</pre>
+              <blockquote v-else-if="b.kind === 'quote'">{{ b.text }}</blockquote>
             </template>
           </div>
         </template>
@@ -137,6 +180,10 @@ function renderMarkdown(raw: string) {
 .kb-content { overflow: hidden; }
 .kb-content-head { display: flex; justify-content: space-between; align-items: center; padding: 18px 24px; border-bottom: 1px solid var(--line); gap: 12px; }
 .kb-content-head h2 { margin: 0; font-family: var(--font-prose); font-size: 22px; }
+.kb-title-row, .kb-actions { display: flex; align-items: center; gap: 10px; }
+.kb-actions { flex-shrink: 0; }
+.kb-badge { padding: 2px 7px; border: 1px solid var(--line); border-radius: 12px; color: var(--accent); font-size: 10px; white-space: nowrap; }
+.kb-badge.edited { color: var(--ink-soft); }
 .kb-path { font-size: 11px; color: var(--ink-soft); }
 .kb-body { padding: 24px 30px; max-height: 72vh; overflow-y: auto; }
 .kb-body h3 { font-family: var(--font-prose); margin: 20px 0 10px; }
@@ -146,6 +193,13 @@ function renderMarkdown(raw: string) {
 .kb-body p { color: var(--ink-soft); font-size: 14px; line-height: 1.85; margin: 8px 0; }
 .kb-body ul { padding-left: 20px; }
 .kb-body li { color: var(--ink-soft); font-size: 13px; line-height: 1.8; margin-bottom: 4px; }
+.kb-table-wrap { overflow-x: auto; margin: 14px 0; }
+.kb-body table { width: 100%; border-collapse: collapse; font-size: 12px; line-height: 1.65; }
+.kb-body th, .kb-body td { border: 1px solid var(--line); padding: 8px 10px; text-align: left; vertical-align: top; min-width: 80px; }
+.kb-body th { color: var(--ink); background: rgba(15,107,92,.05); font-weight: 600; }
+.kb-body td { color: var(--ink-soft); }
+.kb-code { padding: 12px; background: rgba(15,107,92,.05); border-radius: 8px; overflow-x: auto; font: 12px/1.7 ui-monospace, monospace; white-space: pre-wrap; }
+.kb-body blockquote { margin: 12px 0; padding: 4px 14px; border-left: 3px solid var(--accent); color: var(--ink-soft); font-size: 13px; line-height: 1.8; }
 .kb-editor { width: 100%; min-height: 66vh; border: none; padding: 24px 30px; font: 13px/1.8 ui-monospace, monospace; resize: vertical; background: transparent; outline: none; }
 @media (max-width: 900px) { .kb-layout { grid-template-columns: 1fr; } .kb-nav { max-height: 300px; } }
 </style>

@@ -53,7 +53,12 @@ func applyProtocolDialectRequest(body map[string]any, dialect, effort string, gp
 	case domain.ProtocolDialectKimiK3:
 		// K3 / K3.1 Pro / K2.8 Preview: thinking always on; no thinking object.
 		// Official values: low|high|max. K3.1 Pro rejects thinking.disabled (HTTP 400).
+		// Sampling is fixed (temperature=1, top_p=0.95, penalties=0) — omit or API 400.
 		body["reasoning_effort"] = mapKimiK3Effort(effort)
+		delete(body, "temperature")
+		delete(body, "top_p")
+		delete(body, "presence_penalty")
+		delete(body, "frequency_penalty")
 	case domain.ProtocolDialectGLM:
 		// docs.z.ai — thinking.type; clear_thinking:false preserves CoT for tools.
 		if on {

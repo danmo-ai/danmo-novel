@@ -10,6 +10,7 @@ import ReviewWorkspace from '@/components/book/ReviewWorkspace.vue'
 import UnitProse from '@/components/book/UnitProse.vue'
 import UnitContract from '@/components/book/UnitContract.vue'
 import RunConfirmDialog from '@/components/book/RunConfirmDialog.vue'
+import { planModeLabel as sharedPlanModeLabel, runKindLabel } from '@/utils/runLabels'
 
 const route = useRoute()
 const store = useAppStore()
@@ -27,7 +28,9 @@ const customInstruction = ref('')
 const editingProse = ref(false)
 const editingOutline = ref(false)
 const isProseUnit = computed(() => Boolean(selectedUnit.value?.hasProse && selectedUnit.value.prosePath === editorPath.value))
-const stageLabels: Record<string, string> = { plan: '规划', outline: '细纲', write: '写作', review: '审校', finalize: '定稿', revise: '修订', local_edit: '局部编辑', rewrite_entity: '重写优化' }
+const stageLabels: Record<string, string> = { plan: '立项', outline: '细纲', write: '写作', review: '审校', finalize: '定稿', revise: '修订', local_edit: '局部编辑', rewrite_entity: '重写设定' }
+const hasBookOutline = computed(() => Boolean((store.currentBook?.files?.['outline/book_outline.md'] || '').trim()))
+const hasVolumes = computed(() => (store.currentBook?.volumes?.length || 0) > 0)
 // 单元驱动工作流：proposed→细纲 → accepted→正文 → drafted→审校 → reviewed→定稿。
 // 逐单元闭环推进，下一单元细纲才能读到最新连续性账本。
 const FLOW_STEPS = [
@@ -74,8 +77,10 @@ const primaryInfo = computed(() => {
   if (!p) return { label: '继续创作', description: '选择下一步', target: '', stage: '写作' }
   const target = p.unitId || `第 ${p.volume} 卷`
   if (p.kind === 'plan') {
-    const approving = Boolean(store.currentBook?.volumes?.length)
-    return { label: approving ? '批准卷纲' : '生成卷纲', description: approving ? '确认后写入人物与单元' : '生成本卷总纲与单元索引', target, stage: '规划' }
+    if (!hasBookOutline.value) {
+      return { label: '立项', description: '一次生成总纲、全部设定与人物（不含卷纲）', target, stage: '立项' }
+    }
+    return { label: `生成卷纲 · 第 ${p.volume || 1} 卷`, description: '根据总纲生成当前卷纲，并只播种缺失单元', target, stage: '卷纲' }
   }
   if (p.kind === 'outline') return { label: `生成 ${target} 细纲`, description: '第 1 步 · 补全单元写作合同（欲望/阻碍/选择/场面）', target, stage: '细纲' }
   if (p.kind === 'write') return { label: `写 ${target} 正文`, description: '第 2 步 · 按合同生成候选稿；定稿后才开下一单元', target, stage: '写作' }
@@ -141,12 +146,31 @@ async function saveFile(path = editorPath.value, content = editorContent.value) 
 const confirmSpec = ref<Record<string, any> | null>(null)
 const confirmTitle = ref('')
 
-function start(kind: string) {
+function start(kind: string, opts: { mode?: string; volumeId?: string; title?: string } = {}) {
   const book = store.currentBook
   if (!book || busy.value) return
   const spec: any = { kind, bookId: book.summary.id, baseRevision: book.revision }
-  if (selectedUnit.value) spec.unitId = selectedUnit.value.unitId
+  // 立项/卷纲不以当前选中单元为目标，避免运行中心全显示成 U1。
+  if (selectedUnit.value && kind !== 'plan') spec.unitId = selectedUnit.value.unitId
   if (kind === 'outline' && store.primary?.volume) spec.volumeId = `v${String(store.primary.volume).padStart(2, '0')}`
+  if (kind === 'plan') {
+    const mode = opts.mode || (hasBookOutline.value ? 'volume' : 'init')
+    spec.mode = mode
+    delete spec.unitId
+    if (opts.volumeId) spec.volumeId = opts.volumeId
+    else if (mode === 'volume') {
+      const vol = store.primary?.volume || 1
+      spec.volumeId = `v${String(vol).padStart(2, '0')}`
+    }
+    const titles: Record<string, string> = {
+      init: '立项 · 总纲 + 设定 + 人物',
+      reinit: '重新立项 · 覆盖总纲 / 设定 / 人物',
+      volume: opts.title || `${hasVolumes.value ? '重写' : '生成'}卷纲 · ${spec.volumeId || '当前卷'}`,
+    }
+    confirmTitle.value = titles[mode] || titles.init
+    confirmSpec.value = spec
+    return
+  }
   const target = selectedUnit.value ? `${selectedUnit.value.unitId} ${selectedUnit.value.title || ''}` : `第 ${store.primary?.volume || 1} 卷`
   confirmTitle.value = `${stageLabels[kind] || kind} · ${target.trim()}`
   confirmSpec.value = spec
@@ -155,19 +179,64 @@ function start(kind: string) {
 function startRewrite(payload: { targetPath: string; entityKind: string; title: string }) {
   const book = store.currentBook
   if (!book || busy.value) return
-  confirmTitle.value = `重写优化 · ${payload.title}`
+  const label = payload.entityKind === 'cast' ? '重写人物卡' : '重写设定'
+  confirmTitle.value = `${label} · ${payload.title}`
   confirmSpec.value = {
     kind: 'rewrite_entity', bookId: book.summary.id, baseRevision: book.revision,
     targetPath: payload.targetPath, entityKind: payload.entityKind,
   }
 }
 
-async function confirmRun(payload: { instruction: string; knowledgeIds: string[] }) {
+function startPlan(mode: 'init' | 'reinit' | 'volume', volume?: number) {
+  const volumeId = volume ? `v${String(volume).padStart(2, '0')}` : undefined
+  const volLabel = hasVolumes.value || mode !== 'volume' ? '重写卷纲' : '生成卷纲'
+  start('plan', {
+    mode,
+    volumeId,
+    title: mode === 'volume' ? `${volLabel} · 第 ${volume || 1} 卷` : undefined,
+  })
+}
+
+function planCandidateFiles(c: Candidate) {
+  const files: string[] = []
+  const mode = c.mode || ''
+  const keep = new Set((c as any).preservePaths || [])
+  if (mode === 'volume') {
+    if (c.planMarkdown?.volume_outline) files.push(`outline/volumes/${c.volumeId || 'v01'}.md`)
+    return files
+  }
+  if (c.planMarkdown?.book_outline && !keep.has('outline/book_outline.md')) files.push('outline/book_outline.md')
+  if (c.planSettings) files.push(...Object.keys(c.planSettings).filter((p) => !keep.has(p)))
+  if (c.planMarkdown?.cast_json) {
+    try {
+      const cast = JSON.parse(c.planMarkdown.cast_json) as { stem?: string }[]
+      for (const row of cast) {
+        if (row.stem && !keep.has(`canon/cast/${row.stem}.md`)) files.push(`canon/cast/${row.stem}.md`)
+      }
+    } catch { /* ignore */ }
+  }
+  return files
+}
+
+function planModeLabel(mode?: string) {
+  return sharedPlanModeLabel(mode)
+}
+
+function planCastPreview(c: Candidate) {
+  try {
+    return JSON.stringify(JSON.parse(c.planMarkdown?.cast_json || '[]'), null, 2)
+  } catch {
+    return c.planMarkdown?.cast_json || ''
+  }
+}
+
+async function confirmRun(payload: { instruction: string; knowledgeIds: string[]; preservePaths: string[] }) {
   const spec = confirmSpec.value
   confirmSpec.value = null
   if (!spec || busy.value) return
   if (payload.instruction) spec.instruction = payload.instruction
   if (payload.knowledgeIds?.length) spec.knowledgeIds = payload.knowledgeIds
+  if (payload.preservePaths?.length) spec.preservePaths = payload.preservePaths
   busy.value = true
   try {
     const run = await store.startRun(spec)
@@ -193,6 +262,11 @@ async function primaryAction() {
   if (p.unitId && store.currentBook) {
     const u = store.currentBook.units.find((x) => x.unitId === p.unitId)
     if (u) selectedUnit.value = u
+  }
+  if (p.kind === 'plan') {
+    if (!hasBookOutline.value) startPlan('init')
+    else startPlan('volume', p.volume || 1)
+    return
   }
   await start(p.kind)
 }
@@ -321,7 +395,7 @@ function roleLabel(role?: string) {
             </button>
           </template>
         </div>
-        <div v-if="!(store.currentBook.units || []).length" class="tree-empty">还没有单元。先规划一卷。</div>
+        <div v-if="!(store.currentBook.units || []).length" class="tree-empty">还没有单元。先到大纲页完成「立项」与「生成卷纲」。</div>
       </aside>
 
       <OutlineWorkspace
@@ -331,7 +405,7 @@ function roleLabel(role?: string) {
         @open-unit="selectedUnit = $event; view = 'write'"
         @save="saveFile"
         @generate="start"
-        @rewrite="startRewrite"
+        @plan="startPlan"
       />
       <BibleWorkspace
         v-else-if="view === 'bible'"
@@ -439,7 +513,9 @@ function roleLabel(role?: string) {
         </section>
         <section class="side-card panel side-actions">
           <button :disabled="busy" @click="start('outline')">写细纲</button>
-          <button :disabled="busy" @click="start('plan')">规划</button>
+          <button :disabled="busy" @click="startPlan(hasBookOutline ? 'reinit' : 'init')">
+            {{ hasBookOutline ? '重新立项' : '立项' }}
+          </button>
         </section>
       </aside>
     </div>
@@ -450,7 +526,7 @@ function roleLabel(role?: string) {
       <article v-for="c in store.candidates" :key="c.id" class="candidate panel">
         <header>
           <div>
-            <strong>{{ stageLabels[c.kind] || c.kind }} · {{ c.unitId || c.volumeId || c.targetPath }}</strong>
+            <strong>{{ c.kind === 'plan' ? planModeLabel(c.mode) : (stageLabels[c.kind] || c.kind) }} · {{ c.unitId || c.volumeId || c.targetPath }}</strong>
             <span class="muted"> · {{ new Date(c.createdAt).toLocaleString() }}</span>
           </div>
           <div>
@@ -461,7 +537,23 @@ function roleLabel(role?: string) {
         <pre v-if="c.chapters" class="candidate-prose">{{ chapterText(c) }}</pre>
         <pre v-else-if="c.unitOutlines" class="candidate-prose">{{ JSON.stringify(c.unitOutlines, null, 2) }}</pre>
         <pre v-else-if="c.replacement" class="candidate-prose">{{ c.replacement }}</pre>
-        <pre v-else-if="c.planMarkdown" class="candidate-prose">{{ c.planMarkdown.volume_outline || c.planMarkdown.book_outline }}</pre>
+        <div v-else-if="c.planMarkdown || c.planSettings" class="plan-candidate">
+          <p class="plan-mode"><strong>{{ planModeLabel(c.mode) }}</strong><span class="muted"> · 接受后写入 {{ planCandidateFiles(c).length }} 个文件</span></p>
+          <template v-if="c.mode === 'volume'">
+            <details v-if="c.planMarkdown?.volume_outline" open><summary>卷纲 · {{ c.volumeId }}</summary><pre class="candidate-prose">{{ c.planMarkdown.volume_outline }}</pre></details>
+            <p class="muted">只写当前卷纲，并播种索引中尚不存在的单元；总纲/设定/人物/正文不变。</p>
+          </template>
+          <template v-else>
+            <details v-if="c.planMarkdown?.book_outline" open><summary>总纲</summary><pre class="candidate-prose">{{ c.planMarkdown.book_outline }}</pre></details>
+            <details v-if="c.planSettings && Object.keys(c.planSettings).length"><summary>设定 · {{ Object.keys(c.planSettings).length }} 项</summary>
+              <ul class="plan-files"><li v-for="p in Object.keys(c.planSettings)" :key="p">{{ p }}</li></ul>
+            </details>
+            <details v-if="c.planMarkdown?.cast_json"><summary>人物</summary><pre class="candidate-prose">{{ planCastPreview(c) }}</pre></details>
+            <p class="muted">立项只写总纲派生设定与人物；不写卷纲、不播种单元。</p>
+          </template>
+          <p v-if="(c as any).preservePaths?.length" class="muted">保留不覆盖：{{ ((c as any).preservePaths as string[]).join('、') }}</p>
+          <details><summary>将覆盖的文件（已排除保留项）</summary><ul class="plan-files"><li v-for="p in planCandidateFiles(c)" :key="p">{{ p }}</li></ul></details>
+        </div>
         <div v-if="c.findings?.length" class="candidate-findings">
           <div v-for="f in c.findings.slice(0, 6)" :key="f.id" class="finding" :class="f.severity">
             {{ f.title }} <span v-if="f.evidence">· {{ f.evidence }}</span>
@@ -477,7 +569,7 @@ function roleLabel(role?: string) {
     <div v-if="runDrawer" class="run-drawer panel">
       <header><strong>运行中心</strong><button @click="runDrawer = false">×</button></header>
       <div v-if="store.activeRun">
-        <p>{{ store.activeRun.kind }} · {{ store.activeRun.status }}</p>
+        <p>{{ runKindLabel(store.activeRun.kind, store.activeRun.spec?.mode) }} · {{ store.activeRun.status }}</p>
         <p class="muted">模型 {{ store.activeRun.modelId }} · 调用 {{ store.activeRun.callsUsed }}/{{ store.activeRun.policy?.maxCalls || '计算中' }}</p>
         <div v-for="c in store.activeRun.calls" :key="c.index" class="call-row">
           #{{ c.index }} {{ c.step }} · in {{ c.promptTokens }} / out {{ c.completionTokens }} · {{ c.durationMs }}ms
@@ -608,6 +700,11 @@ h1 { font-family: var(--font-prose); margin: 6px 0 0; font-size: 30px; line-heig
 .candidate header { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-bottom: 12px; }
 .candidate header > div:last-child { display: flex; gap: 8px; flex-shrink: 0; }
 .candidate-prose { white-space: pre-wrap; font-family: var(--font-prose); font-size: 14px; line-height: 1.9; max-height: 300px; overflow: auto; background: rgba(255,255,255,.5); padding: 16px; border-radius: 12px; border: 1px solid var(--line); margin: 0; }
+.plan-candidate { display: grid; gap: 8px; }
+.plan-mode { margin: 0; font-size: 13px; }
+.plan-candidate details { border: 1px solid var(--line); border-radius: 10px; padding: 8px 12px; background: rgba(255,255,255,.4); }
+.plan-candidate summary { cursor: pointer; font-size: 13px; font-weight: 600; }
+.plan-files { margin: 8px 0 0; padding-left: 18px; font-size: 12px; color: var(--ink-soft); }
 .finding { padding: 8px 12px; margin: 8px 0 0; border-radius: 10px; background: rgba(161,92,18,.08); font-size: 12px; }
 .finding.blocking { background: rgba(163,59,50,.1); color: var(--bad); }
 

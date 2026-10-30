@@ -30,6 +30,7 @@ func main() {
 	provider := llmadapt.NewDefaultLLMProvider(llmMgr, models)
 
 	runSvc := runs.New(db, settings, provider)
+	runSvc.Models = models
 	app := &httpapi.App{
 		Settings: settings,
 		Store:    db,

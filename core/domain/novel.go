@@ -13,12 +13,19 @@ const (
 	TaskReview     TaskKind = "review"
 	TaskRevise     TaskKind = "revise"
 	TaskFinalize   TaskKind = "finalize"
-	TaskRewriteEntity TaskKind = "rewrite_entity" // 单实体重写优化：bible/人物卡/卷纲/世界规则等
-	TaskLocalEdit  TaskKind = "local_edit"
-	TaskContinue   TaskKind = "continue"
-	TaskExpand     TaskKind = "expand"
-	TaskPolish     TaskKind = "polish"
-	TaskRewriteSel TaskKind = "rewrite_selection"
+	TaskRewriteEntity TaskKind = "rewrite_entity" // 单实体优化：bible/人物卡/世界规则等
+	TaskLocalEdit     TaskKind = "local_edit"
+	TaskContinue      TaskKind = "continue"
+	TaskExpand        TaskKind = "expand"
+	TaskPolish        TaskKind = "polish"
+	TaskRewriteSel    TaskKind = "rewrite_selection"
+)
+
+// Plan modes for TaskPlan (立项 / 重新立项 / 重写卷纲).
+const (
+	PlanModeInit   = "init"
+	PlanModeReinit = "reinit"
+	PlanModeVolume = "volume"
 )
 
 type UnitStatus string
@@ -93,6 +100,8 @@ type TaskSpec struct {
 	IssueIDs        []string          `json:"issueIds,omitempty"`
 	TargetPath      string            `json:"targetPath,omitempty"` // rewrite_entity 目标文件
 	EntityKind      string            `json:"entityKind,omitempty"` // bible|cast|volume|world|style|rules|facts
+	Mode            string            `json:"mode,omitempty"`       // plan: init|reinit|volume
+	PreservePaths   []string          `json:"preservePaths,omitempty"` // reinit 接受时保留的既有设定/人物路径
 	ForceRiskAccept bool              `json:"forceRiskAccept,omitempty"`
 }
 
@@ -194,7 +203,10 @@ type Candidate struct {
 	VolumeID      string          `json:"volumeId,omitempty"`
 	Chapters      []ChapterDraft  `json:"chapters,omitempty"`
 	UnitOutlines  []UnitOutlineDraft `json:"unitOutlines,omitempty"`
+	Mode          string             `json:"mode,omitempty"` // plan: init|reinit|volume
+	PreservePaths []string           `json:"preservePaths,omitempty"` // reinit 接受时保留的既有路径
 	PlanMarkdown  map[string]string  `json:"planMarkdown,omitempty"`
+	PlanSettings  map[string]string  `json:"planSettings,omitempty"` // relative path → content (init/reinit)
 	Replacement   string          `json:"replacement,omitempty"`
 	Findings      []ReviewFinding `json:"findings,omitempty"`
 	CanonChanges  []CanonChange   `json:"canonChanges,omitempty"`

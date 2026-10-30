@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/danmo-ai/danmo-novel/core/domain"
@@ -11,6 +12,22 @@ import (
 )
 
 const ContractVersion = "novel-v1"
+
+// Plan init/reinit emits book outline + settings.files + cast JSON in one shot.
+// 32768 fits a mid-size book (≈2–3 万汉字级) with JSON overhead; CapMaxOutput
+// clamps to the assigned model's catalog max_output when known.
+const planInitMaxOutputTokens = 32768
+
+// CapMaxOutput returns desired budget, never above modelMax when modelMax > 0.
+func CapMaxOutput(desired, modelMax int) int {
+	if desired <= 0 {
+		desired = 8192
+	}
+	if modelMax > 0 && desired > modelMax {
+		return modelMax
+	}
+	return desired
+}
 
 func DefaultPolicy(kind domain.TaskKind, chapterCount int) domain.CallPolicy {
 	p := domain.CallPolicy{
@@ -98,6 +115,8 @@ func BuildWritePacket(snap domain.BookSnapshot, unit domain.UnitInfo, modelMaxOu
 
 	// 7. 当前卷锁词（不展开未来秘密）。
 	add("locked-terms", "锁词", "canon/locked-terms.yaml", ExtractLockedTerms(snap.Files["canon/locked-terms.yaml"], volumeID))
+	// 7b. 揭示计划按卷截取：可暗示/可确认 + 禁止写穿（不含底牌细节）。
+	add("reveal", "揭示约束", "canon/reveal-schedule.md", ExtractRevealForVolume(snap.Files["canon/reveal-schedule.md"], unit.Volume))
 
 	genreKB := novel.GenreBullets(snap.Summary.Genre, snap.Summary.Subgenre)
 	add("genre-kb", "题材写时约束", "knowledge:"+snap.Summary.Genre, genreKB)
@@ -106,15 +125,14 @@ func BuildWritePacket(snap domain.BookSnapshot, unit domain.UnitInfo, modelMaxOu
 	add("time-guidance", "时间书写规范", "knowledge:time", buildTimeGuidance(snap, unit))
 
 	hashes := map[string]string{}
-	var ctxParts []string
 	for _, b := range blocks {
 		hashes[b.Source] = shortHash(b.Content)
-		ctxParts = append(ctxParts, fmt.Sprintf("### %s\n%s", b.Label, b.Content))
 	}
 
 	system := novel.WriteSystemPrompt()
-	user := fmt.Sprintf("书：%s\n单元：%s\n请按单元合同与场面节拍一次写出全部章节正文。\n输出严格 JSON：{\"chapters\":[{\"chapter\":N,\"title\":\"...\",\"body\":\"...\"}]}\n章与章之间不要输出 ---；body 内是纯散文。\n\n## CONTEXT\n\n%s",
-		snap.Summary.ID, unit.UnitID, strings.Join(ctxParts, "\n\n"))
+	user := BuildUserPrompt("write", "", map[string]any{
+		"id": snap.Summary.ID, "unitId": unit.UnitID, "volumeId": volumeID,
+	}, "请按单元合同与场面节拍一次写出全部章节正文。章与章之间不要输出 ---；body 内是纯散文。", blocks, nil)
 
 	packet := domain.ContextPacket{
 		ContractVersion:  ContractVersion,
@@ -177,15 +195,14 @@ func BuildOutlinePacket(snap domain.BookSnapshot, volume int, unitIDs []string) 
 	if reveal := clip(snap.Files["canon/reveal-schedule.md"], 900); strings.TrimSpace(reveal) != "" {
 		blocks = append(blocks, domain.ContextBlock{ID: "reveal", Label: "揭示计划", Source: "canon/reveal-schedule.md", Content: reveal, Bytes: len(reveal)})
 	}
-	var parts []string
 	hashes := map[string]string{}
 	for _, b := range blocks {
 		hashes[b.Source] = shortHash(b.Content)
-		parts = append(parts, fmt.Sprintf("### %s\n%s", b.Label, b.Content))
 	}
 	system := novel.OutlineSystemPrompt()
-	user := fmt.Sprintf("书：%s\n卷：%s\n为本批 proposed 单元补全细纲合同。\n输出 JSON：{\"units\":[{unitId,title,function,desire,obstacle,choice,payoff,pleasure,forbidden,wordTarget,onStage,pov,chapterFrom,chapterTo,scenes,stateDeltas,nextHook,storyDay,gapFromPrev,infoControl}]}\n不得改卷纲已定的 function / next_hook.type；scenes / nextHook / storyDay / gapFromPrev / infoControl 必须给出。\n\n## CONTEXT\n\n%s",
-		snap.Summary.ID, volTag, strings.Join(parts, "\n\n"))
+	user := BuildUserPrompt("outline", "", map[string]any{
+		"id": snap.Summary.ID, "volumeId": volTag, "unitIds": unitIDs,
+	}, "为本批 proposed 单元补全细纲合同。不得改卷纲已定的 function / next_hook.type；scenes / nextHook / storyDay / gapFromPrev / infoControl 必须给出。", blocks, nil)
 	packet := domain.ContextPacket{
 		ContractVersion: ContractVersion, TaskKind: domain.TaskOutline, BookID: snap.Summary.ID, VolumeID: volTag,
 		InputHashes: hashes, Blocks: blocks, KnowledgeVersion: novel.KnowledgeVersion,
@@ -199,18 +216,142 @@ func BuildOutlinePacket(snap domain.BookSnapshot, volume int, unitIDs []string) 
 }
 
 func BuildPlanPacket(snap domain.BookSnapshot, volume int) domain.ContextPacket {
-	policy := DefaultPolicy(domain.TaskPlan, 0)
-	bible := snap.Files["book-bible.md"]
-	blocks := []domain.ContextBlock{
-		{ID: "bible", Label: "立项 bible", Source: "book-bible.md", Content: bible, Bytes: len(bible)},
+	return BuildPlanPacketWithMode(snap, volume, domain.PlanModeVolume, "", 0)
+}
+
+// BuildPlanPacketWithMode builds the context for 立项 / 重新立项 / 重写卷纲.
+// modelMaxOut is the assigned model's catalog max_output (0 = unknown).
+func BuildPlanPacketWithMode(snap domain.BookSnapshot, volume int, mode, instruction string, modelMaxOut int) domain.ContextPacket {
+	if mode == "" {
+		if strings.TrimSpace(snap.Files["outline/book_outline.md"]) == "" {
+			mode = domain.PlanModeInit
+		} else {
+			mode = domain.PlanModeVolume
+		}
 	}
-	system := novel.PlanSystemPrompt()
-	user := fmt.Sprintf("书：%s\n题材：%s\n请规划第 %d 卷：输出 JSON {\"cast\":[{\"stem\",\"name\",\"role\",\"status\":\"candidate\",\"cardMarkdown\"}],\"bookOutlineMarkdown\",\"volumeOutlineMarkdown\"}。\n卷纲须含单元索引表与本卷人物 stem 列表。\n\n## CONTEXT\n\n### bible\n%s",
-		snap.Summary.ID, snap.Summary.Genre, volume, bible)
+	policy := DefaultPolicy(domain.TaskPlan, 0)
+	full := mode == domain.PlanModeInit || mode == domain.PlanModeReinit
+	if full {
+		policy.MaxOutputTokens = CapMaxOutput(planInitMaxOutputTokens, modelMaxOut)
+	} else {
+		policy.MaxOutputTokens = CapMaxOutput(policy.MaxOutputTokens, modelMaxOut)
+	}
+
+	blocks := []domain.ContextBlock{}
+	hashes := map[string]string{}
+	addFile := func(id, label, source string) {
+		content := strings.TrimSpace(snap.Files[source])
+		if content == "" {
+			return
+		}
+		blocks = append(blocks, domain.ContextBlock{ID: id, Label: label, Source: source, Content: content, Bytes: len(content)})
+		hashes[source] = shortHash(content)
+	}
+	addFile("bible", "作者意图 bible", "book-bible.md")
+	if full {
+		addFile("world", "世界观", "canon/world.md")
+		addFile("goldfinger", "金手指", "canon/goldfinger.md")
+		addFile("platform", "平台定位", "canon/platform-positioning.md")
+		addFile("rules", "写作规则", "canon/writing-rules.md")
+		addFile("style", "风格指纹", "canon/style-fingerprint.md")
+		addFile("reveal", "揭示计划", "canon/reveal-schedule.md")
+		addFile("author-lore", "作者底牌", "canon/author-lore.md")
+		addFile("locked", "锁词", "canon/locked-terms.yaml")
+		addFile("book-outline", "全书总纲", "outline/book_outline.md")
+		for _, c := range snap.Cast {
+			src := "canon/cast/" + c.Stem + ".md"
+			blocks = append(blocks, domain.ContextBlock{ID: "cast-" + c.Stem, Label: "人物·" + CleanName(c.Name), Source: src, Content: clip(c.Raw, 1800), Bytes: len(clip(c.Raw, 1800))})
+			hashes[src] = shortHash(c.Raw)
+		}
+	}
+	volID := ""
+	bookMeta := map[string]any{"id": snap.Summary.ID, "genre": snap.Summary.Genre}
+	if !full {
+		if volume < 1 {
+			volume = 1
+		}
+		volID = fmt.Sprintf("v%02d", volume)
+		bookMeta["volumeId"] = volID
+		addFile("book-outline", "全书总纲", "outline/book_outline.md")
+		if reveal := clip(snap.Files["canon/reveal-schedule.md"], 900); strings.TrimSpace(reveal) != "" {
+			blocks = append(blocks, domain.ContextBlock{ID: "reveal", Label: "揭示计划", Source: "canon/reveal-schedule.md", Content: reveal, Bytes: len(reveal)})
+			hashes["canon/reveal-schedule.md"] = shortHash(reveal)
+		}
+		if raw := strings.TrimSpace(snap.Files["outline/volumes/"+volID+".md"]); raw != "" {
+			blocks = append(blocks, domain.ContextBlock{ID: "volume", Label: "当前卷纲", Source: "outline/volumes/" + volID + ".md", Content: raw, Bytes: len(raw)})
+			hashes["outline/volumes/"+volID+".md"] = shortHash(raw)
+		}
+		// Cross-volume bridge: excerpt previous volume + ledger, never full prose.
+		// Only when targeting volume 2+; rewriting v01 has no previous volume.
+		if volume >= 2 {
+			prevID := fmt.Sprintf("v%02d", volume-1)
+			prevPath := "outline/volumes/" + prevID + ".md"
+			prevRaw := strings.TrimSpace(snap.Files[prevPath])
+			if prevRaw == "" {
+				for _, v := range snap.Volumes {
+					if v.Volume == volume-1 {
+						prevRaw = v.Raw
+						break
+					}
+				}
+			}
+			if handoff := ExtractVolumeHandoff(prevRaw); handoff != "" {
+				blocks = append(blocks, domain.ContextBlock{ID: "prev-volume", Label: "上一卷截取（承接）", Source: prevPath, Content: handoff, Bytes: len(handoff)})
+				hashes[prevPath] = shortHash(handoff)
+			}
+			if sum := latestSummaryTail(snap, volume-1); strings.TrimSpace(sum) != "" {
+				tail := clipTail(sum, 1500)
+				src := fmt.Sprintf("continuity/summaries/%s.md", prevID)
+				blocks = append(blocks, domain.ContextBlock{ID: "prev-summary", Label: "上一卷章摘要尾", Source: src, Content: tail, Bytes: len(tail)})
+				hashes[src] = shortHash(tail)
+			}
+			if last := lastUnitOfVolume(snap, volume-1); last != nil {
+				bridge := extractUnitBridge(*last)
+				if bridge != "" {
+					blocks = append(blocks, domain.ContextBlock{ID: "prev-unit-bridge", Label: "上卷末单元承接", Source: last.OutlinePath, Content: bridge, Bytes: len(bridge)})
+					hashes[last.OutlinePath] = shortHash(bridge)
+				}
+			}
+		}
+		if facts := ExtractFactsForVolumePlan(snap.Files["continuity/facts.md"]); facts != "" {
+			blocks = append(blocks, domain.ContextBlock{ID: "facts", Label: "公开连载账本截取", Source: "continuity/facts.md", Content: facts, Bytes: len(facts)})
+			hashes["continuity/facts.md"] = shortHash(facts)
+		}
+		// 只给本卷在场 + 主角 + 上一卷在场人物，不灌全书卡。
+		relevant := VolumeCastStems(snap, volume)
+		for _, stem := range relevant {
+			for _, c := range snap.Cast {
+				if c.Stem != stem {
+					continue
+				}
+				src := "canon/cast/" + c.Stem + ".md"
+				body := clip(c.Raw, 1200)
+				blocks = append(blocks, domain.ContextBlock{ID: "cast-" + c.Stem, Label: "人物·" + CleanName(c.Name), Source: src, Content: body, Bytes: len(body)})
+				hashes[src] = shortHash(c.Raw)
+			}
+		}
+	}
+
+	system := novel.PlanSystemPromptForMode(mode)
+	inst := strings.TrimSpace(instruction)
+	if inst == "" {
+		switch mode {
+		case domain.PlanModeInit:
+			inst = "首次立项：生成全书总纲、全部设定与人物。不要写卷纲。"
+		case domain.PlanModeReinit:
+			inst = "重新立项：在保留故事骨架前提下，重写总纲、全部设定与人物。不要写卷纲，不触碰已有单元/正文。"
+		default:
+			if volume >= 2 {
+				inst = fmt.Sprintf("生成/重写第 %d 卷卷纲：承接上一卷终局与公开账本截取，延续未回收伏笔；不要复述正文，不要改总纲/设定/人物卡。", volume)
+			} else {
+				inst = "只生成/重写当前卷纲与单元索引；不要改总纲、设定或人物卡。"
+			}
+		}
+	}
+	user := BuildUserPrompt("plan", mode, bookMeta, inst, blocks, nil)
 	return domain.ContextPacket{
 		ContractVersion: ContractVersion, TaskKind: domain.TaskPlan, BookID: snap.Summary.ID,
-		VolumeID: fmt.Sprintf("v%02d", volume), InputHashes: map[string]string{"book-bible.md": shortHash(bible)},
-		Blocks: blocks, KnowledgeVersion: novel.KnowledgeVersion,
+		VolumeID: volID, InputHashes: hashes, Blocks: blocks, KnowledgeVersion: novel.KnowledgeVersion,
 		EstPromptTokens: (len([]rune(system)) + len([]rune(user))) / 2, Policy: policy,
 		SystemPrompt: system, UserPrompt: user,
 	}
@@ -238,19 +379,26 @@ func BuildReviewPacket(snap domain.BookSnapshot, unit domain.UnitInfo, localFind
 			}
 		}
 	}
+	// 审校同样校验信息释放边界（按卷截取，不含底牌）。
+	if reveal := ExtractRevealForVolume(snap.Files["canon/reveal-schedule.md"], unit.Volume); reveal != "" {
+		blocks = append(blocks, domain.ContextBlock{ID: "reveal", Label: "揭示约束", Source: "canon/reveal-schedule.md", Content: reveal, Bytes: len(reveal)})
+	}
 	var fb strings.Builder
 	for _, f := range localFindings {
 		fmt.Fprintf(&fb, "- [%s] %s: %s\n", f.Severity, f.Title, f.Evidence)
 	}
-	var ctxParts []string
 	hashes := map[string]string{unit.ProsePath: shortHash(prose)}
 	for _, b := range blocks {
 		hashes[b.Source] = shortHash(b.Content)
-		ctxParts = append(ctxParts, fmt.Sprintf("### %s\n%s", b.Label, b.Content))
 	}
 	system := novel.ReviewSystemPrompt()
-	user := fmt.Sprintf("书：%s 单元：%s\n对正文做一次审校。输出 JSON {\"verdict\":\"PASS|FAIL\",\"findings\":[{\"id\",\"severity\",\"lens\",\"title\",\"evidence\",\"chapter\",\"suggestion\"}],\"scores\":{}}。\n本地硬门结果：\n%s\n\n## CONTEXT\n\n%s",
-		snap.Summary.ID, unit.UnitID, fb.String(), strings.Join(ctxParts, "\n\n"))
+	extra := map[string]any{}
+	if fb.Len() > 0 {
+		extra["localFindings"] = fb.String()
+	}
+	user := BuildUserPrompt("review", "", map[string]any{
+		"id": snap.Summary.ID, "unitId": unit.UnitID,
+	}, "对正文做一次审校。", blocks, extra)
 	packet := domain.ContextPacket{
 		ContractVersion: ContractVersion, TaskKind: domain.TaskReview, BookID: snap.Summary.ID, UnitID: unit.UnitID,
 		InputHashes: hashes, Blocks: blocks,
@@ -263,49 +411,67 @@ func BuildReviewPacket(snap domain.BookSnapshot, unit domain.UnitInfo, localFind
 	return packet
 }
 
-// BuildRewriteEntityPacket builds a single-entity rewrite packet. The LLM
-// rewrites one canon/setting file and returns normalized full content; accept
-// writes it back. Author-lore 禁读：bible 只取公开约束，底牌不进入。
+// BuildRewriteEntityPacket builds a single-entity rewrite packet.
+// 总纲派生设定（人物/揭示/世界/底牌等）必须携带总纲与相关结构作依据；
+// 工艺类只带规则与风格。Accept 只写目标文件，依据只读。
 func BuildRewriteEntityPacket(snap domain.BookSnapshot, spec domain.TaskSpec, modelMaxOut int) domain.ContextPacket {
 	policy := DefaultPolicy(domain.TaskRevise, 0)
 	policy.MaxCalls = 2
 	policy.AllowOneRepair = true
-	if modelMaxOut > 0 {
-		policy.MaxOutputTokens = modelMaxOut
-	}
+	policy.MaxOutputTokens = CapMaxOutput(policy.MaxOutputTokens, modelMaxOut)
 	target := spec.TargetPath
 	raw := snap.Files[target]
 	blocks := []domain.ContextBlock{
 		{ID: "current", Label: "当前内容", Source: target, Content: raw, Bytes: len(raw)},
 	}
-	// 参考约束：写作规则与风格（公开，不含底牌）。
-	if w := clip(snap.Files["canon/writing-rules.md"], 800); w != "" {
-		blocks = append(blocks, domain.ContextBlock{ID: "rules", Label: "写作规则", Source: "canon/writing-rules.md", Content: w, Bytes: len(w)})
+	add := func(id, label, source, content string) {
+		content = strings.TrimSpace(content)
+		if content == "" {
+			return
+		}
+		blocks = append(blocks, domain.ContextBlock{ID: id, Label: label, Source: source, Content: content, Bytes: len(content)})
 	}
-	if s := ExtractStyle(snap.Files["canon/style-fingerprint.md"]); s != "" {
-		blocks = append(blocks, domain.ContextBlock{ID: "style", Label: "风格指纹", Source: "canon/style-fingerprint.md", Content: s, Bytes: len(s)})
+	// 依据：按实体类型组包，避免裸改总纲派生设定。
+	AddRewriteBasis(snap, target, add)
+	// 工艺约束：所有重写都保留写作规则与风格（截取）。
+	if target != "canon/writing-rules.md" {
+		if w := clip(snap.Files["canon/writing-rules.md"], 800); w != "" {
+			add("rules", "写作规则", "canon/writing-rules.md", w)
+		}
 	}
-	var ctxParts []string
+	if target != "canon/style-fingerprint.md" {
+		if s := ExtractStyle(snap.Files["canon/style-fingerprint.md"]); s != "" {
+			add("style", "风格指纹", "canon/style-fingerprint.md", s)
+		}
+	}
 	hashes := map[string]string{}
 	for _, b := range blocks {
 		hashes[b.Source] = shortHash(b.Content)
-		ctxParts = append(ctxParts, fmt.Sprintf("### %s\n%s", b.Label, b.Content))
 	}
 	system := rewriteEntitySystemPrompt(spec.EntityKind)
 	instruction := spec.Instruction
 	if instruction == "" {
-		instruction = "在不改变既有事实与情节的前提下，重写优化这个实体：字段规范化、结构补齐、表达精简。"
+		if IsDerivedSetting(target) {
+			instruction = "依据总纲与附带结构对齐本实体；保留既有事实与已公开伏笔，不提前揭示未到卷信息；字段规范化、表达精简。"
+		} else {
+			instruction = "在不改变既有事实与情节的前提下，优化这个实体：字段规范化、结构补齐、表达精简。"
+		}
 	}
-	user := fmt.Sprintf("书：%s\n目标文件：%s（实体类型：%s）\n作者追加指令：%s\n\n请重写该文件并返回规范化后的完整内容。只返回 JSON {\"content\":\"...\"}，content 为该文件的完整新内容（Markdown 或 YAML 原文）。\n\n## CONTEXT\n\n%s",
-		snap.Summary.ID, target, spec.EntityKind, instruction, strings.Join(ctxParts, "\n\n"))
+	user := BuildUserPrompt("rewrite_entity", "", map[string]any{
+		"id": snap.Summary.ID, "targetPath": target, "entityKind": spec.EntityKind,
+		"layer": string(ClassifySetting(target)),
+	}, instruction, blocks, nil)
 	packet := domain.ContextPacket{
 		ContractVersion: ContractVersion, TaskKind: domain.TaskRewriteEntity, BookID: snap.Summary.ID,
 		InputHashes: hashes, Blocks: blocks, KnowledgeVersion: novel.KnowledgeVersion,
 		EstPromptTokens: (len([]rune(system)) + len([]rune(user))) / 2, Policy: policy,
 		SystemPrompt: system, UserPrompt: user,
 	}
-	if err := AssertNoAuthorLore(&packet); err != nil {
-		panic(err)
+	// Optimizing author-lore itself is allowed; other rewrite packets must not leak it.
+	if !IsAuthorOnlySource(target) {
+		if err := AssertNoAuthorLore(&packet); err != nil {
+			panic(err)
+		}
 	}
 	return packet
 }
@@ -329,11 +495,17 @@ func rewriteEntitySystemPrompt(kind string) string {
 func BuildLocalEditPacket(snap domain.BookSnapshot, sel domain.TextSelection, instruction string) domain.ContextPacket {
 	policy := DefaultPolicy(domain.TaskLocalEdit, 0)
 	system := novel.LocalEditSystemPrompt()
-	user := fmt.Sprintf("书：%s\n路径：%s\n指令：%s\n只改选区，返回 JSON {\"replacement\":\"...\"}。\n\n## 前文\n%s\n\n## 选区\n%s\n\n## 后文\n%s",
-		snap.Summary.ID, sel.Path, instruction, sel.Before, sel.Text, sel.After)
+	blocks := []domain.ContextBlock{
+		{ID: "before", Label: "前文", Source: sel.Path, Content: sel.Before, Bytes: len(sel.Before)},
+		{ID: "selection", Label: "选区", Source: sel.Path, Content: sel.Text, Bytes: len(sel.Text)},
+		{ID: "after", Label: "后文", Source: sel.Path, Content: sel.After, Bytes: len(sel.After)},
+	}
+	user := BuildUserPrompt("local_edit", "", map[string]any{
+		"id": snap.Summary.ID, "path": sel.Path,
+	}, instruction, blocks, nil)
 	return domain.ContextPacket{
 		ContractVersion: ContractVersion, TaskKind: domain.TaskLocalEdit, BookID: snap.Summary.ID,
-		InputHashes: map[string]string{sel.Path: shortHash(sel.Text)}, KnowledgeVersion: novel.KnowledgeVersion,
+		InputHashes: map[string]string{sel.Path: shortHash(sel.Text)}, Blocks: blocks, KnowledgeVersion: novel.KnowledgeVersion,
 		EstPromptTokens: (len([]rune(system)) + len([]rune(user))) / 2, Policy: policy,
 		SystemPrompt: system, UserPrompt: user,
 	}
@@ -491,6 +663,66 @@ func previousUnit(snap domain.BookSnapshot, unit domain.UnitInfo) *domain.UnitIn
 		}
 	}
 	return nil
+}
+
+// lastUnitOfVolume returns the highest-index unit in the given volume.
+func lastUnitOfVolume(snap domain.BookSnapshot, volume int) *domain.UnitInfo {
+	var best *domain.UnitInfo
+	for i := range snap.Units {
+		u := &snap.Units[i]
+		if u.Volume != volume {
+			continue
+		}
+		if best == nil || u.Index > best.Index {
+			best = u
+		}
+	}
+	return best
+}
+
+// extractUnitBridge keeps only contract/hook + prose tail for volume handoff.
+func extractUnitBridge(unit domain.UnitInfo) string {
+	var parts []string
+	parts = append(parts, fmt.Sprintf("unit_id: %s", unit.UnitID))
+	if unit.Title != "" {
+		parts = append(parts, "title: "+unit.Title)
+	}
+	for _, key := range []string{"function", "payoff", "story_day", "gap_from_prev"} {
+		if v := yamlScalarLocal(unit.OutlineRaw, key); v != "" && v != "null" {
+			parts = append(parts, key+": "+v)
+		}
+	}
+	if hook := mdYAMLMapish(unit.OutlineRaw, "next_hook"); hook != "" {
+		parts = append(parts, "next_hook:\n"+hook)
+	}
+	if unit.ProseRaw != "" {
+		parts = append(parts, "文末钩子：\n"+clipTail(unit.ProseRaw, 800))
+	}
+	return strings.Join(parts, "\n")
+}
+
+func mdYAMLMapish(raw, key string) string {
+	re := regexp.MustCompile(`(?m)^` + regexp.QuoteMeta(key) + `:\s*$`)
+	loc := re.FindStringIndex(raw)
+	if loc == nil {
+		// inline map: next_hook: {type: x}
+		if v := yamlScalarLocal(raw, key); v != "" {
+			return v
+		}
+		return ""
+	}
+	body := raw[loc[1]:]
+	var lines []string
+	for _, line := range strings.Split(body, "\n") {
+		if line == "" {
+			continue
+		}
+		if !strings.HasPrefix(line, " ") && !strings.HasPrefix(line, "\t") {
+			break
+		}
+		lines = append(lines, strings.TrimRight(line, " "))
+	}
+	return strings.TrimSpace(strings.Join(lines, "\n"))
 }
 
 // latestSummaryTail returns the newest volume summary content for continuity.
