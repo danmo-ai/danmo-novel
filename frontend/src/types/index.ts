@@ -73,6 +73,12 @@ export interface ReviewFinding {
   chapter?: number
   suggestion?: string
 }
+export interface UnitOutline {
+  unitId?: string
+  title?: string
+  [key: string]: any
+}
+
 export interface Candidate {
   id: string
   runId: string
@@ -84,7 +90,7 @@ export interface Candidate {
   unitId?: string
   volumeId?: string
   chapters?: ChapterDraft[]
-  unitOutlines?: any[]
+  unitOutlines?: UnitOutline[]
   mode?: string
   planMarkdown?: Record<string, string>
   planSettings?: Record<string, string>

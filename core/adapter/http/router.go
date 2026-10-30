@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	adaptermcp "github.com/danmo-ai/danmo-novel/core/adapter/mcp"
 	"github.com/danmo-ai/danmo-novel/core/config"
 	"github.com/danmo-ai/danmo-novel/core/domain"
 	"github.com/danmo-ai/danmo-novel/core/port"
@@ -93,7 +94,24 @@ func NewRouter(app *App) *gin.Engine {
 		registerBooks(api, app)
 		registerRuns(api, app)
 	}
+	mountMCP(r, app)
 	return r
+}
+
+// mountMCP exposes streamable-http MCP at /mcp and /mcp/ (trailing slash
+// required by Danmo Work's streamable-http dialer).
+func mountMCP(r *gin.Engine, app *App) {
+	srv := adaptermcp.New(&adaptermcp.Deps{
+		Settings: app.Settings,
+		Store:    app.Store,
+		Runs:     app.Runs,
+	})
+	h := srv.Handler()
+	wrap := func(c *gin.Context) {
+		h.ServeHTTP(c.Writer, c.Request)
+	}
+	r.Any("/mcp", wrap)
+	r.Any("/mcp/*path", wrap)
 }
 
 func cors() gin.HandlerFunc {

@@ -231,6 +231,17 @@ function planModeLabel(mode?: string) {
   return sharedPlanModeLabel(mode)
 }
 
+// 候选对象的目标标识：优先具体单元/卷/目标文件；细纲批次取自单元合同，
+// 避免把「目标卷」误显示成单元 id。
+function candidateTarget(c: Candidate): string {
+  if (c.unitId) return c.unitId
+  if (c.targetPath) return c.targetPath
+  const units = c.unitOutlines ?? []
+  if (units.length === 1 && units[0]?.unitId) return units[0].unitId as string
+  if (units.length > 1) return `${c.volumeId || ''} · ${units.length} 个单元`
+  return c.volumeId || ''
+}
+
 function planCastPreview(c: Candidate) {
   try {
     return JSON.stringify(JSON.parse(c.planMarkdown?.cast_json || '[]'), null, 2)
@@ -568,7 +579,7 @@ function roleLabel(role?: string) {
       <article v-for="c in store.candidates" :key="c.id" class="candidate panel">
         <header>
           <div>
-            <strong>{{ c.kind === 'plan' ? planModeLabel(c.mode) : (stageLabels[c.kind] || c.kind) }} · {{ c.unitId || c.volumeId || c.targetPath }}</strong>
+            <strong>{{ c.kind === 'plan' ? planModeLabel(c.mode) : (stageLabels[c.kind] || c.kind) }} · {{ candidateTarget(c) }}</strong>
             <span class="muted"> · {{ new Date(c.createdAt).toLocaleString() }}</span>
           </div>
           <div>
