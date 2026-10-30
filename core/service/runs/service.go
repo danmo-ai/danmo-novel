@@ -275,7 +275,7 @@ func (s *Service) PreviewPacket(_ context.Context, spec domain.TaskSpec) (domain
 		if !ok {
 			return domain.ContextPacket{}, fmt.Errorf("unit not found: %s", spec.UnitID)
 		}
-		return contextsvc.BuildWritePacket(snap, unit, 0), nil
+		return contextsvc.BuildWritePacket(snap, unit, s.modelMaxOut(s.resolveModel(spec))), nil
 	case domain.TaskOutline:
 		vnum := 1
 		if spec.VolumeID != "" {
@@ -290,7 +290,7 @@ func (s *Service) PreviewPacket(_ context.Context, spec domain.TaskSpec) (domain
 		if len(ids) == 0 && spec.UnitID != "" {
 			ids = []string{spec.UnitID}
 		}
-		return contextsvc.BuildOutlinePacket(snap, vnum, ids), nil
+		return contextsvc.BuildOutlinePacket(snap, vnum, ids, s.modelMaxOut(s.resolveModel(spec))), nil
 	case domain.TaskPlan:
 		mode := strings.TrimSpace(spec.Mode)
 		if mode == "" {
@@ -315,12 +315,21 @@ func (s *Service) PreviewPacket(_ context.Context, spec domain.TaskSpec) (domain
 		if !ok {
 			return domain.ContextPacket{}, fmt.Errorf("unit not found")
 		}
-		return contextsvc.BuildReviewPacket(snap, unit, nil), nil
+		return contextsvc.BuildReviewPacket(snap, unit, nil, s.modelMaxOut(s.resolveModel(spec))), nil
+	case domain.TaskFinalize:
+		unit, ok := findUnit(snap, spec.UnitID)
+		if !ok {
+			return domain.ContextPacket{}, fmt.Errorf("unit not found: %s", spec.UnitID)
+		}
+		if !unit.HasProse {
+			return domain.ContextPacket{}, fmt.Errorf("单元尚无正文，无法定稿")
+		}
+		return contextsvc.BuildFinalizePacket(snap, unit), nil
 	case domain.TaskRewriteEntity:
 		if spec.TargetPath == "" {
 			return domain.ContextPacket{}, fmt.Errorf("targetPath required")
 		}
-		return contextsvc.BuildRewriteEntityPacket(snap, spec, 0), nil
+		return contextsvc.BuildRewriteEntityPacket(snap, spec, s.modelMaxOut(s.resolveModel(spec))), nil
 	default:
 		return domain.ContextPacket{}, fmt.Errorf("preview not supported for kind: %s", spec.Kind)
 	}

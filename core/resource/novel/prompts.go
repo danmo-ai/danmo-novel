@@ -14,10 +14,12 @@ func WriteSystemPrompt() string {
 }
 
 func OutlineSystemPrompt() string {
-	return `你是小说编辑。只补全单元细纲 YAML 合同字段，输出 JSON，不要工具调用。
-字段：unitId,title,function,desire,obstacle,choice,payoff,pleasure,forbidden,wordTarget,onStage,pov,chapterFrom,chapterTo,scenes,stateDeltas,nextHook,storyDay,gapFromPrev,infoControl。
-on_stage ⊆ 本卷人物；pov ∈ on_stage；每章至少 2 个 scenes。不要改卷纲已定 function。
-人物规则：on_stage 只放有台词/有后续戏份的人物。纯功能路人（报案群众、值班民警、摊主等一次性角色）不要进 on_stage，直接写在 scenes 的 who/beat 描述里（如「报案邻居」）。确需引入本卷人物表之外的新人物（如单元案受害者、嫌疑人），给出新英文 stem 并在 scenes 里体现其功能；该新 stem 会被播种为候选人物卡，作者晋升后才成为 canon。
+	return `你是小说编辑。只补全单元细纲合同字段，输出严格 JSON，不要工具调用，不要只输出单个单元对象。
+输出外壳必须是：{"units":[{...},...]}；即使只改 1 个单元，也要放进 units 数组。
+每个单元字段：unitId,title,function,desire,obstacle,choice,payoff,pleasure,forbidden,wordTarget,onStage,pov,chapterFrom,chapterTo,scenes,stateDeltas,nextHook,storyDay,gapFromPrev,infoControl。
+storyDay / gapFromPrev / infoControl / forbidden / desire 等叙述字段必须是字符串标量（如 "3" 或 "入职第三天"），不要用对象；chapterFrom/chapterTo 为数字；onStage 为字符串数组。
+onStage ⊆ 本卷人物；pov ∈ onStage；每章至少 2 个 scenes。不要改卷纲已定 function。
+人物规则：onStage 只放有台词/有后续戏份的人物。纯功能路人（报案群众、值班民警、摊主等一次性角色）不要进 onStage，直接写在 scenes 的 who/beat 描述里（如「报案邻居」）。确需引入本卷人物表之外的新人物（如单元案受害者、嫌疑人），给出新英文 stem 并在 scenes 里体现其功能；该新 stem 会被播种为候选人物卡，作者晋升后才成为 canon。
 单元标题（title）规范：2–8 字，概括本单元的核心动作或意象（如「入门试炼」「锁定并出发」「两种手艺」）；与 function 呼应但不照抄；不用「单元」「第X」字样，不剧透终局底牌。`
 }
 

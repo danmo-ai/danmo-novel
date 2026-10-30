@@ -26,6 +26,7 @@ const preserve = ref<Set<string>>(new Set())
 const preserveOpen = ref(true)
 
 const isReinit = computed(() => props.spec.kind === 'plan' && props.spec.mode === 'reinit')
+const isLocalFinalize = computed(() => props.spec.kind === 'finalize')
 const isDerivedRewrite = computed(() => {
   if (props.spec.kind !== 'rewrite_entity') return false
   const p = String(props.spec.targetPath || '')
@@ -50,7 +51,13 @@ const kindLabel = computed(() => {
   if (props.spec.kind === 'rewrite_entity' && props.spec.entityKind === 'cast') return '重写人物卡'
   return runKindLabel(props.spec.kind, props.spec.mode)
 })
+const confirmLabel = computed(() => (isLocalFinalize.value ? '确认定稿检查' : '确认调用'))
+const headKind = computed(() => (isLocalFinalize.value ? '定稿 · 本地检查确认' : `${kindLabel.value} · LLM 调用确认`))
+const modelDisplay = computed(() => (isLocalFinalize.value ? '不调用模型' : (props.modelLabel || '按阶段分配')))
 const riskNote = computed(() => {
+  if (isLocalFinalize.value) {
+    return '定稿只跑本地硬门，不消耗模型额度。生成定稿候选后须点「接受」才会回写账本并标记单元为已定稿。'
+  }
   if (props.spec.kind === 'plan' && props.spec.mode === 'reinit') {
     const n = preserve.value.size
     return `重新立项重写总纲派生层；接受只覆盖未保留项${n ? `（已保留 ${n} 项精修文件）` : ''}；不写卷纲、不改单元/正文/账本。`
@@ -111,15 +118,15 @@ function confirm() {
     <div class="run-dialog panel">
       <header class="dlg-head">
         <div>
-          <small>{{ kindLabel }} · LLM 调用确认</small>
+          <small>{{ headKind }}</small>
           <h3>{{ title }}</h3>
         </div>
         <button class="dlg-close" @click="emit('cancel')">×</button>
       </header>
 
       <div class="dlg-meta">
-        <span class="meta-item"><small>模型</small><strong>{{ modelLabel || '按阶段分配' }}</strong></span>
-        <span class="meta-item"><small>调用预算</small><strong>{{ packet?.policy.maxCalls ?? '…' }} 次</strong></span>
+        <span class="meta-item"><small>模型</small><strong>{{ modelDisplay }}</strong></span>
+        <span class="meta-item"><small>调用预算</small><strong>{{ isLocalFinalize ? '0 次（本地）' : `${packet?.policy.maxCalls ?? '…'} 次` }}</strong></span>
         <span class="meta-item"><small>上下文</small><strong>{{ packet ? `${packet.blocks.length} 块 · ${(totalBytes / 1024).toFixed(1)} KB` : '…' }}</strong></span>
       </div>
 
@@ -159,7 +166,7 @@ function confirm() {
         </div>
       </div>
 
-      <div class="dlg-knowledge" v-if="knowledgeDocs.length">
+      <div class="dlg-knowledge" v-if="!isLocalFinalize && knowledgeDocs.length">
         <button class="knowledge-toggle" @click="knowledgeOpen = !knowledgeOpen">
           <span>参考知识（可选，内置 + 作者资料库）{{ selectedKnowledge.size ? ` · 已选 ${selectedKnowledge.size} 篇` : '' }}</span>
           <span>{{ knowledgeOpen ? '收起' : '展开' }}</span>
@@ -176,14 +183,14 @@ function confirm() {
 
       <p v-if="riskNote" class="dlg-risk">{{ riskNote }}</p>
 
-      <div class="dlg-instruction">
+      <div v-if="!isLocalFinalize" class="dlg-instruction">
         <label>追加指令（可选，会附加到本次调用的用户提示）</label>
         <textarea v-model="instruction" rows="3" placeholder="例如：保持既有事实，重点精简第 2 节；或：本卷新增人物 X，纳入索引…" spellcheck="false" />
       </div>
 
       <footer class="dlg-actions">
         <button @click="emit('cancel')">取消</button>
-        <button class="primary" :disabled="loading || !!loadError" @click="confirm">确认调用</button>
+        <button class="primary" :disabled="loading || !!loadError" @click="confirm">{{ confirmLabel }}</button>
       </footer>
     </div>
   </div>

@@ -3,8 +3,7 @@ import { computed } from 'vue'
 import { useAppStore } from '@/stores/app'
 import type { UnitInfo } from '@/types'
 
-const props = defineProps<{ selectedUnit: UnitInfo | null; busy: boolean }>()
-const emit = defineEmits<{ generate: [kind: string]; select: [unit: UnitInfo] }>()
+const props = defineProps<{ selectedUnit: UnitInfo | null }>()
 const store = useAppStore()
 const findings = computed(() => store.candidates.flatMap((c) => (c.findings || []).map((f) => ({ ...f, candidateId: c.id, unitId: c.unitId }))))
 const reviewRuns = computed(() => store.runs.filter((r) => ['review', 'finalize', 'revise'].includes(r.kind)))
@@ -16,11 +15,12 @@ const advisory = computed(() => findings.value.filter((f) => f.severity !== 'blo
 <template>
   <section class="review-workspace">
     <div class="view-title">
-      <div><p class="eyebrow">Quality</p><h2>审校与定稿</h2><p>本地硬门和 AI 建议分开呈现；只有接受的修订才能进入正文。</p></div>
-      <div class="review-actions" v-if="selectedUnit">
-        <button class="primary" :disabled="busy || !selectedUnit.hasProse" @click="emit('generate', 'review')">审校 {{ selectedUnit.unitId }}</button>
-        <button :disabled="busy || !selectedUnit.hasProse" @click="emit('generate', 'finalize')">{{ selectedUnit.status === 'reviewed' ? '重跑定稿' : '定稿' }} {{ selectedUnit.unitId }}</button>
+      <div>
+        <p class="eyebrow">Quality</p>
+        <h2>审校与定稿</h2>
+        <p>查看硬门与 AI 建议；发起审校/定稿请用写作页当前单元顶栏（或左侧流程条）。</p>
       </div>
+      <div v-if="selectedUnit" class="review-unit-chip">{{ selectedUnit.unitId }} · {{ selectedUnit.status === 'reviewed' ? '已定稿' : (selectedUnit.hasProse ? '有正文' : '无正文') }}</div>
     </div>
     <div class="review-stats">
       <div class="stat panel"><strong>{{ blocking.length }}</strong><span>阻断问题</span></div>
@@ -50,8 +50,8 @@ const advisory = computed(() => findings.value.filter((f) => f.severity !== 'blo
     </div>
     <div v-else class="empty-state panel">
       <h3>当前没有待处理审校问题</h3>
-      <p v-if="selectedUnit?.hasProse">点击「审校」生成一次有预算的检查；历史结果和问题会显示在这里。</p>
-      <p v-else>先为当前单元写正文，再运行审校。</p>
+      <p v-if="selectedUnit?.hasProse">到写作页点「审校」；结果会回到本页。</p>
+      <p v-else>先为当前单元写正文，再在写作页运行审校。</p>
     </div>
     <section v-if="reviewRuns.length" class="history panel">
       <h3>审校记录</h3>
@@ -68,7 +68,7 @@ const advisory = computed(() => findings.value.filter((f) => f.severity !== 'blo
 .view-title h2 { margin: 4px 0 6px; font-family: var(--font-prose); font-size: 28px; }
 .view-title p { margin: 0; color: var(--ink-soft); font-size: 13px; }
 .eyebrow { color: var(--accent) !important; font-size: 11px !important; letter-spacing: .12em; text-transform: uppercase; }
-.review-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.review-unit-chip { flex-shrink: 0; font-size: 12px; padding: 6px 12px; border-radius: 999px; background: rgba(15,107,92,.08); color: var(--accent); font-weight: 600; }
 .review-stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
 .stat { padding: 16px; display: grid; gap: 6px; }
 .stat strong { font-size: 24px; font-family: var(--font-prose); }

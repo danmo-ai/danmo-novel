@@ -76,22 +76,58 @@ const onStageIdentities = computed(() =>
 )
 
 type Scene = { id: string; chapter: string; beat: string; who: string; where: string }
-const scenes = computed<Scene[]>(() => {
-  const text = section(raw.value, 'scenes')
-  if (!text.trim()) return []
+/** 解析 scenes：支持 `- id:/chapter:` 列表，也支持扁平重复的 chapter/beat/who 块。 */
+function parseScenes(text: string): Scene[] {
+  const body = text.trim()
+  if (!body || body === '[]') return []
   const groups: string[][] = []
   let cur: string[] = []
-  for (const line of text.split('\n')) {
-    if (/^\s+-\s/.test(line)) { if (cur.length) groups.push(cur); cur = [line] }
-    else if (cur.length) cur.push(line)
+  const flush = () => { if (cur.length) { groups.push(cur); cur = [] } }
+  // who 下的人物 stem（无冒号），不是场面条目。
+  const isWhoStem = (line: string) => /^\s+-\s+[a-z][a-z0-9-]*\s*$/i.test(line)
+  // 场面顶层键（行首，可带 list dash）；勿用全局 /chapter/ 以免误伤 beat 正文。
+  const topKey = (line: string) => line.match(/^\s*(?:-\s+)?(id|scene|chapter|beat|purpose)\s*:/i)?.[1]?.toLowerCase() || ''
+  const hasTopKey = (lines: string[], key: string) => lines.some((l) => topKey(l) === key)
+
+  for (const line of body.split('\n')) {
+    if (!line.trim()) continue
+    if (isWhoStem(line)) {
+      if (cur.length) cur.push(line)
+      continue
+    }
+    const key = topKey(line)
+    // 同一场面不应重复 chapter/id/beat；再出现则开启下一场面（扁平格式）。
+    if (key && hasTopKey(cur, key)) {
+      flush()
+      cur = [line]
+      continue
+    }
+    // 列表项 `- id:` / `- chapter:` 也开启新场面。
+    if (key && /^\s+-\s+/.test(line) && cur.length) {
+      flush()
+      cur = [line]
+      continue
+    }
+    if (cur.length) cur.push(line)
+    else if (key || /^\s+(?:when|where|who|pov)\s*:/i.test(line)) cur = [line]
   }
-  if (cur.length) groups.push(cur)
+  flush()
+
   return groups.map((g) => {
-    const s = g.join('\n')
-    const val = (k: string) => s.match(new RegExp(`(?:^|\\s)${k}:\\s*(.*)$`))?.[1]?.trim().replace(/^['"]|['"]$/g, '') || ''
-    return { id: val('id') || val('scene'), chapter: val('chapter'), beat: val('beat') || val('scene'), who: val('who'), where: val('where') }
-  })
-})
+    const s = g.map((l) => l.replace(/^\s+-\s+/, '  ')).join('\n')
+    const val = (k: string) => s.match(new RegExp(`^\\s*${k}\\s*:\\s*(.*)$`, 'im'))?.[1]?.trim().replace(/^['"]|['"]$/g, '') || ''
+    const whoLines = g.filter(isWhoStem).map((l) => l.replace(/^\s+-\s+/, '').trim())
+    const whoInline = val('who')
+    return {
+      id: val('id') || val('scene'),
+      chapter: val('chapter'),
+      beat: val('beat') || val('purpose'),
+      who: whoLines.length ? whoLines.join('、') : whoInline,
+      where: val('where') || val('when'),
+    }
+  }).filter((s) => s.chapter || s.beat || s.id)
+}
+const scenes = computed<Scene[]>(() => parseScenes(section(raw.value, 'scenes')))
 const visibleScenes = computed(() => (props.compact && !expanded.value ? scenes.value.slice(0, 3) : scenes.value))
 const hasContent = computed(() => fields.value.length > 0 || scenes.value.length > 0)
 </script>
@@ -121,7 +157,7 @@ const hasContent = computed(() => fields.value.length > 0 || scenes.value.length
         <small class="scenes-label">场面节拍 · {{ scenes.length }}</small>
         <div v-for="(s, i) in visibleScenes" :key="i" class="scene-row">
           <span class="scene-ch">第 {{ s.chapter || '?' }} 章</span>
-          <span class="scene-beat"><strong v-if="s.id">{{ s.id }}</strong> {{ s.beat }}</span>
+          <span class="scene-beat"><strong v-if="s.id">{{ s.id }}</strong> {{ s.beat || '（无节拍文案）' }}</span>
           <span v-if="s.where" class="scene-where">{{ s.where }}</span>
         </div>
         <button v-if="compact && scenes.length > 3" class="scenes-toggle" @click="expanded = !expanded">

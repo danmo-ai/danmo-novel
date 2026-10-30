@@ -153,8 +153,15 @@ function start(kind: string, opts: { mode?: string; volumeId?: string; title?: s
   if (!book || busy.value) return
   const spec: any = { kind, bookId: book.summary.id, baseRevision: book.revision }
   // 立项/卷纲不以当前选中单元为目标，避免运行中心全显示成 U1。
-  if (selectedUnit.value && kind !== 'plan') spec.unitId = selectedUnit.value.unitId
-  if (kind === 'outline' && store.primary?.volume) spec.volumeId = `v${String(store.primary.volume).padStart(2, '0')}`
+  if (selectedUnit.value && kind !== 'plan') {
+    spec.unitId = selectedUnit.value.unitId
+    if (selectedUnit.value.volume) {
+      spec.volumeId = `v${String(selectedUnit.value.volume).padStart(2, '0')}`
+    }
+  } else if (kind === 'outline' && store.primary?.volume) {
+    // 无选中单元时才回落到全书下一步所在卷。
+    spec.volumeId = `v${String(store.primary.volume).padStart(2, '0')}`
+  }
   if (kind === 'plan') {
     const mode = opts.mode || (hasBookOutline.value ? 'volume' : 'init')
     spec.mode = mode
@@ -441,9 +448,6 @@ function roleLabel(role?: string) {
       <ReviewWorkspace
         v-else-if="view === 'review'"
         :selected-unit="selectedUnit"
-        :busy="busy"
-        @select="selectedUnit = $event"
-        @generate="start"
       />
       <section v-else class="editor-panel panel">
         <template v-if="isProseUnit && selectedUnit">
@@ -527,24 +531,13 @@ function roleLabel(role?: string) {
       </section>
 
       <aside v-if="view === 'write'" class="context-panel">
-        <section v-if="selectedUnit" class="side-card panel side-actions">
-          <h4>当前单元 · {{ selectedUnit.unitId }}</h4>
-          <p class="side-note">正向与重做同一组按钮；生成结果先入下方候选，接受后才落盘。</p>
-          <UnitFlowActions
-            :unit="selectedUnit"
-            :busy="busy"
-            :read-only="store.currentBook.summary.readOnly"
-            emphasize
-            @run="runUnitAction"
-          />
-        </section>
         <section class="side-card panel">
           <h4>全书下一步</h4>
           <div class="next-step">
             <span class="next-kind">{{ stageLabels[store.primary?.kind || ''] || store.primary?.kind }}</span>
             <strong>{{ store.primary?.unitId || `第 ${store.primary?.volume} 卷` }}</strong>
           </div>
-          <p class="side-note">页顶大按钮跟这一步；与左侧选中单元可能不同。</p>
+          <p class="side-note">页顶大按钮跟这一步。当前单元的细纲/正文/审校/定稿在中间顶栏操作。</p>
         </section>
         <section class="side-card panel">
           <h4>本卷人物 <span class="side-count">{{ store.currentBook.cast?.length || 0 }}</span></h4>
@@ -684,16 +677,16 @@ h1 { font-family: var(--font-prose); margin: 6px 0 0; font-size: 30px; line-heig
 .volume-progress { margin-left: auto; font-size: 10px; color: var(--ok); background: rgba(31,122,77,.1); padding: 1px 8px; border-radius: 20px; }
 .volume-title { margin: 0 10px 6px 28px; font-size: 10px; color: var(--ink-soft); line-height: 1.5; overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 1; -webkit-box-orient: vertical; }
 .volume-group .unit-row { margin-left: 6px; }
-/* 单元工作流引导 */
-.flow-guide { padding: 10px 10px 14px; border-bottom: 1px solid var(--line); margin-bottom: 10px; }
-.flow-steps { display: flex; align-items: center; gap: 3px; flex-wrap: wrap; }
-.flow-step { font-size: 10px; padding: 3px 8px; border-radius: 20px; border: 1px solid transparent; background: rgba(20,35,31,.05); color: var(--ink-soft); white-space: nowrap; cursor: pointer; }
+/* 单元工作流引导：侧栏窄，必须单行 */
+.flow-guide { padding: 8px 4px 12px; border-bottom: 1px solid var(--line); margin-bottom: 10px; }
+.flow-steps { display: flex; align-items: center; justify-content: space-between; gap: 0; flex-wrap: nowrap; width: 100%; min-width: 0; }
+.flow-step { flex: 1 1 0; min-width: 0; font-size: 10px; padding: 3px 0; border-radius: 20px; border: 1px solid transparent; background: rgba(20,35,31,.05); color: var(--ink-soft); white-space: nowrap; cursor: pointer; text-align: center; line-height: 1.2; }
 .flow-step:hover:not(:disabled) { border-color: rgba(15,107,92,.35); color: var(--ink); }
 .flow-step:disabled { opacity: .45; cursor: not-allowed; }
 .flow-step.active { background: var(--accent); color: white; font-weight: 700; }
 .flow-step.done { background: rgba(31,122,77,.15); color: var(--ok); }
-.flow-arrow { color: var(--ink-soft); font-size: 10px; opacity: .5; }
-.flow-note { margin: 10px 0 0; font-size: 10px; color: var(--ink-soft); line-height: 1.7; }
+.flow-arrow { flex: 0 0 auto; color: var(--ink-soft); font-size: 9px; opacity: .45; padding: 0 1px; line-height: 1; }
+.flow-note { margin: 10px 2px 0; font-size: 10px; color: var(--ink-soft); line-height: 1.7; }
 
 /* 中：正文/编辑器 */
 .editor-panel { min-height: 60vh; overflow: hidden; }

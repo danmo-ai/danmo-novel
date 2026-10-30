@@ -97,7 +97,11 @@ function bullets(raw: string) {
   return raw.split('\n').filter((l) => /^\s*[-*]\s+/.test(l)).map((l) => cleanInline(l.replace(/^\s*[-*]\s+/, ''))).filter(Boolean)
 }
 function tableRows(raw: string) {
-  return raw.split('\n').filter((l) => l.trim().startsWith('|') && !/^\s*\|?\s*:?-+/.test(l)).map((line) => {
+  // 只读「单元索引」表；同文件里的「剧情时钟」表也有 unit_id，扫全文会把 story_day 错填进功能列。
+  const section = findSection(raw, ['单元索引', '单元一览', 'Unit Index']) || raw
+  const lines = section.split('\n').filter((l) => l.trim().startsWith('|'))
+  // 跳过表头：对方列名含 unit_id / 单元 / 功能 等。
+  return lines.map((line) => {
     const cells = line.trim().replace(/^\||\|$/g, '').split('|').map((c) => c.trim())
     return { id: cells[0], range: cells[1], purpose: cells[2], boundary: cells[3], hook: cells[4], cells }
   }).filter((r) => /^v\d+-U\d+$/i.test(r.id))
@@ -118,7 +122,7 @@ const volumeView = computed(() => {
     cast: castStems(findSection(raw, ['本卷人物', '人物'])),
     ending: bullets(findSection(raw, ['卷末状态', '终局边界', '卷终局边界', '卷末收束'])),
     units: tableRows(raw),
-    otherSections: mdSections(raw).filter((s) => !['本卷目标', '卷目标', '本卷人物', '单元索引', '卷末状态'].some((name) => s.title.includes(name))),
+    otherSections: mdSections(raw).filter((s) => !['本卷目标', '卷目标', '本卷人物', '单元索引', '单元剧情时钟', '卷末状态'].some((name) => s.title.includes(name))),
   }
 })
 const bookView = computed(() => {

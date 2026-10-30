@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -47,7 +48,7 @@ type Result struct {
 }
 
 func (r *Runner) RunWrite(ctx context.Context, snap domain.BookSnapshot, unit domain.UnitInfo, modelID string) (Result, error) {
-	packet := contextsvc.BuildWritePacket(snap, unit, 0)
+	packet := contextsvc.BuildWritePacket(snap, unit, r.modelMaxOut(modelID))
 	if !packet.Policy.SplitByChapter {
 		return r.runJSON(ctx, snap, packet, modelID, domain.TaskWrite, unit.UnitID, unit.ProsePath, func(raw string, cand *domain.Candidate) error {
 			var parsed struct {
@@ -103,7 +104,7 @@ func (r *Runner) RunWrite(ctx context.Context, snap domain.BookSnapshot, unit do
 }
 
 func (r *Runner) RunOutline(ctx context.Context, snap domain.BookSnapshot, volume int, unitIDs []string, modelID string) (Result, error) {
-	packet := contextsvc.BuildOutlinePacket(snap, volume, unitIDs)
+	packet := contextsvc.BuildOutlinePacket(snap, volume, unitIDs, r.modelMaxOut(modelID))
 	var volCast []string
 	for _, v := range snap.Volumes {
 		if v.Volume == volume {
@@ -112,16 +113,11 @@ func (r *Runner) RunOutline(ctx context.Context, snap domain.BookSnapshot, volum
 		}
 	}
 	return r.runJSON(ctx, snap, packet, modelID, domain.TaskOutline, "", "", func(raw string, cand *domain.Candidate) error {
-		var parsed struct {
-			Units []domain.UnitOutlineDraft `json:"units"`
-		}
-		if err := unmarshalJSON(raw, &parsed); err != nil {
+		units, err := parseOutlineUnits(raw)
+		if err != nil {
 			return err
 		}
-		if len(parsed.Units) == 0 {
-			return fmt.Errorf("empty units")
-		}
-		cand.UnitOutlines = parsed.Units
+		cand.UnitOutlines = units
 		return nil
 	}, func(cand domain.Candidate) gates.Report {
 		rep := gates.Report{OK: true, Counts: map[string]int{}}
@@ -266,14 +262,20 @@ func castHasProtagonist(castJSON string) bool {
 func (r *Runner) RunReview(ctx context.Context, snap domain.BookSnapshot, unit domain.UnitInfo, modelID string) (Result, error) {
 	chapters := gates.ParseProseChapters(unit.ProseRaw)
 	local := gates.CheckProse(chapters, 2000)
-	packet := contextsvc.BuildReviewPacket(snap, unit, local.Findings)
+	packet := contextsvc.BuildReviewPacket(snap, unit, local.Findings, r.modelMaxOut(modelID))
 	res, err := r.runJSON(ctx, snap, packet, modelID, domain.TaskReview, unit.UnitID, unit.ProsePath, func(raw string, cand *domain.Candidate) error {
 		var parsed struct {
 			Verdict  string                 `json:"verdict"`
 			Findings []domain.ReviewFinding `json:"findings"`
 		}
 		if err := unmarshalJSON(raw, &parsed); err != nil {
-			return err
+			// 长文审校经常先输出正文分析、被输出预算截断或 JSON 后追加说明；尽力救回 findings。
+			verdict, findings, serr := salvageReviewJSON(raw)
+			if serr != nil {
+				return err
+			}
+			_ = verdict
+			parsed.Findings = findings
 		}
 		for i := range parsed.Findings {
 			if parsed.Findings[i].Source == "" {
@@ -313,7 +315,7 @@ func (r *Runner) RunLocalEdit(ctx context.Context, snap domain.BookSnapshot, sel
 func (r *Runner) RunRevise(ctx context.Context, snap domain.BookSnapshot, unit domain.UnitInfo, findings []domain.ReviewFinding, modelID string) (Result, error) {
 	chapters := gates.ParseProseChapters(unit.ProseRaw)
 	local := gates.CheckProse(chapters, 2000)
-	packet := contextsvc.BuildReviewPacket(snap, unit, append(local.Findings, findings...))
+	packet := contextsvc.BuildReviewPacket(snap, unit, append(local.Findings, findings...), r.modelMaxOut(modelID))
 	packet.TaskKind = domain.TaskRevise
 	packet.Policy = contextsvc.DefaultPolicy(domain.TaskRevise, 0)
 	packet.SystemPrompt = "你是小说修订助手。只针对列出的审校问题改正文，返回 JSON {\"chapters\":[...],\"canonChanges\":[]}。不要新增自由审稿轮次。"
@@ -342,7 +344,7 @@ func (r *Runner) RunRevise(ctx context.Context, snap domain.BookSnapshot, unit d
 // RunRewriteEntity rewrites one canon/setting file via a single bounded call.
 // Output is a candidate only; accept writes the normalized content back.
 func (r *Runner) RunRewriteEntity(ctx context.Context, snap domain.BookSnapshot, spec domain.TaskSpec, modelID string) (Result, error) {
-	packet := contextsvc.BuildRewriteEntityPacket(snap, spec, 0)
+	packet := contextsvc.BuildRewriteEntityPacket(snap, spec, r.modelMaxOut(modelID))
 	return r.runJSON(ctx, snap, packet, modelID, domain.TaskRewriteEntity, "", spec.TargetPath, func(raw string, cand *domain.Candidate) error {
 		var parsed struct {
 			Content string `json:"content"`
@@ -539,6 +541,152 @@ func (r *Runner) chat(ctx context.Context, modelID, system, user string, policy 
 	return resp.Content, rec, nil
 }
 
+// parseOutlineUnits accepts {"units":[...]} or a bare single-unit object
+// (common model drift when rewriting one unit).
+func parseOutlineUnits(raw string) ([]domain.UnitOutlineDraft, error) {
+	raw = normalizeOutlineJSON(raw)
+	var parsed struct {
+		Units []domain.UnitOutlineDraft `json:"units"`
+	}
+	if err := unmarshalJSON(raw, &parsed); err != nil {
+		return nil, err
+	}
+	if len(parsed.Units) > 0 {
+		return parsed.Units, nil
+	}
+	var one domain.UnitOutlineDraft
+	if err := unmarshalJSON(raw, &one); err == nil && strings.TrimSpace(one.UnitID) != "" {
+		return []domain.UnitOutlineDraft{one}, nil
+	}
+	return nil, fmt.Errorf("empty units（须输出 {\"units\":[...]}，即使只改 1 个单元）")
+}
+
+var outlineStringFields = []string{
+	"unitId", "status", "title", "function", "desire", "obstacle", "choice", "payoff",
+	"pleasure", "forbidden", "wordTarget", "pov", "storyDay", "gapFromPrev", "infoControl",
+}
+
+// normalizeOutlineJSON coerces model drift: storyDay/gapFromPrev as objects or
+// numbers, chapterFrom/To as strings, before strict struct decode.
+func normalizeOutlineJSON(raw string) string {
+	trimmed := strings.TrimSpace(raw)
+	var root any
+	if err := json.Unmarshal([]byte(trimmed), &root); err != nil {
+		// May be fenced; let unmarshalJSON extract later.
+		re := regexp.MustCompile("(?s)```(?:json)?\\s*(\\{.*?\\})\\s*```")
+		if m := re.FindStringSubmatch(trimmed); len(m) > 1 {
+			if err := json.Unmarshal([]byte(m[1]), &root); err != nil {
+				return raw
+			}
+			trimmed = m[1]
+		} else {
+			start := strings.Index(trimmed, "{")
+			end := strings.LastIndex(trimmed, "}")
+			if start < 0 || end <= start {
+				return raw
+			}
+			if err := json.Unmarshal([]byte(trimmed[start:end+1]), &root); err != nil {
+				return raw
+			}
+		}
+	}
+	switch r := root.(type) {
+	case map[string]any:
+		if units, ok := r["units"].([]any); ok {
+			for _, u := range units {
+				if m, ok := u.(map[string]any); ok {
+					coerceOutlineUnitMap(m)
+				}
+			}
+		} else {
+			coerceOutlineUnitMap(r)
+		}
+	default:
+		return raw
+	}
+	b, err := json.Marshal(root)
+	if err != nil {
+		return raw
+	}
+	return string(b)
+}
+
+func coerceOutlineUnitMap(m map[string]any) {
+	for _, k := range outlineStringFields {
+		if v, ok := m[k]; ok {
+			m[k] = coerceToOutlineString(v)
+		}
+	}
+	for _, k := range []string{"chapterFrom", "chapterTo"} {
+		if v, ok := m[k]; ok {
+			m[k] = coerceToOutlineInt(v)
+		}
+	}
+}
+
+func coerceToOutlineString(v any) string {
+	switch t := v.(type) {
+	case nil:
+		return ""
+	case string:
+		return t
+	case float64:
+		if t == float64(int64(t)) {
+			return fmt.Sprintf("%d", int64(t))
+		}
+		return fmt.Sprintf("%v", t)
+	case json.Number:
+		return t.String()
+	case bool:
+		return fmt.Sprintf("%v", t)
+	case map[string]any:
+		for _, key := range []string{"day", "value", "text", "label", "storyDay"} {
+			if x, ok := t[key]; ok {
+				s := coerceToOutlineString(x)
+				if s == "" {
+					continue
+				}
+				if key == "day" || key == "value" {
+					if lab, ok := t["label"]; ok {
+						if ls := coerceToOutlineString(lab); ls != "" && ls != s {
+							return strings.TrimSpace(s + " " + ls)
+						}
+					}
+				}
+				return s
+			}
+		}
+		b, _ := json.Marshal(t)
+		return string(b)
+	case []any:
+		b, _ := json.Marshal(t)
+		return string(b)
+	default:
+		return fmt.Sprintf("%v", t)
+	}
+}
+
+func coerceToOutlineInt(v any) any {
+	switch t := v.(type) {
+	case float64:
+		return int(t)
+	case json.Number:
+		i, err := t.Int64()
+		if err == nil {
+			return int(i)
+		}
+		return v
+	case string:
+		n, err := strconv.Atoi(strings.TrimSpace(t))
+		if err == nil {
+			return n
+		}
+		return v
+	default:
+		return v
+	}
+}
+
 func unmarshalJSON(raw string, dest any) error {
 	raw = strings.TrimSpace(raw)
 	try := func(data []byte) error {
@@ -569,6 +717,99 @@ func unmarshalJSON(raw string, dest any) error {
 func normalizeChapterNumbers(raw string) string {
 	re := regexp.MustCompile(`("chapter"\s*:\s*)"(\d+)"`)
 	return re.ReplaceAllString(raw, "$1$2")
+}
+
+// salvageReviewJSON recovers the review object when the model rambles after a
+// valid JSON and/or the response is truncated mid-object (output budget hit).
+func salvageReviewJSON(raw string) (verdict string, findings []domain.ReviewFinding, err error) {
+	start := strings.Index(raw, "{")
+	if start < 0 {
+		return "", nil, fmt.Errorf("no JSON")
+	}
+	// Walk balanced braces/arrays, respecting strings; grab the largest closed
+	// prefix; if unbalanced at the end, drop to the last complete "}" at depth 0
+	// or last complete array element then force-close.
+	depthObj, depthArr := 0, 0
+	inStr := false
+	esc := false
+	lastGoodObjEnd := -1
+	lastGoodArrElemEnd := -1
+	for i := start; i < len(raw); i++ {
+		c := raw[i]
+		if inStr {
+			if esc {
+				esc = false
+				continue
+			}
+			if c == '\\' {
+				esc = true
+			} else if c == '"' {
+				inStr = false
+			}
+			continue
+		}
+		switch c {
+		case '"':
+			inStr = true
+		case '{':
+			depthObj++
+		case '}':
+			if depthObj > 0 {
+				depthObj--
+			}
+			if depthObj == 0 && depthArr == 0 {
+				lastGoodObjEnd = i
+			}
+		case '[':
+			depthArr++
+		case ']':
+			if depthArr > 0 {
+				depthArr--
+				if depthObj == 1 && depthArr == 0 {
+					lastGoodArrElemEnd = i
+				}
+			}
+		}
+	}
+	tryParse := func(s string) bool {
+		var parsed struct {
+			Verdict  string                 `json:"verdict"`
+			Findings []domain.ReviewFinding `json:"findings"`
+		}
+		if e := unmarshalJSON(s, &parsed); e != nil {
+			return false
+		}
+		if verdict == "" {
+			verdict = parsed.Verdict
+		}
+		findings = parsed.Findings
+		return true
+	}
+	if lastGoodObjEnd > start && tryParse(raw[start:lastGoodObjEnd+1]) {
+		return verdict, findings, nil
+	}
+	// Truncated: close what we can.
+	tail := raw[start:]
+	if lastGoodArrElemEnd >= 0 {
+		tail = raw[start : lastGoodArrElemEnd+1]
+	}
+	// Trim dangling comma/property after the last complete element.
+	if i := strings.LastIndex(tail, "}"); i > 0 {
+		tail = tail[:i+1]
+	}
+	for depthObj > 0 || depthArr > 0 {
+		if depthArr > 0 {
+			tail += "]"
+			depthArr--
+			continue
+		}
+		tail += "}"
+		depthObj--
+	}
+	if tryParse(tail) {
+		return verdict, findings, nil
+	}
+	return "", nil, fmt.Errorf("no JSON object in model output（疑似输出被截断）")
 }
 
 func joinFindings(fs []domain.ReviewFinding) string {

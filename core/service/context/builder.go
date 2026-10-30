@@ -45,8 +45,10 @@ func DefaultPolicy(kind domain.TaskKind, chapterCount int) domain.CallPolicy {
 			p.AllowOneRepair = false
 		}
 	case domain.TaskReview:
-		p.MaxCalls = 1
-		p.AllowOneRepair = false
+		// 长文审校常顶满输出预算导致 JSON 未闭合；给一次定向修复把失败原因喂回模型。
+		p.MaxCalls = 2
+		p.AllowOneRepair = true
+		p.MaxOutputTokens = 16384
 	case domain.TaskRevise, domain.TaskFinalize:
 		p.MaxCalls = 1
 		p.AllowOneRepair = false
@@ -60,6 +62,7 @@ func DefaultPolicy(kind domain.TaskKind, chapterCount int) domain.CallPolicy {
 
 func BuildWritePacket(snap domain.BookSnapshot, unit domain.UnitInfo, modelMaxOut int) domain.ContextPacket {
 	policy := DefaultPolicy(domain.TaskWrite, unit.ChapterTo-unit.ChapterFrom+1)
+	policy.MaxOutputTokens = CapMaxOutput(policy.MaxOutputTokens, modelMaxOut)
 	if modelMaxOut > 0 && modelMaxOut < 4000 && !policy.SplitByChapter && unit.ChapterTo > unit.ChapterFrom {
 		policy.SplitByChapter = true
 		policy.MaxCalls = unit.ChapterTo - unit.ChapterFrom + 1
@@ -156,8 +159,9 @@ func BuildWritePacket(snap domain.BookSnapshot, unit domain.UnitInfo, modelMaxOu
 	return packet
 }
 
-func BuildOutlinePacket(snap domain.BookSnapshot, volume int, unitIDs []string) domain.ContextPacket {
+func BuildOutlinePacket(snap domain.BookSnapshot, volume int, unitIDs []string, modelMaxOut int) domain.ContextPacket {
 	policy := DefaultPolicy(domain.TaskOutline, 0)
+	policy.MaxOutputTokens = CapMaxOutput(policy.MaxOutputTokens, modelMaxOut)
 	volTag := fmt.Sprintf("v%02d", volume)
 	var volRaw string
 	var cast []string
@@ -201,9 +205,10 @@ func BuildOutlinePacket(snap domain.BookSnapshot, volume int, unitIDs []string) 
 		hashes[b.Source] = shortHash(b.Content)
 	}
 	system := novel.OutlineSystemPrompt()
+	instr := "为 unitIds 列出的单元生成/重写细纲合同，输出 {\"units\":[...]}（即使只有 1 个单元也必须用数组）。不得改卷纲已定的 function / next_hook.type；scenes / nextHook / storyDay / gapFromPrev / infoControl 必须给出。已有细纲头时在其基础上补全或优化，不要返回空 units。"
 	user := BuildUserPrompt("outline", "", map[string]any{
 		"id": snap.Summary.ID, "volumeId": volTag, "unitIds": unitIDs,
-	}, "为本批 proposed 单元补全细纲合同。不得改卷纲已定的 function / next_hook.type；scenes / nextHook / storyDay / gapFromPrev / infoControl 必须给出。", blocks, nil)
+	}, instr, blocks, nil)
 	packet := domain.ContextPacket{
 		ContractVersion: ContractVersion, TaskKind: domain.TaskOutline, BookID: snap.Summary.ID, VolumeID: volTag,
 		InputHashes: hashes, Blocks: blocks, KnowledgeVersion: novel.KnowledgeVersion,
@@ -358,8 +363,35 @@ func BuildPlanPacketWithMode(snap domain.BookSnapshot, volume int, mode, instruc
 	}
 }
 
-func BuildReviewPacket(snap domain.BookSnapshot, unit domain.UnitInfo, localFindings []domain.ReviewFinding) domain.ContextPacket {
+// BuildFinalizePacket describes the local finalize check (no LLM call).
+func BuildFinalizePacket(snap domain.BookSnapshot, unit domain.UnitInfo) domain.ContextPacket {
+	policy := DefaultPolicy(domain.TaskFinalize, 0)
+	policy.MaxCalls = 0
+	policy.AllowOneRepair = false
+	blocks := []domain.ContextBlock{
+		{ID: "outline", Label: "单元合同", Source: unit.OutlinePath, Content: unit.OutlineRaw, Bytes: len(unit.OutlineRaw)},
+		{ID: "prose", Label: "待定稿正文", Source: unit.ProsePath, Content: unit.ProseRaw, Bytes: len(unit.ProseRaw)},
+	}
+	note := "定稿为本地硬门检查，不调用大模型。确认后生成定稿候选；接受候选才会回写 continuity 账本并将单元标为 reviewed。"
+	blocks = append(blocks, domain.ContextBlock{ID: "finalize-note", Label: "定稿说明", Source: "local://finalize", Content: note, Bytes: len(note)})
+	hashes := map[string]string{}
+	for _, b := range blocks {
+		hashes[b.Source] = shortHash(b.Content)
+	}
+	system := "本地定稿检查：解析正文章节、跑硬门（字数/空章等）。不发送 LLM。"
+	user := BuildUserPrompt("finalize", "", map[string]any{
+		"id": snap.Summary.ID, "unitId": unit.UnitID, "status": string(unit.Status),
+	}, "对当前单元正文做本地定稿检查。", blocks, nil)
+	return domain.ContextPacket{
+		ContractVersion: ContractVersion, TaskKind: domain.TaskFinalize, BookID: snap.Summary.ID, UnitID: unit.UnitID,
+		InputHashes: hashes, Blocks: blocks, KnowledgeVersion: novel.KnowledgeVersion,
+		EstPromptTokens: 0, Policy: policy, SystemPrompt: system, UserPrompt: user,
+	}
+}
+
+func BuildReviewPacket(snap domain.BookSnapshot, unit domain.UnitInfo, localFindings []domain.ReviewFinding, modelMaxOut int) domain.ContextPacket {
 	policy := DefaultPolicy(domain.TaskReview, 0)
+	policy.MaxOutputTokens = CapMaxOutput(policy.MaxOutputTokens, modelMaxOut)
 	prose := unit.ProseRaw
 	onStage := extractOnStage(unit.OutlineRaw)
 	blocks := []domain.ContextBlock{
