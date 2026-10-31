@@ -164,14 +164,22 @@ const roles = [
   { id: 'review', label: '审校', hint: '找 OOC、连续性、写穿与 AI 味，需要严格比对与挑错能力。建议 effort medium–high。', effort: 'medium' },
   { id: 'local_edit', label: '局部编辑', hint: '选区润色/改写，改动小、要求贴原文。轻量模型即可，effort low。', effort: 'low' },
 ]
-const EFFORTS = [
-  { id: '', label: '默认' },
-  { id: 'off', label: 'off（关闭推理）' },
-  { id: 'low', label: 'low' },
-  { id: 'medium', label: 'medium' },
-  { id: 'high', label: 'high' },
-  { id: 'xhigh', label: 'xhigh' },
-]
+// Reasoning effort labels. Keep in sync with the backend effort vocabulary
+// (off/none/minimal/low/medium/high/xhigh/max/ultra); unknown ids fall back to
+// the raw id so new vendor levels never get silently dropped.
+const EFFORT_LABELS: Record<string, string> = {
+  '': '默认',
+  off: 'off（关闭推理）',
+  none: 'none',
+  minimal: 'minimal',
+  low: 'low',
+  medium: 'medium',
+  high: 'high',
+  xhigh: 'xhigh',
+  max: 'max',
+  ultra: 'ultra',
+}
+const FALLBACK_EFFORTS = ['off', 'low', 'medium', 'high', 'xhigh']
 // modelId 形如 provider/model[/effort]，拆分用于两级选择。
 function splitModelId(id: string): { base: string; effort: string } {
   const parts = (id || '').split('/')
@@ -190,8 +198,10 @@ function setAssignment(role: string, base: string, effort: string) {
 function effortsForModel(base: string) {
   const m = store.models.find((x) => x.id === base)
   const avail = m?.availableEfforts || []
-  if (!avail.length) return EFFORTS
-  return [{ id: '', label: '默认' }, ...EFFORTS.filter((e) => e.id && avail.includes(e.id))]
+  // Drive the options straight from the model catalog so vendor-specific levels
+  // (max / none / minimal) are not filtered out by a hardcoded whitelist.
+  const ids = avail.length ? avail : (base ? FALLBACK_EFFORTS : [])
+  return ['', ...ids].map((id) => ({ id, label: EFFORT_LABELS[id] ?? id }))
 }
 
 onMounted(async () => {

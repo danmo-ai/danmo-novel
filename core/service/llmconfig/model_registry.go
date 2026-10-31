@@ -25,7 +25,8 @@ func (r *ModelRegistry) SetModels(models []domain.ModelConfig) {
 	r.byModel = nil
 }
 
-func (r *ModelRegistry) ensureIndex() {
+// ensureIndexLocked builds the lookup index. Caller must hold a write lock.
+func (r *ModelRegistry) ensureIndexLocked() {
 	if r.byModel != nil {
 		return
 	}
@@ -40,21 +41,21 @@ func (r *ModelRegistry) lookup(modelID string) *domain.ModelConfig {
 	if model == "" {
 		return nil
 	}
-	r.mu.RLock()
-	r.ensureIndex()
-	defer r.mu.RUnlock()
-	// Try full ID first (e.g. "moonshot/k3.1-pro"), then model name only.
-	key := strings.ToLower(modelID)
-	if c, ok := r.byModel[key]; ok {
+	modelKey := strings.ToLower(model)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.ensureIndexLocked()
+	// Try full ID first (e.g. "moonshot/k3.1-pro"), then bare model name
+	// (the built-in catalog keys models without a provider prefix).
+	if c, ok := r.byModel[strings.ToLower(modelID)]; ok {
 		return &c
 	}
-	if c, ok := r.byModel[strings.ToLower(model)]; ok {
+	if c, ok := r.byModel[modelKey]; ok {
 		return &c
 	}
-	// Also try matching entries that have no provider prefix.
-	// YAML entries use bare model names like "k3.1-pro", not "moonshot/k3.1-pro".
+	// Also try matching entries that carry a provider prefix.
 	for k, c := range r.byModel {
-		if strings.HasSuffix(strings.ToLower(k), "/"+strings.ToLower(model)) {
+		if strings.HasSuffix(k, "/"+modelKey) {
 			return &c
 		}
 	}
