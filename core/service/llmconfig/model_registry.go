@@ -43,12 +43,20 @@ func (r *ModelRegistry) lookup(modelID string) *domain.ModelConfig {
 	r.mu.RLock()
 	r.ensureIndex()
 	defer r.mu.RUnlock()
+	// Try full ID first (e.g. "moonshot/k3.1-pro"), then model name only.
 	key := strings.ToLower(modelID)
 	if c, ok := r.byModel[key]; ok {
 		return &c
 	}
 	if c, ok := r.byModel[strings.ToLower(model)]; ok {
 		return &c
+	}
+	// Also try matching entries that have no provider prefix.
+	// YAML entries use bare model names like "k3.1-pro", not "moonshot/k3.1-pro".
+	for k, c := range r.byModel {
+		if strings.HasSuffix(strings.ToLower(k), "/"+strings.ToLower(model)) {
+			return &c
+		}
 	}
 	return nil
 }
