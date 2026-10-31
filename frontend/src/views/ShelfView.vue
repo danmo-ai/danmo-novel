@@ -52,7 +52,7 @@ function primaryLabel(b: any) {
 <template>
   <section class="shelf-hero">
     <div>
-      <p class="eyebrow">创作工作台</p>
+      <p class="eyebrow">Workspace</p>
       <h1>你的书，<br />从一句灵感到定稿。</h1>
       <p class="sub">受控生成 · 候选确认 · 多模型写作</p>
     </div>

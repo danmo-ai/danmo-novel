@@ -274,7 +274,7 @@ async function saveAssignments() {
 <template>
   <section class="settings-page">
     <header class="settings-hero">
-      <p class="eyebrow">设置</p>
+      <p class="eyebrow">Settings</p>
       <h1>配置你的写作引擎。</h1>
       <p class="sub">版本 · 提供商 · 创作阶段 · 模型参数</p>
     </header>
