@@ -13,25 +13,21 @@ import (
 	"time"
 
 	"github.com/danmo-ai/danmo-novel/core/domain"
+	"gopkg.in/yaml.v3"
 )
 
 var (
 	unitOutlineRe = regexp.MustCompile(`(?i)^v(\d+)-U(\d+)\.ya?ml$`)
 	unitProseRe   = regexp.MustCompile(`(?i)^v(\d+)-U(\d+)\.md$`)
 	volumeRe      = regexp.MustCompile(`(?i)^(?:volume|vol|v)0*(\d+)`)
-	statusRe      = regexp.MustCompile(`(?m)^status:\s*(\S+)`)
-	titleRe       = regexp.MustCompile(`(?m)^(?:title_working|title):\s*(.+)$`)
-	rangeRe       = regexp.MustCompile(`(?m)^chapter_range:\s*\[\s*(\d+)\s*,\s*(\d+)\s*\]`)
-	stateScalarRe = regexp.MustCompile(`(?m)^([a-zA-Z0-9_]+):\s*(.*)$`)
-	castStatusRe  = regexp.MustCompile("(?m)^\\s*`?status`?\\s*[：:]\\s*([A-Za-z_-]+)")
-	castRoleRe    = regexp.MustCompile("(?m)^\\s*`?role`?\\s*[：:]\\s*([A-Za-z_-]+)")
+	// 人物卡是 Markdown：status/role 必须是行首的纯字段。
+	castStatusRe = regexp.MustCompile("(?m)^\\s*`?status`?\\s*[：:]\\s*([A-Za-z_-]+)")
+	castRoleRe   = regexp.MustCompile("(?m)^\\s*`?role`?\\s*[：:]\\s*([A-Za-z_-]+)")
 )
 
-// auxiliaryPrefixes are directories whose files never belong to canon/units:
-// Danmo Work tool packs, backups, and repair snapshots. Without this filter a
-// backup like backups/<date>/v01-U3.yaml would race the real unit file in the
-// files map (random walk order → stale content overwriting current).
-var auxiliaryPrefixes = []string{".pack/", ".tools/", "tools/", "backups/", "extras/"}
+// auxiliaryPrefixes 是不属于书本身的目录：本应用自己写的改动备份、以及归档件。
+// 不过滤的话 backups/<date>/v01-U3.yaml 会跟正式单元文件抢同一个文件名。
+var auxiliaryPrefixes = []string{"backups/", "_archive/"}
 
 func isAuxiliaryPath(rel string) bool {
 	for _, p := range auxiliaryPrefixes {
@@ -42,7 +38,7 @@ func isAuxiliaryPath(rel string) bool {
 	return false
 }
 
-// LoadBook parses a danmo-work compatible novel/<book-id>/ tree.
+// LoadBook 读标准结构的书：novel-state.yaml + outline/ + units/ + canon/ + continuity/。
 func LoadBook(root string, readOnly bool) (domain.BookSnapshot, error) {
 	root = filepath.Clean(root)
 	info, err := os.Stat(root)
@@ -80,7 +76,7 @@ func LoadBook(root string, readOnly bool) (domain.BookSnapshot, error) {
 	})
 
 	volumes := loadVolumes(root, files)
-	units := loadUnits(root, files, state.LastCommittedCh)
+	units := loadUnits(root, files)
 	cast := loadCast(files)
 	identitySegments, _ := LoadIdentityTimeline(root)
 
@@ -113,13 +109,13 @@ func LoadBook(root string, readOnly bool) (domain.BookSnapshot, error) {
 			RootPath:        root,
 			ReadOnly:        readOnly,
 		},
-		StateRaw:   stateRaw,
-		Volumes:    volumes,
-		Units:      units,
-		Cast:       cast,
-		Files:      files,
-		Revision:   computeRevision(files),
-		ImportedAt: time.Now().UTC(),
+		StateRaw:         stateRaw,
+		Volumes:          volumes,
+		Units:            units,
+		Cast:             cast,
+		Files:            files,
+		Revision:         computeRevision(files),
+		ImportedAt:       time.Now().UTC(),
 		IdentitySegments: identitySegments,
 	}
 	return snap, nil
@@ -127,32 +123,35 @@ func LoadBook(root string, readOnly bool) (domain.BookSnapshot, error) {
 
 type stateFields struct {
 	Title, Genre, Subgenre, Stage, NextAction, TimeSystem string
+	ActiveUnit                                            string
 	LastCommittedCh                                       int
 }
 
+// parseState 读 novel-state.yaml 的顶层标的量。注释、引号、类型转换都交给 YAML。
 func parseState(raw string) stateFields {
-	out := stateFields{}
-	for _, m := range stateScalarRe.FindAllStringSubmatch(raw, -1) {
-		k, v := m[1], strings.TrimSpace(m[2])
-		v = strings.Trim(v, `"'`)
-		switch k {
-		case "title":
-			out.Title = v
-		case "genre":
-			out.Genre = v
-		case "subgenre":
-			out.Subgenre = v
-		case "stage":
-			out.Stage = v
-		case "next_action":
-			out.NextAction = v
-		case "time_system":
-			out.TimeSystem = v
-		case "last_committed_ch":
-			out.LastCommittedCh, _ = strconv.Atoi(v)
-		}
+	var doc struct {
+		Title           string `yaml:"title"`
+		Genre           string `yaml:"genre"`
+		Subgenre        string `yaml:"subgenre"`
+		Stage           string `yaml:"stage"`
+		NextAction      string `yaml:"next_action"`
+		TimeSystem      string `yaml:"time_system"`
+		ActiveUnit      string `yaml:"active_unit"`
+		LastCommittedCh int    `yaml:"last_committed_ch"`
 	}
-	return out
+	if err := yaml.Unmarshal([]byte(raw), &doc); err != nil {
+		return stateFields{}
+	}
+	return stateFields{
+		Title:           doc.Title,
+		Genre:           doc.Genre,
+		Subgenre:        doc.Subgenre,
+		Stage:           doc.Stage,
+		NextAction:      doc.NextAction,
+		TimeSystem:      doc.TimeSystem,
+		ActiveUnit:      doc.ActiveUnit,
+		LastCommittedCh: doc.LastCommittedCh,
+	}
 }
 
 func loadVolumes(root string, files map[string]string) []domain.VolumeInfo {
@@ -185,6 +184,7 @@ func loadVolumes(root string, files map[string]string) []domain.VolumeInfo {
 	return out
 }
 
+// castStemRe 是人物卡 stem 的唯一合法形态：小写字母、数字、连字符。
 var castStemRe = regexp.MustCompile(`^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$`)
 
 // parseVolumeCast extracts only machine-readable stem lines from 本卷人物.
@@ -219,7 +219,54 @@ func parseVolumeCast(md string) []string {
 	return out
 }
 
-func loadUnits(root string, files map[string]string, lastCommitted int) []domain.UnitInfo {
+// unitOutline 是 outline/units/vNN-U#.yaml 里本应用关心的字段。
+// chapter_range 用 yaml.Node 读：块序列与行内数组在 YAML 里都是 sequence。
+type unitOutline struct {
+	UnitID       string
+	Status       string
+	TitleWorking string
+	Title        string
+	Range        []int
+}
+
+func parseUnitOutline(raw string) unitOutline {
+	var out unitOutline
+	var node yaml.Node
+	if err := yaml.Unmarshal([]byte(raw), &node); err != nil {
+		return out
+	}
+	root := &node
+	if root.Kind == yaml.DocumentNode && len(root.Content) > 0 {
+		root = root.Content[0]
+	}
+	if root.Kind != yaml.MappingNode {
+		return out
+	}
+	for i := 0; i+1 < len(root.Content); i += 2 {
+		key, val := root.Content[i].Value, root.Content[i+1]
+		switch key {
+		case "unit_id":
+			out.UnitID = strings.TrimSpace(val.Value)
+		case "status":
+			out.Status = strings.TrimSpace(val.Value)
+		case "title_working":
+			out.TitleWorking = strings.TrimSpace(val.Value)
+		case "title":
+			out.Title = strings.TrimSpace(val.Value)
+		case "chapter_range":
+			if val.Kind == yaml.SequenceNode && len(val.Content) >= 2 {
+				from, err1 := strconv.Atoi(strings.TrimSpace(val.Content[0].Value))
+				to, err2 := strconv.Atoi(strings.TrimSpace(val.Content[1].Value))
+				if err1 == nil && err2 == nil && to >= from && from > 0 {
+					out.Range = []int{from, to}
+				}
+			}
+		}
+	}
+	return out
+}
+
+func loadUnits(root string, files map[string]string) []domain.UnitInfo {
 	byID := map[string]*domain.UnitInfo{}
 	ensure := func(name string) *domain.UnitInfo {
 		m := unitOutlineRe.FindStringSubmatch(name)
@@ -243,42 +290,60 @@ func loadUnits(root string, files map[string]string, lastCommitted int) []domain
 		byID[id] = e
 		return e
 	}
-	for rel, raw := range files {
+	keys := make([]string, 0, len(files))
+	for rel := range files {
+		keys = append(keys, rel)
+	}
+	sort.Strings(keys)
+
+	// 先细纲：决定 status 与章范围。
+	for _, rel := range keys {
 		base := filepath.Base(rel)
-		if unitOutlineRe.MatchString(base) {
-			e := ensure(base)
-			if e == nil {
-				continue
-			}
-			e.OutlineRaw = raw
-			e.OutlinePath = rel
-			if sm := statusRe.FindStringSubmatch(raw); len(sm) > 1 {
-				e.Status = domain.UnitStatus(strings.ToLower(sm[1]))
-			}
-			if tm := titleRe.FindStringSubmatch(raw); len(tm) > 1 {
-				e.Title = strings.Trim(strings.TrimSpace(tm[1]), `"'`)
-			}
-			if rm := rangeRe.FindStringSubmatch(raw); len(rm) > 2 {
-				e.ChapterFrom, _ = strconv.Atoi(rm[1])
-				e.ChapterTo, _ = strconv.Atoi(rm[2])
-			}
+		if !unitOutlineRe.MatchString(base) || !strings.HasPrefix(rel, "outline/units/") {
+			continue
 		}
-		if unitProseRe.MatchString(base) && strings.HasPrefix(rel, "units/") {
-			e := ensure(base)
-			if e == nil {
-				continue
-			}
-			e.HasProse = true
-			e.ProseRaw = raw
-			e.ProsePath = rel
-			if e.Status == domain.UnitProposed || e.Status == domain.UnitAccepted {
-				e.Status = domain.UnitDrafted
-			}
-			if e.Status == domain.UnitReviewed && e.ChapterTo > 0 && e.ChapterTo <= lastCommitted {
-				e.Status = domain.UnitReviewed
-			}
+		e := ensure(base)
+		if e == nil {
+			continue
+		}
+		raw := files[rel]
+		e.OutlineRaw = raw
+		e.OutlinePath = rel
+		parsed := parseUnitOutline(raw)
+		if parsed.Status == "" {
+			// 细纲解析失败：保留单元但不猜它的状态，等作者重写细纲。
+			continue
+		}
+		e.Status = domain.UnitStatus(strings.ToLower(parsed.Status))
+		e.Title = parsed.TitleWorking
+		if e.Title == "" {
+			e.Title = parsed.Title
+		}
+		if parsed.Range != nil {
+			e.ChapterFrom, e.ChapterTo = parsed.Range[0], parsed.Range[1]
 		}
 	}
+	// 再正文：有稿单元的状态由正文决定，不被细纲覆盖。
+	for _, rel := range keys {
+		base := filepath.Base(rel)
+		if !unitProseRe.MatchString(base) || !strings.HasPrefix(rel, "units/") {
+			continue
+		}
+		e := ensure(base)
+		if e == nil {
+			continue
+		}
+		e.HasProse = true
+		e.ProseRaw = files[rel]
+		e.ProsePath = rel
+		// 细纲写着 accepted/proposed 但正文已落盘 → 草稿（还没走审校定稿）。
+		// 已是 reviewed 的保持原状：状态以细纲为准，章号游标不替它升级。
+		switch e.Status {
+		case domain.UnitProposed, domain.UnitAccepted:
+			e.Status = domain.UnitDrafted
+		}
+	}
+
 	out := make([]domain.UnitInfo, 0, len(byID))
 	for _, e := range byID {
 		out = append(out, *e)
@@ -295,9 +360,8 @@ func loadUnits(root string, files map[string]string, lastCommitted int) []domain
 
 var castTaglineRe = regexp.MustCompile("(?m)^\\s*`?tagline`?\\s*[：:]\\s*(.+)$")
 
-// splitNameTagline splits a legacy heading "姓名（说明）" into pure name and
-// tagline. Role-only annotations (主角/protagonist 等) are dropped entirely —
-// role lives in its own field.
+// splitNameTagline 把「姓名（说明）」拆成纯姓名与一句话说明。
+// 纯角色标注（主角/protagonist 等）直接丢弃——role 有自己的字段。
 func splitNameTagline(heading string) (name, tagline string) {
 	heading = strings.TrimSpace(strings.TrimPrefix(heading, "#"))
 	heading = strings.TrimSpace(heading)
@@ -406,8 +470,8 @@ func SetUnitStatus(root, unitID string, status domain.UnitStatus) error {
 		return err
 	}
 	text := string(raw)
-	if statusRe.MatchString(text) {
-		text = statusRe.ReplaceAllString(text, "status: "+string(status))
+	if re := regexp.MustCompile(`(?m)^status:.*$`); re.MatchString(text) {
+		text = re.ReplaceAllString(text, "status: "+string(status))
 	} else {
 		text = "status: " + string(status) + "\n" + text
 	}
@@ -447,8 +511,52 @@ func HasBookOutline(snap domain.BookSnapshot) bool {
 	return strings.TrimSpace(snap.Files["outline/book_outline.md"]) != ""
 }
 
+// activeUnitVolume resolves novel-state.yaml's active_unit (e.g. "v01-U9") to a
+// volume that actually exists in the book.
+func activeUnitVolume(activeUnit string, volumes []domain.VolumeInfo) (int, bool) {
+	m := unitOutlineRe.FindStringSubmatch(strings.TrimSpace(activeUnit) + ".yaml")
+	if m == nil {
+		return 0, false
+	}
+	n, _ := strconv.Atoi(m[1])
+	for _, v := range volumes {
+		if v.Volume == n {
+			return n, true
+		}
+	}
+	return 0, false
+}
+
+func unfinishedInVolume(units []domain.UnitInfo, vol int) bool {
+	for _, u := range units {
+		if u.Volume != vol {
+			continue
+		}
+		switch u.Status {
+		case domain.UnitProposed, domain.UnitAccepted, domain.UnitDrafted:
+			return true
+		}
+	}
+	return false
+}
+
+// earliestUnfinishedVolume 返回最早一个仍有未定稿单元的卷。导入的书常有多卷骨架
+// （有的到第 50 多卷），没有 active_unit 时按单元顺序取第一个待办卷才不会跳到卷末。
+func earliestUnfinishedVolume(snap domain.BookSnapshot) (int, bool) {
+	best, found := 0, false
+	for _, u := range snap.Units {
+		if u.Status == domain.UnitReviewed {
+			continue
+		}
+		if !found || u.Volume < best {
+			best, found = u.Volume, true
+		}
+	}
+	return best, found
+}
+
 // SelectPrimaryAction mirrors workbench next-step rules at a coarse level.
-// Order: 无总纲→立项；有总纲无卷纲→生成卷纲；之后进入单元闭环。
+// Order: 无总纲→立项；有总纲无卷纲→生成卷纲；之后进入单元闭环（按单元顺序）。
 func SelectPrimaryAction(snap domain.BookSnapshot) (kind domain.TaskKind, unitID string, volume int) {
 	if !HasBookOutline(snap) {
 		return domain.TaskPlan, "", 1
@@ -460,29 +568,50 @@ func SelectPrimaryAction(snap domain.BookSnapshot) (kind domain.TaskKind, unitID
 	if len(snap.Units) == 0 {
 		return domain.TaskPlan, "", vol
 	}
-	var proposed, ready, drafted []domain.UnitInfo
-	for _, u := range snap.Units {
+	// active_unit 只在它所属的卷仍有待办单元时才可信；作者定稿完一卷常忘记改它
+	// （active_unit 停在上一卷），这时要按单元顺序顺延到下一卷，而不是直接立项。
+	vol = 0
+	if activeVol, ok := activeUnitVolume(parseState(snap.StateRaw).ActiveUnit, snap.Volumes); ok {
+		if unfinishedInVolume(snap.Units, activeVol) {
+			vol = activeVol
+		}
+	}
+	if vol == 0 {
+		if firstVol, ok := earliestUnfinishedVolume(snap); ok {
+			vol = firstVol
+		} else {
+			return domain.TaskPlan, "", snap.Volumes[len(snap.Volumes)-1].Volume + 1
+		}
+	}
+	// 单元闭环按单元顺序推进：最早未定稿的那个单元决定下一步。
+	// 卷纲接受时会把整卷单元一次性播成 proposed，若让 proposed 优先，就会一直
+	// 补后面的细纲而不去写前面已 accepted 的单元。
+	var next *domain.UnitInfo
+	for i := range snap.Units {
+		u := &snap.Units[i]
 		if u.Volume != vol {
 			continue
 		}
 		switch u.Status {
-		case domain.UnitProposed:
-			proposed = append(proposed, u)
-		case domain.UnitAccepted:
-			ready = append(ready, u)
-		case domain.UnitDrafted:
-			drafted = append(drafted, u)
+		case domain.UnitProposed, domain.UnitAccepted, domain.UnitDrafted:
+		default: // reviewed 及未知状态不参与选择
+			continue
+		}
+		if next == nil || u.Index < next.Index {
+			next = u
 		}
 	}
-	if len(proposed) > 0 {
-		return domain.TaskOutline, proposed[0].UnitID, vol
+	if next == nil {
+		return domain.TaskPlan, "", vol + 1
 	}
-	if len(ready) > 0 {
-		return domain.TaskWrite, ready[0].UnitID, vol
-	}
-	if len(drafted) > 0 {
+	switch next.Status {
+	case domain.UnitProposed:
+		return domain.TaskOutline, next.UnitID, vol
+	case domain.UnitAccepted:
+		return domain.TaskWrite, next.UnitID, vol
+	case domain.UnitDrafted:
 		// 草稿单元：下一步优先审校；定稿在写作/审校页单元操作栏常驻，不从 primary 省略。
-		return domain.TaskReview, drafted[0].UnitID, vol
+		return domain.TaskReview, next.UnitID, vol
 	}
 	return domain.TaskPlan, "", vol + 1
 }

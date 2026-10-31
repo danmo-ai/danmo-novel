@@ -91,7 +91,7 @@ func (s *Server) registerTools() {
 	), s.handleCreateBook)
 
 	s.mcp.AddTool(mcpgo.NewTool("import_book",
-		mcpgo.WithDescription("Import an existing danmo-work compatible novel/<book-id>/ tree."),
+		mcpgo.WithDescription("Import an existing book tree with the standard structure."),
 		mcpgo.WithString("path", mcpgo.Required(), mcpgo.Description("Absolute path to the book root")),
 		mcpgo.WithBoolean("readOnly", mcpgo.Description("Import read-only (default true)")),
 	), s.handleImportBook)

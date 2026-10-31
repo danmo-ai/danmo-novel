@@ -12,7 +12,7 @@ Danmo Novel — controlled AI novel production workbench. Go backend + Vue 3 fro
 | LLM adapters | `core/adapter/llm/` (OpenAI / Responses / Anthropic / mock + dialects) |
 | LLM config | `core/service/llmconfig/` |
 | Novel domain | `core/domain/novel.go`, `core/domain/llm_config.go` |
-| Book loader | `core/service/books/` (compatible with work `novel/<book-id>/`) |
+| Book loader | `core/service/books/` (standard book tree only) |
 | Context builder | `core/service/context/` |
 | Pipeline | `core/service/pipeline/` |
 | Gates | `core/service/gates/` |
