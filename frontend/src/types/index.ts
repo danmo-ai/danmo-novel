@@ -145,3 +145,16 @@ export interface LLMModel {
   availableEfforts?: string[]
   protocolDialect?: string
 }
+
+export interface ModelConfig {
+  model: string
+  context_window?: number
+  max_output?: number
+  temperature?: number
+  top_p?: number
+  frequency_penalty?: number
+  presence_penalty?: number
+  stop?: string[]
+  available_efforts?: string[]
+  vision?: boolean
+}

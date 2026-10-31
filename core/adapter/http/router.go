@@ -182,6 +182,45 @@ func registerLLM(api *gin.RouterGroup, app *App) {
 	})
 	api.GET("/llm/models", func(c *gin.Context) { c.JSON(200, app.LLMMgr.ListModels(c.Request.Context())) })
 	api.GET("/llm/protocol-dialects", func(c *gin.Context) { c.JSON(200, domain.ProtocolDialectInfos) })
+	api.GET("/model-configs", func(c *gin.Context) {
+		models := app.Settings.Get().DefaultModels
+		if models == nil {
+			models = []domain.ModelConfig{}
+		}
+		c.JSON(200, gin.H{"models": models})
+	})
+	api.PUT("/model-configs", func(c *gin.Context) {
+		var models []domain.ModelConfig
+		if err := c.BindJSON(&models); err != nil {
+			c.JSON(400, gin.H{"error": err.Error()})
+			return
+		}
+		for i, m := range models {
+			if m.Model == "" {
+				c.JSON(400, gin.H{"error": fmt.Sprintf("model name required at index %d", i)})
+				return
+			}
+		}
+		if err := app.Settings.Update(func(s *config.Settings) { s.DefaultModels = models }); err != nil {
+			c.JSON(500, gin.H{"error": err.Error()})
+			return
+		}
+		if app.Models != nil {
+			app.Models.SetModels(models)
+		}
+		c.JSON(200, gin.H{"models": models})
+	})
+	api.POST("/model-configs/refresh", func(c *gin.Context) {
+		builtin := llmconfig.BuiltInDefaultModels()
+		if err := app.Settings.Update(func(s *config.Settings) { s.DefaultModels = builtin }); err != nil {
+			c.JSON(500, gin.H{"error": err.Error()})
+			return
+		}
+		if app.Models != nil {
+			app.Models.SetModels(builtin)
+		}
+		c.JSON(200, gin.H{"models": builtin})
+	})
 	api.POST("/llm/configs/fetch-models", func(c *gin.Context) {
 		var req domain.UpsertLLMProviderConfigRequest
 		if err := c.BindJSON(&req); err != nil {

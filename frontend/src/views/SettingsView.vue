@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useAppStore } from '@/stores/app'
 import { api } from '@/api/client'
 import { useAppUpdater } from '@/composables/useAppUpdater'
+import type { ModelConfig } from '@/types'
 
 const store = useAppStore()
 const {
@@ -63,12 +64,97 @@ async function onInstallUpdate() {
   }
 }
 
+const activeTab = ref<'providers' | 'modelConfig'>('providers')
 const showForm = ref(false)
 const editingId = ref('')
 const form = ref<any>({ provider: 'openai', name: '', apiKey: '', baseUrl: '', defaultProtocolDialect: '', models: [] })
 const manualModel = ref('')
 const testing = ref<Record<string, boolean>>({})
 const testResult = ref<Record<string, string>>({})
+
+// ---- Model Config ----
+const modelConfigForm = ref<ModelConfig[]>([])
+const selectedModel = ref('__default__')
+const editingModelIdx = ref<number | null>(null)
+const defaultForm = ref({ context_window: 128000, max_output: 8192, temperature: 0.7 })
+const mcSaving = ref(false)
+const showAddModelDialog = ref(false)
+const newModelName = ref('')
+const newContextWindow = ref<number | undefined>(undefined)
+const newMaxOutput = ref<number | undefined>(undefined)
+const newTemperature = ref<number | undefined>(undefined)
+const newAvailableEfforts = ref('')
+
+const editingModel = computed(() => {
+  if (editingModelIdx.value === null) return null
+  return modelConfigForm.value[editingModelIdx.value] ?? null
+})
+
+watch(selectedModel, (model) => {
+  if (!model || model === '__default__') { editingModelIdx.value = null; return }
+  editingModelIdx.value = modelConfigForm.value.findIndex((m) => m.model === model)
+})
+
+async function loadModelConfig() {
+  try {
+    const res = await api.get<{ models: ModelConfig[] }>('/api/model-configs')
+    modelConfigForm.value = res.models || []
+  } catch { modelConfigForm.value = [] }
+}
+
+async function saveModelConfig() {
+  mcSaving.value = true
+  try {
+    const cleaned = modelConfigForm.value.filter((m) => m.model.trim() !== '')
+    const res = await api.put<{ models: ModelConfig[] }>('/api/model-configs', cleaned)
+    modelConfigForm.value = res.models || cleaned
+    store.note('模型参数已保存')
+    await store.loadLLM()
+  } catch (e) { store.fail(e) } finally { mcSaving.value = false }
+}
+
+async function refreshModelConfig() {
+  mcSaving.value = true
+  try {
+    const res = await api.post<{ models: ModelConfig[] }>('/api/model-configs/refresh')
+    modelConfigForm.value = res.models || []
+    store.note('已重置为内置目录')
+    await store.loadLLM()
+  } catch (e) { store.fail(e) } finally { mcSaving.value = false }
+}
+
+function addModelEntry() {
+  showAddModelDialog.value = true
+}
+
+function confirmAddModel() {
+  const name = newModelName.value.trim()
+  if (!name) return
+  if (modelConfigForm.value.find((m) => m.model === name)) return
+  const efforts = newAvailableEfforts.value.trim()
+  modelConfigForm.value.push({
+    model: name,
+    context_window: newContextWindow.value || undefined,
+    max_output: newMaxOutput.value || undefined,
+    temperature: newTemperature.value || undefined,
+    available_efforts: efforts ? efforts.split(',').map((s) => s.trim()).filter(Boolean) : undefined,
+  })
+  showAddModelDialog.value = false
+  newModelName.value = ''
+  newContextWindow.value = undefined
+  newMaxOutput.value = undefined
+  newTemperature.value = undefined
+  newAvailableEfforts.value = ''
+  editingModelIdx.value = modelConfigForm.value.length - 1
+  selectedModel.value = name
+}
+
+function removeModelEntry() {
+  if (editingModelIdx.value === null) return
+  modelConfigForm.value.splice(editingModelIdx.value, 1)
+  editingModelIdx.value = null
+  selectedModel.value = '__default__'
+}
 // 阶段建议：该阶段对模型的能力要求与推理等级建议。
 const roles = [
   { id: 'plan', label: '立项', hint: '立项=总纲派生设定成套；重写设定携带依据；重新立项可保留精修文件。建议推理强的模型，effort medium–high。', effort: 'medium' },
@@ -108,7 +194,7 @@ function effortsForModel(base: string) {
 }
 
 onMounted(async () => {
-  await Promise.all([store.loadLLM(), initAppVersion()])
+  await Promise.all([store.loadLLM(), initAppVersion(), loadModelConfig()])
 })
 
 function openNew(preset?: any) {
@@ -178,6 +264,12 @@ async function saveAssignments() {
   <section class="settings-page">
     <h1>模型设置</h1>
 
+    <div class="tab-bar">
+      <button :class="{ active: activeTab === 'providers' }" @click="activeTab = 'providers'">提供商</button>
+      <button :class="{ active: activeTab === 'modelConfig' }" @click="activeTab = 'modelConfig'">模型参数</button>
+    </div>
+
+    <div v-if="activeTab === 'providers'">
     <section class="panel block update-block">
       <header class="block-head">
         <h2>桌面版</h2>
@@ -297,6 +389,82 @@ async function saveAssignments() {
         </div>
       </div>
     </div>
+    </div>
+
+    <div v-else-if="activeTab === 'modelConfig'">
+      <section class="panel block">
+        <header class="block-head">
+          <h2>模型参数</h2>
+          <div class="row-actions">
+            <button @click="refreshModelConfig" :disabled="mcSaving">重置内置</button>
+            <button class="primary" @click="saveModelConfig" :disabled="mcSaving">{{ mcSaving ? '保存中…' : '保存' }}</button>
+          </div>
+        </header>
+        <p class="muted" style="margin-bottom:14px">配置每个模型的容量、采样与推理参数。留空表示使用默认值。</p>
+
+        <div class="mc-form">
+          <label class="mc-field">
+            <span class="mc-label">模型</span>
+            <select v-model="selectedModel">
+              <option value="__default__">默认 (128K / 8K / 0.7)</option>
+              <option v-for="item in modelConfigForm" :key="item.model" :value="item.model">{{ item.model }}</option>
+            </select>
+          </label>
+
+          <template v-if="selectedModel === '__default__'">
+            <label class="mc-field"><span class="mc-label">Context Window</span><input v-model.number="defaultForm.context_window" type="number" /></label>
+            <label class="mc-field"><span class="mc-label">Max Output</span><input v-model.number="defaultForm.max_output" type="number" /></label>
+            <label class="mc-field"><span class="mc-label">Temperature</span><input v-model.number="defaultForm.temperature" type="number" step="0.1" /></label>
+          </template>
+
+          <template v-else-if="editingModel">
+            <div class="mc-group">
+              <h3>容量</h3>
+              <label class="mc-field"><span class="mc-label">Context Window</span><input v-model.number="editingModel.context_window" type="number" placeholder="留空使用默认" /></label>
+              <label class="mc-field"><span class="mc-label">Max Output</span><input v-model.number="editingModel.max_output" type="number" placeholder="留空使用默认" /></label>
+              <label class="mc-field mc-switch">
+                <span class="mc-label">Vision</span>
+                <input v-model="editingModel.vision" type="checkbox" />
+                <span class="muted">支持图片输入</span>
+              </label>
+            </div>
+            <div class="mc-group">
+              <h3>采样</h3>
+              <label class="mc-field"><span class="mc-label">Temperature</span><input v-model.number="editingModel.temperature" type="number" step="0.1" placeholder="留空使用默认" /></label>
+              <label class="mc-field"><span class="mc-label">Top P</span><input v-model.number="editingModel.top_p" type="number" step="0.05" placeholder="留空使用默认" /></label>
+              <label class="mc-field"><span class="mc-label">Frequency Penalty</span><input v-model.number="editingModel.frequency_penalty" type="number" step="0.1" placeholder="留空使用默认" /></label>
+              <label class="mc-field"><span class="mc-label">Presence Penalty</span><input v-model.number="editingModel.presence_penalty" type="number" step="0.1" placeholder="留空使用默认" /></label>
+              <label class="mc-field"><span class="mc-label">Stop Sequences</span><input :value="(editingModel.stop ?? []).join(', ')" @input="editingModel.stop = ($event.target as HTMLInputElement).value.split(',').map(s => s.trim()).filter(Boolean)" placeholder="逗号分隔" /></label>
+            </div>
+            <div class="mc-group">
+              <h3>推理</h3>
+              <label class="mc-field"><span class="mc-label">Available Efforts</span><input :value="(editingModel.available_efforts ?? []).join(', ')" @input="editingModel.available_efforts = ($event.target as HTMLInputElement).value.split(',').map(s => s.trim()).filter(Boolean)" placeholder="off, low, medium, high, xhigh" /></label>
+            </div>
+            <button class="mc-delete" @click="removeModelEntry">删除此模型配置</button>
+          </template>
+          <p v-else class="muted">请选择或添加一个模型</p>
+        </div>
+
+        <div class="row-actions" style="margin-top:16px">
+          <button @click="addModelEntry">添加模型配置</button>
+        </div>
+      </section>
+
+      <div v-if="showAddModelDialog" class="modal-mask" @click.self="showAddModelDialog = false">
+        <div class="modal panel">
+          <h2>添加模型配置</h2>
+          <label>模型名<input v-model="newModelName" placeholder="如 gpt-5.6" /></label>
+          <label>Context Window<input v-model.number="newContextWindow" type="number" placeholder="可选" /></label>
+          <label>Max Output<input v-model.number="newMaxOutput" type="number" placeholder="可选" /></label>
+          <label>Temperature<input v-model.number="newTemperature" type="number" step="0.1" placeholder="可选" /></label>
+          <label>Available Efforts<input v-model="newAvailableEfforts" placeholder="off, low, medium, high, xhigh" /></label>
+          <div class="modal-actions">
+            <button @click="showAddModelDialog = false">取消</button>
+            <button class="primary" @click="confirmAddModel">添加</button>
+          </div>
+        </div>
+      </div>
+    </div>
   </section>
 </template>
 
@@ -331,5 +499,17 @@ async function saveAssignments() {
 .model-tools input { flex: 1; }
 .model-edit-row { display: grid; grid-template-columns: 1fr 130px 30px; gap: 8px; align-items: center; font-size: 13px; }
 .modal-actions { display: flex; justify-content: flex-end; gap: 10px; }
+.tab-bar { display: flex; gap: 0; margin-bottom: 18px; border-bottom: 1px solid var(--line); }
+.tab-bar button { padding: 10px 20px; border: none; background: none; cursor: pointer; font-size: 14px; color: var(--ink-soft); border-bottom: 2px solid transparent; margin-bottom: -1px; }
+.tab-bar button.active { color: var(--accent); border-bottom-color: var(--accent); font-weight: 600; }
+.mc-form { display: grid; gap: 14px; }
+.mc-group { display: grid; gap: 10px; padding: 14px; background: rgba(0,0,0,0.03); border-radius: 10px; }
+.mc-group h3 { margin: 0; font-size: 13px; font-weight: 600; color: var(--ink-soft); text-transform: uppercase; letter-spacing: 0.5px; }
+.mc-field { display: grid; gap: 6px; font-size: 13px; }
+.mc-field .mc-label { color: var(--ink-soft); font-size: 12px; }
+.mc-field input, .mc-field select { padding: 8px 10px; border-radius: 8px; border: 1px solid var(--line); width: 100%; }
+.mc-switch { display: flex; align-items: center; gap: 8px; }
+.mc-switch input { width: auto; }
+.mc-delete { margin-top: 8px; color: #c0392b; background: none; border: 1px solid #c0392b; border-radius: 8px; padding: 6px 14px; cursor: pointer; font-size: 13px; }
 @media (max-width: 900px) { .settings-grid { grid-template-columns: 1fr; } }
 </style>
