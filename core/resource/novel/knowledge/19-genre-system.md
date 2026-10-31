@@ -1,5 +1,6 @@
 ---
 stages: [plan, outline, write, review]
+genres: [系统穿越]
 ---
 
 # 系统穿越

@@ -214,30 +214,30 @@ func TestBuiltinArticlesAreTagged(t *testing.T) {
 func TestOverlayInheritsOrOverridesBuiltinTags(t *testing.T) {
 	root := t.TempDir()
 	const id = "01-pacing-structure"
-	builtinStages, err := StagesOf(root, id)
-	if err != nil || len(builtinStages) == 0 {
-		t.Fatalf("builtin stages = %v, %v", builtinStages, err)
+	builtinTags, err := TagsOf(root, id)
+	if err != nil || len(builtinTags.Stages) == 0 {
+		t.Fatalf("builtin tags = %+v, %v", builtinTags, err)
 	}
 	// A prose-only overlay (no front matter) keeps the built-in tags.
 	if err := Write(root, id, "# 我的节奏笔记\n\n个人修改。", nil); err != nil {
 		t.Fatal(err)
 	}
-	if got, _ := StagesOf(root, id); strings.Join(got, ",") != strings.Join(builtinStages, ",") {
-		t.Fatalf("overlay tags = %v, want inherited %v", got, builtinStages)
+	if got, _ := TagsOf(root, id); strings.Join(got.Stages, ",") != strings.Join(builtinTags.Stages, ",") {
+		t.Fatalf("overlay tags = %v, want inherited %v", got.Stages, builtinTags.Stages)
 	}
 	// Explicit tags replace the inherited ones.
-	if err := Write(root, id, "# 我的节奏笔记\n\n个人修改。", []string{"review"}); err != nil {
+	if err := Write(root, id, "# 我的节奏笔记\n\n个人修改。", &Tags{Stages: []string{"review"}}); err != nil {
 		t.Fatal(err)
 	}
-	if got, _ := StagesOf(root, id); strings.Join(got, ",") != "review" {
-		t.Fatalf("overlay tags = %v, want [review]", got)
+	if got, _ := TagsOf(root, id); strings.Join(got.Stages, ",") != "review" {
+		t.Fatalf("overlay tags = %v, want [review]", got.Stages)
 	}
-	// A nil slice (keep) preserves whatever the overlay declares.
+	// A nil keep preserves whatever the overlay declares.
 	if err := Write(root, id, "# 我的节奏笔记\n\n再次修改。", nil); err != nil {
 		t.Fatal(err)
 	}
-	if got, _ := StagesOf(root, id); strings.Join(got, ",") != "review" {
-		t.Fatalf("tags not preserved on body-only save: %v", got)
+	if got, _ := TagsOf(root, id); strings.Join(got.Stages, ",") != "review" {
+		t.Fatalf("tags not preserved on body-only save: %v", got.Stages)
 	}
 	restored, err := Restore(root, id)
 	if err != nil {
@@ -245,6 +245,104 @@ func TestOverlayInheritsOrOverridesBuiltinTags(t *testing.T) {
 	}
 	if strings.Contains(restored, "stages:") {
 		t.Fatal("restore should return prose without front matter")
+	}
+}
+
+func TestGenreTagsSplitCommonFromGenreSpecific(t *testing.T) {
+	root := t.TempDir()
+	// Every genre guide must name a family, so a 悬疑 book never sees 玄幻 rules.
+	for _, id := range []string{
+		"11-genre-suspense-investigation", "12-genre-urban-politics", "14-genre-xuanhuan",
+		"15-genre-xianxia", "16-genre-urban", "17-genre-romance-modern",
+		"18-genre-romance-historical", "19-genre-system",
+	} {
+		doc := findDoc(t, root, id)
+		if len(doc.Genres) != 1 {
+			t.Errorf("%s genres = %v, want exactly one family", id, doc.Genres)
+		}
+		if _, ok := genreOrder[doc.Genres[0]]; !ok {
+			t.Errorf("%s uses unknown family %q", id, doc.Genres[0])
+		}
+	}
+	// Method articles stay 公共 so they are offered to every book.
+	for _, id := range []string{"01-pacing-structure", "05-style-deslop", "07-genre-platform", "21-workflow-candidate-accept"} {
+		if doc := findDoc(t, root, id); !doc.IsCommon() {
+			t.Errorf("%s should be 公共, got genres=%v subgenres=%v", id, doc.Genres, doc.Subgenres)
+		}
+	}
+	// 人味文风 is clamped to the 刑侦探案 subgenre.
+	crime := findDoc(t, root, "13-crime-human-flavor")
+	if crime.GenreMatched("悬疑", "刑侦探案") != true {
+		t.Fatal("crime guide should match 悬疑/刑侦探案")
+	}
+	if crime.GenreMatched("悬疑", "") || crime.GenreMatched("悬疑", "悬疑灵异") {
+		t.Fatal("crime guide must not match other 悬疑 subgenres")
+	}
+}
+
+func TestGenreFamilyAliases(t *testing.T) {
+	cases := map[string][]string{
+		"悬疑":   {"悬疑"},
+		"悬疑灵异": {"悬疑"},
+		"刑侦":   {"悬疑"},
+		"都市修真": {"仙侠", "都市"}, // ordered by the genre vocabulary, not by the text
+		"言情":   {"现代言情", "古代言情"},
+		"官场":   {"仕途扫黑"},
+		"系统":   {"系统穿越"},
+		"":     nil,
+	}
+	for in, want := range cases {
+		got := GenreFamilies(in)
+		if strings.Join(got, ",") != strings.Join(want, ",") {
+			t.Errorf("GenreFamilies(%q) = %v, want %v", in, got, want)
+		}
+	}
+	// A book titled 悬疑 must not pull in 玄幻 articles, and 言情 books must
+	// accept both romance guides.
+	suspense := Doc{Genres: []string{"玄幻"}}
+	if suspense.GenreMatched("悬疑", "") {
+		t.Fatal("玄幻 article matched a 悬疑 book")
+	}
+	liu := Doc{Genres: []string{"古代言情"}}
+	if liu.GenreMatched("言情", "") != true || liu.GenreMatched("现代言情", "") {
+		t.Fatal("古代言情 article must match generic 言情 only through its own family")
+	}
+	common := Doc{}
+	for _, g := range []string{"玄幻", "悬疑", "言情", ""} {
+		if !common.GenreMatched(g, "") {
+			t.Errorf("公共 article should match genre %q", g)
+		}
+	}
+}
+
+func TestGenreTagsPersistAndRoundTrip(t *testing.T) {
+	root := t.TempDir()
+	const id = "genre-note"
+	tags := &Tags{Stages: []string{"write"}, Genres: []string{" 悬疑 ", "玄幻", "悬疑"}, Subgenres: []string{"刑侦探案", " "}}
+	if err := Write(root, id, "# 题材笔记\n\n正文。", tags); err != nil {
+		t.Fatal(err)
+	}
+	doc := findDoc(t, root, id)
+	if strings.Join(doc.Genres, ",") != "玄幻,悬疑" {
+		t.Fatalf("genres = %v, want normalized [玄幻 悬疑]", doc.Genres)
+	}
+	if strings.Join(doc.Subgenres, ",") != "刑侦探案" {
+		t.Fatalf("subgenres = %v", doc.Subgenres)
+	}
+	// A body-only save keeps both stage and genre tags.
+	if err := Write(root, id, "# 题材笔记\n\n改过的正文。", nil); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := TagsOf(root, id); strings.Join(got.Genres, ",") != "玄幻,悬疑" || len(got.Stages) != 1 {
+		t.Fatalf("tags lost on save: %+v", got)
+	}
+	// Dropping the tags makes the article 公共 again and removes the header.
+	if err := Write(root, id, "# 题材笔记\n\n纯正文。", &Tags{}); err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := readRaw(root, id)
+	if strings.Contains(raw, "---") || strings.Contains(raw, "genres:") {
+		t.Fatalf("empty tags should leave plain Markdown: %q", raw)
 	}
 }
 

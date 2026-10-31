@@ -1,5 +1,6 @@
 ---
 stages: [plan, outline, write, review]
+genres: [仕途扫黑]
 ---
 
 # 仕途扫黑

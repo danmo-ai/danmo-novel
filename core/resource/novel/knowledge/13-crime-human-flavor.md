@@ -1,5 +1,7 @@
 ---
 stages: [entity, write, review]
+genres: [悬疑]
+subgenres: [刑侦探案]
 ---
 
 # 刑侦人味文风

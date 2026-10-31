@@ -55,3 +55,89 @@ export function knowledgeStageSummary(stages: string[] | undefined) {
   if (!stages?.length) return '未标记'
   return stages.map(knowledgeStageLabel).join(' · ')
 }
+
+/**
+ * Book genres an article can be restricted to. Mirrors `GenreFamiliesList` in
+ * `core/service/knowledge/knowledge.go`; an article with no genre tag is 公共
+ * and is offered to every book.
+ */
+export const KNOWLEDGE_GENRES = [
+  '玄幻',
+  '仙侠',
+  '都市',
+  '悬疑',
+  '现代言情',
+  '古代言情',
+  '仕途扫黑',
+  '系统穿越',
+] as const
+
+/**
+ * Same alias table as the backend: book metadata may carry a platform category
+ * (悬疑灵异, 都市修真) or a broad word (言情, 系统), and it must still reach the
+ * matching family. Matching is set intersection.
+ */
+const GENRE_ALIASES: Record<string, string[]> = {
+  玄幻: ['玄幻'], 奇幻: ['玄幻'], 东方玄幻: ['玄幻'], 西方奇幻: ['玄幻'],
+  仙侠: ['仙侠'], 修真: ['仙侠'], 武侠: ['仙侠'], 凡人修仙: ['仙侠'], 古典仙侠: ['仙侠'],
+  都市: ['都市'], 现实: ['都市'], 都市日常: ['都市'], 都市高武: ['都市'], 战神赘婿: ['都市'],
+  悬疑: ['悬疑'], 推理: ['悬疑'], 刑侦: ['悬疑'], 灵异: ['悬疑'], 悬疑灵异: ['悬疑'],
+  言情: ['现代言情', '古代言情'],
+  现代言情: ['现代言情'], 都市言情: ['现代言情'],
+  古代言情: ['古代言情'], 古言: ['古代言情'], 宫斗: ['古代言情'],
+  仕途扫黑: ['仕途扫黑'], 仕途: ['仕途扫黑'], 官场: ['仕途扫黑'], 扫黑: ['仕途扫黑'],
+  系统穿越: ['系统穿越'], 系统: ['系统穿越'], 签到: ['系统穿越'], 快穿: ['系统穿越'], 穿越: ['系统穿越'],
+}
+
+export function genreFamilies(name?: string): string[] {
+  const n = (name || '').trim()
+  if (!n) return []
+  const alias = GENRE_ALIASES[n]
+  if (alias) return alias
+  const families: string[] = []
+  const add = (fams: string[]) => {
+    for (const f of fams) if (!families.includes(f)) families.push(f)
+  }
+  for (const f of KNOWLEDGE_GENRES) if (n.includes(f)) add([f])
+  for (const [key, fams] of Object.entries(GENRE_ALIASES)) {
+    if (key !== n && n.includes(key)) add(fams)
+  }
+  const ordered = KNOWLEDGE_GENRES.filter((f) => families.includes(f))
+  return ordered.length ? [...ordered] : [n]
+}
+
+/** True when the article is 公共 (offered for any book genre). */
+export function isCommonKnowledge(doc: { genres?: string[]; subgenres?: string[] }) {
+  return !doc.genres?.length && !doc.subgenres?.length
+}
+
+/**
+ * Genre applicability, mirroring `Doc.GenreMatched`: 公共 always matches,
+ * genre tags compare by family, subgenre tags are an extra restriction.
+ */
+export function knowledgeAppliesToGenre(
+  doc: { genres?: string[]; subgenres?: string[] },
+  bookGenre?: string,
+  bookSubgenre?: string,
+) {
+  if (isCommonKnowledge(doc)) return true
+  if (doc.genres?.length) {
+    const book = genreFamilies(bookGenre)
+    const hit = doc.genres.some((g) => genreFamilies(g).some((f) => book.includes(f)))
+    if (!hit) return false
+  }
+  if (doc.subgenres?.length) {
+    const sub = (bookSubgenre || '').trim()
+    if (!sub) return false
+    return doc.subgenres.some((s) => s.trim() === sub)
+  }
+  return true
+}
+
+/** Short human summary of an article's genre tags, for list rows. */
+export function knowledgeGenreSummary(doc: { genres?: string[]; subgenres?: string[] }) {
+  if (isCommonKnowledge(doc)) return '公共'
+  const parts = [...(doc.genres || [])]
+  if (doc.subgenres?.length) parts.push(`仅 ${doc.subgenres.join('、')}`)
+  return parts.join(' · ')
+}

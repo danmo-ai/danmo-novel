@@ -1,5 +1,6 @@
 ---
 stages: [plan, outline, write, review]
+genres: [悬疑]
 ---
 
 # 悬疑

@@ -54,6 +54,9 @@ func NewRouter(app *App) *gin.Engine {
 		api.GET("/knowledge/stages", func(c *gin.Context) {
 			c.JSON(200, knowledge.Stages)
 		})
+		api.GET("/knowledge/genres", func(c *gin.Context) {
+			c.JSON(200, knowledge.GenreFamiliesList)
+		})
 		api.GET("/knowledge/:id", func(c *gin.Context) {
 			root := app.Settings.Get().LibraryRoot
 			raw, err := knowledge.Read(root, c.Param("id"))
@@ -61,26 +64,48 @@ func NewRouter(app *App) *gin.Engine {
 				c.JSON(404, gin.H{"error": "knowledge not found"})
 				return
 			}
-			stages, _ := knowledge.StagesOf(root, c.Param("id"))
-			if stages == nil {
-				stages = []string{}
-			}
-			c.JSON(200, gin.H{"id": c.Param("id"), "content": raw, "stages": stages})
+			tags, _ := knowledge.TagsOf(root, c.Param("id"))
+			c.JSON(200, gin.H{
+				"id": c.Param("id"), "content": raw,
+				"stages": nonNil(tags.Stages), "genres": nonNil(tags.Genres), "subgenres": nonNil(tags.Subgenres),
+			})
 		})
 		api.PUT("/knowledge/:id", func(c *gin.Context) {
 			var body struct {
-				Content string    `json:"content"`
-				Stages  *[]string `json:"stages"` // omitted = keep current tags
+				Content   string    `json:"content"`
+				Stages    *[]string `json:"stages"`
+				Genres    *[]string `json:"genres"`
+				Subgenres *[]string `json:"subgenres"`
+				Tags      *struct {
+					Stages    []string `json:"stages"`
+					Genres    []string `json:"genres"`
+					Subgenres []string `json:"subgenres"`
+				} `json:"tags"`
 			}
 			if err := c.BindJSON(&body); err != nil {
 				c.JSON(400, gin.H{"error": err.Error()})
 				return
 			}
-			var stages []string
-			if body.Stages != nil {
-				stages = *body.Stages
+			// No tag field at all means "keep the current tags".
+			var keep *knowledge.Tags
+			switch {
+			case body.Tags != nil:
+				keep = &knowledge.Tags{Stages: body.Tags.Stages, Genres: body.Tags.Genres, Subgenres: body.Tags.Subgenres}
+			case body.Stages != nil || body.Genres != nil || body.Subgenres != nil:
+				// Partial update: absent fields keep their current tags.
+				tags, _ := knowledge.TagsOf(app.Settings.Get().LibraryRoot, c.Param("id"))
+				if body.Stages != nil {
+					tags.Stages = *body.Stages
+				}
+				if body.Genres != nil {
+					tags.Genres = *body.Genres
+				}
+				if body.Subgenres != nil {
+					tags.Subgenres = *body.Subgenres
+				}
+				keep = &tags
 			}
-			if err := knowledge.Write(app.Settings.Get().LibraryRoot, c.Param("id"), body.Content, stages); err != nil {
+			if err := knowledge.Write(app.Settings.Get().LibraryRoot, c.Param("id"), body.Content, keep); err != nil {
 				c.JSON(400, gin.H{"error": err.Error()})
 				return
 			}
@@ -93,11 +118,11 @@ func NewRouter(app *App) *gin.Engine {
 				c.JSON(404, gin.H{"error": "built-in knowledge not found"})
 				return
 			}
-			stages, _ := knowledge.StagesOf(root, c.Param("id"))
-			if stages == nil {
-				stages = []string{}
-			}
-			c.JSON(200, gin.H{"id": c.Param("id"), "content": raw, "stages": stages})
+			tags, _ := knowledge.TagsOf(root, c.Param("id"))
+			c.JSON(200, gin.H{
+				"id": c.Param("id"), "content": raw,
+				"stages": nonNil(tags.Stages), "genres": nonNil(tags.Genres), "subgenres": nonNil(tags.Subgenres),
+			})
 		})
 		api.PUT("/settings/model-assignments", func(c *gin.Context) {
 			var body struct {
@@ -644,4 +669,12 @@ func registerRuns(api *gin.RouterGroup, app *App) {
 		}
 		c.JSON(200, gin.H{"ok": true})
 	})
+}
+
+// nonNil keeps JSON shape stable: an untagged article serializes as [].
+func nonNil(in []string) []string {
+	if in == nil {
+		return []string{}
+	}
+	return in
 }

@@ -1,5 +1,6 @@
 ---
 stages: [plan, outline, write, review]
+genres: [古代言情]
 ---
 
 # 古代言情

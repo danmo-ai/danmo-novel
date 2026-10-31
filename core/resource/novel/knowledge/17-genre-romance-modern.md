@@ -1,5 +1,6 @@
 ---
 stages: [plan, outline, write, review]
+genres: [现代言情]
 ---
 
 # 现代言情

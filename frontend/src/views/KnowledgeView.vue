@@ -2,9 +2,17 @@
 import { computed, onMounted, ref } from 'vue'
 import { useAppStore } from '@/stores/app'
 import { api } from '@/api/client'
-import { KNOWLEDGE_STAGES, knowledgeStageLabel, knowledgeStageSummary } from '@/utils/knowledgeStages'
+import {
+  KNOWLEDGE_GENRES,
+  KNOWLEDGE_STAGES,
+  knowledgeGenreSummary,
+  knowledgeStageSummary,
+} from '@/utils/knowledgeStages'
 
-type Doc = { id: string; title: string; summary: string; bytes: number; category: string; builtin: boolean; customized: boolean; stages: string[] }
+type Doc = {
+  id: string; title: string; summary: string; bytes: number; category: string
+  builtin: boolean; customized: boolean; stages: string[]; genres: string[]; subgenres: string[]
+}
 const store = useAppStore()
 const docs = ref<Doc[]>([])
 const selectedId = ref('')
@@ -12,6 +20,10 @@ const content = ref('')
 const draft = ref('')
 const stages = ref<string[]>([])
 const draftStages = ref<string[]>([])
+const genres = ref<string[]>([])
+const draftGenres = ref<string[]>([])
+const subgenres = ref<string[]>([])
+const draftSubgenreText = ref('')
 const editing = ref(false)
 const saving = ref(false)
 const activeCategory = ref('all')
@@ -23,8 +35,11 @@ const CATEGORIES = [
   { id: 'genre', label: '题材专项' },
   { id: 'custom', label: '作者自建' },
 ]
+const genreFilter = ref('all')
 const filtered = computed(() => docs.value.filter((d) => {
   if (activeCategory.value !== 'all' && d.category !== activeCategory.value) return false
+  if (genreFilter.value === 'common' && (d.genres?.length || d.subgenres?.length)) return false
+  if (genreFilter.value !== 'all' && genreFilter.value !== 'common' && !(d.genres || []).includes(genreFilter.value)) return false
   if (search.value && !`${d.title}${d.summary}${d.id}`.toLowerCase().includes(search.value.toLowerCase())) return false
   return true
 }))
@@ -42,21 +57,29 @@ async function select(id: string) {
   if (editing.value && !confirm('放弃未保存的修改？')) return
   selectedId.value = id
   editing.value = false
-  const res = await api.get<{ content: string; stages: string[] }>(`/api/knowledge/${id}`)
+  const res = await api.get<{ content: string; stages: string[]; genres: string[]; subgenres: string[] }>(`/api/knowledge/${id}`)
   content.value = res.content
   draft.value = res.content
   stages.value = res.stages || []
   draftStages.value = [...stages.value]
+  genres.value = res.genres || []
+  draftGenres.value = [...genres.value]
+  subgenres.value = res.subgenres || []
+  draftSubgenreText.value = (res.subgenres || []).join('、')
 }
 function beginEdit() {
   draft.value = content.value
   draftStages.value = [...stages.value]
+  draftGenres.value = [...genres.value]
+  draftSubgenreText.value = subgenres.value.join('、')
   editing.value = true
 }
 function cancelEdit() {
   editing.value = false
   draft.value = content.value
   draftStages.value = [...stages.value]
+  draftGenres.value = [...genres.value]
+  draftSubgenreText.value = subgenres.value.join('、')
 }
 function toggleStage(id: string) {
   const s = new Set(draftStages.value)
@@ -64,12 +87,26 @@ function toggleStage(id: string) {
   else s.add(id)
   draftStages.value = KNOWLEDGE_STAGES.filter((st) => s.has(st.id)).map((st) => st.id)
 }
+function toggleGenre(name: string) {
+  const s = new Set(draftGenres.value)
+  if (s.has(name)) s.delete(name)
+  else s.add(name)
+  draftGenres.value = KNOWLEDGE_GENRES.filter((g) => s.has(g))
+}
+function parseSubgenres(text: string) {
+  return text.split(/[、,，\s]+/).map((s) => s.trim()).filter(Boolean)
+}
 async function save() {
   saving.value = true
   try {
-    await api.put(`/api/knowledge/${selectedId.value}`, { content: draft.value, stages: draftStages.value })
+    const sub = parseSubgenres(draftSubgenreText.value)
+    await api.put(`/api/knowledge/${selectedId.value}`, {
+      content: draft.value, stages: draftStages.value, genres: draftGenres.value, subgenres: sub,
+    })
     content.value = draft.value
     stages.value = [...draftStages.value]
+    genres.value = [...draftGenres.value]
+    subgenres.value = sub
     editing.value = false
     await load()
     store.note('已保存到本地资料库；内置原文仍保留')
@@ -79,11 +116,15 @@ async function restore() {
   if (!current.value?.builtin || !confirm('恢复为当前版本的内置原文？你在本地对这篇文章的修改将被移除。')) return
   saving.value = true
   try {
-    const res = await api.post<{ content: string; stages: string[] }>(`/api/knowledge/${selectedId.value}/restore`)
+    const res = await api.post<{ content: string; stages: string[]; genres: string[]; subgenres: string[] }>(`/api/knowledge/${selectedId.value}/restore`)
     content.value = res.content
     draft.value = res.content
     stages.value = res.stages || []
     draftStages.value = [...stages.value]
+    genres.value = res.genres || []
+    draftGenres.value = [...genres.value]
+    subgenres.value = res.subgenres || []
+    draftSubgenreText.value = subgenres.value.join('、')
     editing.value = false
     await load()
     store.note('已恢复为内置原文')
@@ -133,7 +174,7 @@ function renderMarkdown(raw: string) {
       <div>
         <p class="eyebrow">Knowledge Base</p>
         <h1>知识库</h1>
-        <p class="sub">每篇标记适用写作步骤；创作确认窗口只列出当前步骤可用的文章，勾选后作为方法/风格参考附加。</p>
+        <p class="sub">每篇标记适用写作步骤与题材；创作确认窗口只列出当前步骤、当前题材可用的公共与专属文章。</p>
       </div>
       <span class="doc-count">{{ docs.length }} 篇</span>
     </header>
@@ -144,11 +185,17 @@ function renderMarkdown(raw: string) {
         <div class="kb-cats">
           <button v-for="c in CATEGORIES" :key="c.id" :class="{ active: activeCategory === c.id }" @click="activeCategory = c.id">{{ c.label }}</button>
         </div>
+        <select v-model="genreFilter" class="kb-genre-filter">
+          <option value="all">全部题材</option>
+          <option value="common">公共（不限题材）</option>
+          <option v-for="g in KNOWLEDGE_GENRES" :key="g" :value="g">专属 · {{ g }}</option>
+        </select>
         <button v-for="d in filtered" :key="d.id" class="kb-item" :class="{ active: selectedId === d.id }" @click="select(d.id)">
           <strong>{{ d.title }}</strong>
           <small>{{ d.summary || d.id }}</small>
           <span class="kb-meta">{{ d.category === 'genre' ? '题材' : d.category === 'general' ? '方法' : '自建' }} · {{ d.customized ? '已编辑' : d.builtin ? '内置' : '个人' }} · {{ (d.bytes / 1024).toFixed(1) }}KB</span>
           <span class="kb-stages-inline" :class="{ untagged: !d.stages?.length }">{{ knowledgeStageSummary(d.stages) }}</span>
+          <span class="kb-stages-inline" :class="{ untagged: !d.genres?.length && !d.subgenres?.length }">题材 · {{ knowledgeGenreSummary(d) }}</span>
         </button>
         <p v-if="!filtered.length" class="kb-empty">没有匹配的文章。</p>
       </aside>
@@ -173,7 +220,20 @@ function renderMarkdown(raw: string) {
               :disabled="!editing" :title="editing ? '点击切换适用步骤' : '点右上「编辑」可调整'"
               @click="toggleStage(s.id)">{{ s.label }}</button>
             <span v-if="!(editing ? draftStages : stages).length" class="stage-hint">未标记 · 所有步骤可选</span>
-            <span v-else-if="!editing" class="stage-hint">仅在上述步骤的调用确认窗口中出现</span>
+          </div>
+          <div class="kb-stage-bar">
+            <small>适用题材</small>
+            <button v-for="g in KNOWLEDGE_GENRES" :key="g" class="stage-chip"
+              :class="{ on: (editing ? draftGenres : genres).includes(g) }"
+              :disabled="!editing" :title="editing ? '点击切换题材归属' : '点右上「编辑」可调整'"
+              @click="toggleGenre(g)">{{ g }}</button>
+            <span v-if="!(editing ? draftGenres : genres).length" class="stage-hint">公共 · 所有题材可用</span>
+            <span v-else-if="!editing" class="stage-hint">只在上述题材的书里出现</span>
+            <label v-if="editing" class="kb-subgenre">
+              子题材限定
+              <input v-model="draftSubgenreText" placeholder="留空=不限；如 刑侦探案" />
+            </label>
+            <span v-else-if="subgenres.length" class="stage-hint">仅 {{ subgenres.join('、') }} 子题材</span>
           </div>
           <textarea v-if="editing" v-model="draft" class="kb-editor" spellcheck="false" />
           <div v-else class="kb-body">
@@ -219,6 +279,9 @@ function renderMarkdown(raw: string) {
 .stage-chip:disabled { cursor: default; }
 .stage-chip:disabled:not(.on) { opacity: .7; }
 .stage-hint { font-size: 10px; color: var(--ink-soft); margin-left: 4px; }
+.kb-subgenre { display: flex; align-items: center; gap: 6px; margin-left: auto; font-size: 10px; color: var(--ink-soft); }
+.kb-subgenre input { width: 150px; padding: 3px 8px; border: 1px solid var(--line); border-radius: 8px; font-size: 11px; }
+.kb-genre-filter { width: 100%; padding: 7px 10px; border: 1px solid var(--line); border-radius: 10px; margin-bottom: 10px; font-size: 12px; background: rgba(255,255,255,.7); color: var(--ink); }
 .kb-empty, .kb-empty-state { color: var(--ink-soft); font-size: 12px; padding: 16px; text-align: center; }
 .kb-content { overflow: hidden; }
 .kb-content-head { display: flex; justify-content: space-between; align-items: center; padding: 18px 24px; border-bottom: 1px solid var(--line); gap: 12px; }

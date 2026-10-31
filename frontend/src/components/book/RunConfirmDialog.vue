@@ -3,7 +3,13 @@ import { computed, onMounted, ref } from 'vue'
 import { api } from '@/api/client'
 import type { ContextPacket } from '@/types'
 import { runKindLabel } from '@/utils/runLabels'
-import { knowledgeAppliesTo, knowledgeStageLabel, specKnowledgeStage } from '@/utils/knowledgeStages'
+import {
+  knowledgeAppliesTo,
+  knowledgeAppliesToGenre,
+  knowledgeGenreSummary,
+  knowledgeStageLabel,
+  specKnowledgeStage,
+} from '@/utils/knowledgeStages'
 import { useAppStore } from '@/stores/app'
 
 const store = useAppStore()
@@ -20,7 +26,8 @@ const loadError = ref('')
 const packet = ref<ContextPacket | null>(null)
 const instruction = ref('')
 const expandedBlock = ref('')
-const knowledgeDocs = ref<{ id: string; title: string; summary: string; bytes: number; stages?: string[] }[]>([])
+type KnowledgeDoc = { id: string; title: string; summary: string; bytes: number; stages?: string[]; genres?: string[]; subgenres?: string[] }
+const knowledgeDocs = ref<KnowledgeDoc[]>([])
 const selectedKnowledge = ref<Set<string>>(new Set())
 const knowledgeOpen = ref(false)
 const knowledgeShowAll = ref(false)
@@ -84,12 +91,28 @@ const riskNote = computed(() => {
 })
 const totalBytes = computed(() => (packet.value?.blocks || []).reduce((s, b) => s + b.bytes, 0))
 
-// Knowledge is offered per step: 立项 articles are not noise at 审校.
+// Knowledge is offered per step and per genre: 立项 articles are not noise at
+// 审校, and 玄幻 rules are not offered to a 悬疑 book.
 const knowledgeStage = computed(() => specKnowledgeStage(props.spec))
 const knowledgeStageText = computed(() => knowledgeStageLabel(knowledgeStage.value))
-const suitableKnowledge = computed(() => knowledgeDocs.value.filter((d) => knowledgeAppliesTo(d.stages, knowledgeStage.value)))
+const bookGenre = computed(() => store.currentBook?.summary?.genre || '')
+const bookSubgenre = computed(() => store.currentBook?.summary?.subgenre || '')
+const genreStepMatch = (d: KnowledgeDoc) =>
+  knowledgeAppliesTo(d.stages, knowledgeStage.value) && knowledgeAppliesToGenre(d, bookGenre.value, bookSubgenre.value)
+const suitableKnowledge = computed(() => knowledgeDocs.value.filter(genreStepMatch))
+const commonKnowledge = computed(() => suitableKnowledge.value.filter((d) => !d.genres?.length && !d.subgenres?.length))
+const genreKnowledge = computed(() => suitableKnowledge.value.filter((d) => d.genres?.length || d.subgenres?.length))
 const hiddenKnowledge = computed(() => knowledgeDocs.value.length - suitableKnowledge.value.length)
 const shownKnowledge = computed(() => (knowledgeShowAll.value ? knowledgeDocs.value : suitableKnowledge.value))
+const genreText = computed(() => (bookGenre.value ? bookGenre.value + (bookSubgenre.value ? ` / ${bookSubgenre.value}` : '') : '未设置题材'))
+
+/** Why a row is greyed out when the author chooses to see everything. */
+function knowledgeMismatch(d: KnowledgeDoc) {
+  const reasons: string[] = []
+  if (!knowledgeAppliesTo(d.stages, knowledgeStage.value)) reasons.push('步骤不符')
+  if (!knowledgeAppliesToGenre(d, bookGenre.value, bookSubgenre.value)) reasons.push('题材不符')
+  return reasons.join(' / ')
+}
 
 onMounted(async () => {
   try {
@@ -182,19 +205,29 @@ function confirm() {
             <span>{{ knowledgeOpen ? '收起' : '展开' }}</span>
           </button>
           <div v-if="knowledgeStage" class="knowledge-scope">
-            <span v-if="!knowledgeShowAll">适用于「{{ knowledgeStageText }}」· {{ suitableKnowledge.length }} 篇<template v-if="hiddenKnowledge">，已隐藏 {{ hiddenKnowledge }} 篇不适用</template></span>
-            <span v-else>「{{ knowledgeStageText }}」适用 {{ suitableKnowledge.length }} 篇 · 已显示全部 {{ knowledgeDocs.length }} 篇</span>
+            <span v-if="!knowledgeShowAll">
+              「{{ knowledgeStageText }}」· 题材 {{ genreText }} · 可用 {{ suitableKnowledge.length }} 篇
+              （公共 {{ commonKnowledge.length }}<template v-if="genreKnowledge.length"> + 题材专属 {{ genreKnowledge.length }}</template>）<template v-if="hiddenKnowledge">，已隐藏 {{ hiddenKnowledge }} 篇</template>
+            </span>
+            <span v-else>「{{ knowledgeStageText }}」可用 {{ suitableKnowledge.length }} 篇 · 已显示全部 {{ knowledgeDocs.length }} 篇，灰底为不适用</span>
             <button v-if="hiddenKnowledge" class="scope-link" @click="knowledgeShowAll = !knowledgeShowAll">{{ knowledgeShowAll ? '只看适用' : '显示全部' }}</button>
           </div>
           <div v-if="knowledgeOpen" class="knowledge-list">
             <p class="knowledge-note">勾选的文章会作为「方法/风格参考」附加到本次调用，不写入正文事实。</p>
             <label v-for="d in shownKnowledge" :key="d.id" class="knowledge-item"
-              :class="{ selected: selectedKnowledge.has(d.id), 'off-stage': !knowledgeAppliesTo(d.stages, knowledgeStage) }">
+              :class="{ selected: selectedKnowledge.has(d.id), 'off-stage': !!knowledgeMismatch(d) }">
               <input type="checkbox" :checked="selectedKnowledge.has(d.id)" @change="toggleKnowledge(d.id)" />
-              <span class="knowledge-info"><strong>{{ d.title }}</strong><small>{{ d.summary }}</small></span>
-              <span class="knowledge-bytes">{{ (d.bytes / 1024).toFixed(1) }}KB</span>
+              <span class="knowledge-info">
+                <strong>{{ d.title }}</strong>
+                <small>{{ d.summary }}</small>
+              </span>
+              <span class="knowledge-side">
+                <span class="knowledge-bytes">{{ (d.bytes / 1024).toFixed(1) }}KB</span>
+                <span v-if="knowledgeMismatch(d)" class="knowledge-flag">{{ knowledgeMismatch(d) }}</span>
+                <span v-else-if="d.genres?.length || d.subgenres?.length" class="knowledge-tag">{{ knowledgeGenreSummary(d) }}</span>
+              </span>
             </label>
-            <p v-if="!shownKnowledge.length" class="knowledge-empty">知识库里还没有标记为适用于「{{ knowledgeStageText }}」的文章；可在「知识库」页给文章补上适合的写作步骤。</p>
+            <p v-if="!shownKnowledge.length" class="knowledge-empty">「{{ knowledgeStageText }}」下还没有适用的文章；可在「知识库」页给文章补上写作步骤和题材标记。</p>
           </div>
         </div>
 
@@ -265,7 +298,10 @@ function confirm() {
 .knowledge-info { display: grid; gap: 2px; flex: 1; min-width: 0; }
 .knowledge-info strong { font-size: 13px; }
 .knowledge-info small { font-size: 11px; color: var(--ink-soft); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.knowledge-bytes { font-size: 10px; color: var(--ink-soft); flex-shrink: 0; }
+.knowledge-side { display: grid; gap: 3px; justify-items: end; flex-shrink: 0; }
+.knowledge-bytes { font-size: 10px; color: var(--ink-soft); }
+.knowledge-flag { font-size: 10px; color: var(--bad); white-space: nowrap; }
+.knowledge-tag { font-size: 10px; color: var(--accent); white-space: nowrap; max-width: 110px; overflow: hidden; text-overflow: ellipsis; }
 .dlg-instruction { padding: 14px 24px; border-top: 1px solid var(--line); }
 .dlg-instruction label { display: block; font-size: 12px; color: var(--ink-soft); margin-bottom: 8px; }
 .dlg-instruction textarea { width: 100%; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; font-size: 13px; resize: vertical; background: rgba(255,255,255,.85); }
