@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted } from 'vue'
+import { onMounted, computed } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useAppStore } from '@/stores/app'
 import { useAppUpdater } from '@/composables/useAppUpdater'
@@ -8,6 +8,12 @@ import { waitForBackend } from '@/utils/desktop'
 const store = useAppStore()
 const { toast, error } = storeToRefs(store)
 const { appVersion, hasUpdate, availableVersion, startSilentUpdateCheck, initAppVersion } = useAppUpdater()
+
+// Hide placeholder build tags ("dev", "dirty", empty) — only show a real version.
+const showVersion = computed(() => {
+  const v = appVersion.value.trim()
+  return v !== '' && v !== 'dev' && !v.includes('dirty')
+})
 
 onMounted(async () => {
   await waitForBackend()
@@ -22,7 +28,7 @@ onMounted(async () => {
       <router-link to="/" class="brand">
         <span class="brand-mark">N</span>
         <span>Danmo Novel</span>
-        <span v-if="appVersion" class="ver">{{ appVersion }}</span>
+        <span v-if="showVersion" class="ver">{{ appVersion }}</span>
         <span v-if="hasUpdate" class="ver update" :title="`新版本 ${availableVersion}`">↑</span>
       </router-link>
       <nav class="topnav" aria-label="应用导航">

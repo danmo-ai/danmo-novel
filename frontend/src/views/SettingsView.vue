@@ -19,12 +19,18 @@ const {
   downloadAndInstallUpdate,
 } = useAppUpdater()
 
+// "dev" / "dirty" build tags are placeholders, not shippable versions.
+const versionLabel = computed(() => {
+  const v = appVersion.value.trim()
+  return v === '' || v === 'dev' || v.includes('dirty') ? '开发版' : v
+})
+
 const updaterStatusText = computed(() => {
   switch (updaterStatus.value) {
     case 'checking':
       return '正在检查更新…'
     case 'upToDate':
-      return '已是最新版本'
+      return `已是最新版本（${versionLabel.value}）`
     case 'available':
       return `发现新版本 ${availableVersion.value}`
     case 'downloading':
@@ -36,7 +42,7 @@ const updaterStatusText = computed(() => {
     case 'error':
       return updaterError.value || '检查更新失败'
     default:
-      return isDesktop() ? '可检查桌面版更新' : '自升级仅在桌面版可用'
+      return isDesktop() ? `当前版本 ${versionLabel.value}，可检查桌面版更新` : `当前版本 ${versionLabel.value}；自升级仅在桌面版可用`
   }
 })
 
@@ -293,7 +299,7 @@ async function saveAssignments() {
           <h2>桌面版</h2>
           <span v-if="availableVersion" class="update-badge">有更新</span>
         </header>
-        <p class="muted">当前版本 {{ appVersion || '…' }} · {{ updaterStatusText }}</p>
+        <p class="muted">{{ updaterStatusText }}</p>
         <div class="row-actions" style="margin-top:10px">
           <button :disabled="!isDesktop() || updaterBusy" @click="onCheckUpdate">
             {{ updaterStatus === 'checking' ? '检查中…' : '检查更新' }}
