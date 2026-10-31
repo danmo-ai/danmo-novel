@@ -117,19 +117,19 @@ onMounted(load)
 h1 { margin: 8px 0 8px; font-family: var(--font-prose); font-size: clamp(28px, 3.5vw, 44px); line-height: 1.05; }
 .page-head p:not(.eyebrow) { margin: 0; color: var(--ink-soft); font-size: 13px; }
 .summary-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
-.summary { padding: 16px; display: grid; gap: 6px; }
-.summary small, .summary span { color: var(--ink-soft); font-size: 11px; }
+.summary { padding: 20px; display: grid; gap: 6px; }
+.summary small, .summary span { color: var(--ink-soft); font-size: 12px; }
 .summary strong { font-family: var(--font-prose); font-size: 24px; }
 .summary i { color: var(--ink-soft); font-style: normal; font-size: 16px; }
 .filters { display: flex; flex-wrap: wrap; gap: 8px; padding: 12px; }
-.filters select, .filters input { padding: 8px 10px; border: 1px solid var(--line); border-radius: 9px; background: white; font-size: 12px; }
+.filters select, .filters input { padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: white; font-size: 12px; }
 .filters input { flex: 1; min-width: 180px; }
 .run-table { overflow: hidden; }
 .table-header, .run-row { display: grid; grid-template-columns: 1.2fr 1fr 1.35fr .85fr .65fr .65fr 24px; gap: 12px; align-items: center; }
 .table-header { padding: 12px 16px; background: rgba(15,107,92,.04); color: var(--ink-soft); font-size: 11px; }
 .run-row { width: 100%; padding: 14px 16px; border: 0; border-top: 1px solid var(--line); background: transparent; text-align: left; border-radius: 0; }
 .run-row:hover { background: rgba(15,107,92,.035); }
-.run-row strong { display: block; font-size: 12px; }
+.run-row strong { display: block; font-size: 13px; }
 .run-row small { display: block; color: var(--ink-soft); font-size: 11px; margin-top: 4px; }
 .model { font-size: 11px; word-break: break-all; color: var(--ink-soft); }
 .tokens strong, .tokens small { display: inline; }
@@ -144,7 +144,7 @@ h1 { margin: 8px 0 8px; font-family: var(--font-prose); font-size: clamp(28px, 3
 .context-detail { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 14px; font-size: 11px; }
 .context-detail strong { margin-right: 4px; }
 .context-detail span { padding: 3px 7px; background: rgba(15,107,92,.07); color: var(--accent); border-radius: 6px; }
-.run-details table { width: 100%; border-collapse: collapse; font-size: 11px; }
+.run-details table { width: 100%; border-collapse: collapse; font-size: 12px; }
 .run-details th, .run-details td { text-align: left; padding: 8px; border-top: 1px solid var(--line); white-space: nowrap; }
 .run-details th { color: var(--ink-soft); font-weight: 500; }
 .error-detail { color: var(--bad); margin-bottom: 14px; font-size: 12px; }

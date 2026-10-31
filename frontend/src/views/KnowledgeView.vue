@@ -173,13 +173,13 @@ function renderMarkdown(raw: string) {
 .kb-cats button.active { background: var(--accent); color: white; border-color: var(--accent); }
 .kb-item { display: grid; gap: 3px; width: 100%; text-align: left; border: none; background: transparent; padding: 10px; border-radius: 10px; margin-bottom: 2px; }
 .kb-item.active { background: rgba(15,107,92,.1); }
-.kb-item strong { font-size: 13px; }
+.kb-item strong { font-size: 12px; }
 .kb-item small { color: var(--ink-soft); font-size: 11px; line-height: 1.5; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .kb-meta { font-size: 10px; color: var(--accent); }
 .kb-empty, .kb-empty-state { color: var(--ink-soft); font-size: 12px; padding: 16px; text-align: center; }
 .kb-content { overflow: hidden; }
 .kb-content-head { display: flex; justify-content: space-between; align-items: center; padding: 18px 24px; border-bottom: 1px solid var(--line); gap: 12px; }
-.kb-content-head h2 { margin: 0; font-family: var(--font-prose); font-size: 22px; }
+.kb-content-head h2 { margin: 0; font-family: var(--font-prose); font-size: 17px; }
 .kb-title-row, .kb-actions { display: flex; align-items: center; gap: 10px; }
 .kb-actions { flex-shrink: 0; }
 .kb-badge { padding: 2px 7px; border: 1px solid var(--line); border-radius: 12px; color: var(--accent); font-size: 10px; white-space: nowrap; }
@@ -190,16 +190,16 @@ function renderMarkdown(raw: string) {
 .kb-body h3.h1 { font-size: 22px; }
 .kb-body h3.h2 { font-size: 17px; border-bottom: 1px solid var(--line); padding-bottom: 6px; }
 .kb-body h3.h3 { font-size: 14px; color: var(--accent); }
-.kb-body p { color: var(--ink-soft); font-size: 14px; line-height: 1.85; margin: 8px 0; }
+.kb-body p { color: var(--ink-soft); font-size: 13px; line-height: 1.75; margin: 8px 0; }
 .kb-body ul { padding-left: 20px; }
-.kb-body li { color: var(--ink-soft); font-size: 13px; line-height: 1.8; margin-bottom: 4px; }
+.kb-body li { color: var(--ink-soft); font-size: 12px; line-height: 1.65; margin-bottom: 4px; }
 .kb-table-wrap { overflow-x: auto; margin: 14px 0; }
 .kb-body table { width: 100%; border-collapse: collapse; font-size: 12px; line-height: 1.65; }
 .kb-body th, .kb-body td { border: 1px solid var(--line); padding: 8px 10px; text-align: left; vertical-align: top; min-width: 80px; }
 .kb-body th { color: var(--ink); background: rgba(15,107,92,.05); font-weight: 600; }
 .kb-body td { color: var(--ink-soft); }
 .kb-code { padding: 12px; background: rgba(15,107,92,.05); border-radius: 8px; overflow-x: auto; font: 12px/1.7 ui-monospace, monospace; white-space: pre-wrap; }
-.kb-body blockquote { margin: 12px 0; padding: 4px 14px; border-left: 3px solid var(--accent); color: var(--ink-soft); font-size: 13px; line-height: 1.8; }
-.kb-editor { width: 100%; min-height: 66vh; border: none; padding: 24px 30px; font: 13px/1.8 ui-monospace, monospace; resize: vertical; background: transparent; outline: none; }
+.kb-body blockquote { margin: 12px 0; padding: 4px 14px; border-left: 3px solid var(--accent); color: var(--ink-soft); font-size: 12px; line-height: 1.65; }
+.kb-editor { width: 100%; min-height: 66vh; border: none; padding: 24px 30px; font: 12px/1.75 ui-monospace, monospace; resize: vertical; background: transparent; outline: none; }
 @media (max-width: 900px) { .kb-layout { grid-template-columns: 1fr; } .kb-nav { max-height: 300px; } }
 </style>
