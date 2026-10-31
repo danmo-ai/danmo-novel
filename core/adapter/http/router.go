@@ -51,33 +51,53 @@ func NewRouter(app *App) *gin.Engine {
 			}
 			c.JSON(200, docs)
 		})
+		api.GET("/knowledge/stages", func(c *gin.Context) {
+			c.JSON(200, knowledge.Stages)
+		})
 		api.GET("/knowledge/:id", func(c *gin.Context) {
-			raw, err := knowledge.Read(app.Settings.Get().LibraryRoot, c.Param("id"))
+			root := app.Settings.Get().LibraryRoot
+			raw, err := knowledge.Read(root, c.Param("id"))
 			if err != nil {
 				c.JSON(404, gin.H{"error": "knowledge not found"})
 				return
 			}
-			c.JSON(200, gin.H{"id": c.Param("id"), "content": raw})
+			stages, _ := knowledge.StagesOf(root, c.Param("id"))
+			if stages == nil {
+				stages = []string{}
+			}
+			c.JSON(200, gin.H{"id": c.Param("id"), "content": raw, "stages": stages})
 		})
 		api.PUT("/knowledge/:id", func(c *gin.Context) {
-			var body struct{ Content string }
+			var body struct {
+				Content string    `json:"content"`
+				Stages  *[]string `json:"stages"` // omitted = keep current tags
+			}
 			if err := c.BindJSON(&body); err != nil {
 				c.JSON(400, gin.H{"error": err.Error()})
 				return
 			}
-			if err := knowledge.Write(app.Settings.Get().LibraryRoot, c.Param("id"), body.Content); err != nil {
+			var stages []string
+			if body.Stages != nil {
+				stages = *body.Stages
+			}
+			if err := knowledge.Write(app.Settings.Get().LibraryRoot, c.Param("id"), body.Content, stages); err != nil {
 				c.JSON(400, gin.H{"error": err.Error()})
 				return
 			}
 			c.JSON(200, gin.H{"ok": true})
 		})
 		api.POST("/knowledge/:id/restore", func(c *gin.Context) {
-			raw, err := knowledge.Restore(app.Settings.Get().LibraryRoot, c.Param("id"))
+			root := app.Settings.Get().LibraryRoot
+			raw, err := knowledge.Restore(root, c.Param("id"))
 			if err != nil {
 				c.JSON(404, gin.H{"error": "built-in knowledge not found"})
 				return
 			}
-			c.JSON(200, gin.H{"id": c.Param("id"), "content": raw})
+			stages, _ := knowledge.StagesOf(root, c.Param("id"))
+			if stages == nil {
+				stages = []string{}
+			}
+			c.JSON(200, gin.H{"id": c.Param("id"), "content": raw, "stages": stages})
 		})
 		api.PUT("/settings/model-assignments", func(c *gin.Context) {
 			var body struct {

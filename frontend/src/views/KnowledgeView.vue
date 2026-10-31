@@ -2,13 +2,16 @@
 import { computed, onMounted, ref } from 'vue'
 import { useAppStore } from '@/stores/app'
 import { api } from '@/api/client'
+import { KNOWLEDGE_STAGES, knowledgeStageLabel, knowledgeStageSummary } from '@/utils/knowledgeStages'
 
-type Doc = { id: string; title: string; summary: string; bytes: number; category: string; builtin: boolean; customized: boolean }
+type Doc = { id: string; title: string; summary: string; bytes: number; category: string; builtin: boolean; customized: boolean; stages: string[] }
 const store = useAppStore()
 const docs = ref<Doc[]>([])
 const selectedId = ref('')
 const content = ref('')
 const draft = ref('')
+const stages = ref<string[]>([])
+const draftStages = ref<string[]>([])
 const editing = ref(false)
 const saving = ref(false)
 const activeCategory = ref('all')
@@ -39,15 +42,34 @@ async function select(id: string) {
   if (editing.value && !confirm('放弃未保存的修改？')) return
   selectedId.value = id
   editing.value = false
-  const res = await api.get<{ content: string }>(`/api/knowledge/${id}`)
+  const res = await api.get<{ content: string; stages: string[] }>(`/api/knowledge/${id}`)
   content.value = res.content
   draft.value = res.content
+  stages.value = res.stages || []
+  draftStages.value = [...stages.value]
+}
+function beginEdit() {
+  draft.value = content.value
+  draftStages.value = [...stages.value]
+  editing.value = true
+}
+function cancelEdit() {
+  editing.value = false
+  draft.value = content.value
+  draftStages.value = [...stages.value]
+}
+function toggleStage(id: string) {
+  const s = new Set(draftStages.value)
+  if (s.has(id)) s.delete(id)
+  else s.add(id)
+  draftStages.value = KNOWLEDGE_STAGES.filter((st) => s.has(st.id)).map((st) => st.id)
 }
 async function save() {
   saving.value = true
   try {
-    await api.put(`/api/knowledge/${selectedId.value}`, { content: draft.value })
+    await api.put(`/api/knowledge/${selectedId.value}`, { content: draft.value, stages: draftStages.value })
     content.value = draft.value
+    stages.value = [...draftStages.value]
     editing.value = false
     await load()
     store.note('已保存到本地资料库；内置原文仍保留')
@@ -57,9 +79,11 @@ async function restore() {
   if (!current.value?.builtin || !confirm('恢复为当前版本的内置原文？你在本地对这篇文章的修改将被移除。')) return
   saving.value = true
   try {
-    const res = await api.post<{ content: string }>(`/api/knowledge/${selectedId.value}/restore`)
+    const res = await api.post<{ content: string; stages: string[] }>(`/api/knowledge/${selectedId.value}/restore`)
     content.value = res.content
     draft.value = res.content
+    stages.value = res.stages || []
+    draftStages.value = [...stages.value]
     editing.value = false
     await load()
     store.note('已恢复为内置原文')
@@ -109,7 +133,7 @@ function renderMarkdown(raw: string) {
       <div>
         <p class="eyebrow">Knowledge Base</p>
         <h1>知识库</h1>
-        <p class="sub">内置方法与题材指南；本地编辑形成个人副本，仅在创作确认窗口勾选后附加为参考。</p>
+        <p class="sub">每篇标记适用写作步骤；创作确认窗口只列出当前步骤可用的文章，勾选后作为方法/风格参考附加。</p>
       </div>
       <span class="doc-count">{{ docs.length }} 篇</span>
     </header>
@@ -124,6 +148,7 @@ function renderMarkdown(raw: string) {
           <strong>{{ d.title }}</strong>
           <small>{{ d.summary || d.id }}</small>
           <span class="kb-meta">{{ d.category === 'genre' ? '题材' : d.category === 'general' ? '方法' : '自建' }} · {{ d.customized ? '已编辑' : d.builtin ? '内置' : '个人' }} · {{ (d.bytes / 1024).toFixed(1) }}KB</span>
+          <span class="kb-stages-inline" :class="{ untagged: !d.stages?.length }">{{ knowledgeStageSummary(d.stages) }}</span>
         </button>
         <p v-if="!filtered.length" class="kb-empty">没有匹配的文章。</p>
       </aside>
@@ -137,10 +162,19 @@ function renderMarkdown(raw: string) {
             </div>
             <div class="kb-actions">
               <button v-if="current.builtin && current.customized && !editing" :disabled="saving" @click="restore">{{ saving ? '恢复中' : '恢复内置' }}</button>
-              <button v-if="editing" @click="editing = false; draft = content">取消</button>
-              <button class="primary" :disabled="saving" @click="editing ? save() : (editing = true)">{{ editing ? (saving ? '保存中' : '保存副本') : '编辑' }}</button>
+              <button v-if="editing" @click="cancelEdit">取消</button>
+              <button class="primary" :disabled="saving" @click="editing ? save() : beginEdit()">{{ editing ? (saving ? '保存中' : '保存副本') : '编辑' }}</button>
             </div>
           </header>
+          <div class="kb-stage-bar">
+            <small>适用写作步骤</small>
+            <button v-for="s in KNOWLEDGE_STAGES" :key="s.id" class="stage-chip"
+              :class="{ on: (editing ? draftStages : stages).includes(s.id) }"
+              :disabled="!editing" :title="editing ? '点击切换适用步骤' : '点右上「编辑」可调整'"
+              @click="toggleStage(s.id)">{{ s.label }}</button>
+            <span v-if="!(editing ? draftStages : stages).length" class="stage-hint">未标记 · 所有步骤可选</span>
+            <span v-else-if="!editing" class="stage-hint">仅在上述步骤的调用确认窗口中出现</span>
+          </div>
           <textarea v-if="editing" v-model="draft" class="kb-editor" spellcheck="false" />
           <div v-else class="kb-body">
             <template v-for="(b, i) in rendered" :key="i">
@@ -176,6 +210,15 @@ function renderMarkdown(raw: string) {
 .kb-item strong { font-size: 12px; }
 .kb-item small { color: var(--ink-soft); font-size: 11px; line-height: 1.5; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .kb-meta { font-size: 10px; color: var(--accent); }
+.kb-stages-inline { font-size: 10px; color: var(--ink-soft); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.kb-stages-inline.untagged { color: var(--bad); opacity: .75; }
+.kb-stage-bar { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; padding: 12px 24px; border-bottom: 1px solid var(--line); }
+.kb-stage-bar small { color: var(--ink-soft); font-size: 11px; margin-right: 2px; }
+.stage-chip { font-size: 11px; padding: 3px 10px; border-radius: 20px; border: 1px solid var(--line); background: transparent; color: var(--ink-soft); }
+.stage-chip.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+.stage-chip:disabled { cursor: default; }
+.stage-chip:disabled:not(.on) { opacity: .7; }
+.stage-hint { font-size: 10px; color: var(--ink-soft); margin-left: 4px; }
 .kb-empty, .kb-empty-state { color: var(--ink-soft); font-size: 12px; padding: 16px; text-align: center; }
 .kb-content { overflow: hidden; }
 .kb-content-head { display: flex; justify-content: space-between; align-items: center; padding: 18px 24px; border-bottom: 1px solid var(--line); gap: 12px; }

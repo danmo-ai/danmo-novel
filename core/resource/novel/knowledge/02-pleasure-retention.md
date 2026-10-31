@@ -1,3 +1,7 @@
+---
+stages: [volume, outline, write, review]
+---
+
 # 爽点与追读
 
 爽点是读者情绪的闭环释放；追读靠具体钩子和及时微兑现。

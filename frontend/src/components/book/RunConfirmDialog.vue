@@ -3,6 +3,7 @@ import { computed, onMounted, ref } from 'vue'
 import { api } from '@/api/client'
 import type { ContextPacket } from '@/types'
 import { runKindLabel } from '@/utils/runLabels'
+import { knowledgeAppliesTo, knowledgeStageLabel, specKnowledgeStage } from '@/utils/knowledgeStages'
 import { useAppStore } from '@/stores/app'
 
 const store = useAppStore()
@@ -19,9 +20,10 @@ const loadError = ref('')
 const packet = ref<ContextPacket | null>(null)
 const instruction = ref('')
 const expandedBlock = ref('')
-const knowledgeDocs = ref<{ id: string; title: string; summary: string; bytes: number }[]>([])
+const knowledgeDocs = ref<{ id: string; title: string; summary: string; bytes: number; stages?: string[] }[]>([])
 const selectedKnowledge = ref<Set<string>>(new Set())
 const knowledgeOpen = ref(false)
+const knowledgeShowAll = ref(false)
 const preserve = ref<Set<string>>(new Set())
 const preserveOpen = ref(true)
 
@@ -82,6 +84,13 @@ const riskNote = computed(() => {
 })
 const totalBytes = computed(() => (packet.value?.blocks || []).reduce((s, b) => s + b.bytes, 0))
 
+// Knowledge is offered per step: 立项 articles are not noise at 审校.
+const knowledgeStage = computed(() => specKnowledgeStage(props.spec))
+const knowledgeStageText = computed(() => knowledgeStageLabel(knowledgeStage.value))
+const suitableKnowledge = computed(() => knowledgeDocs.value.filter((d) => knowledgeAppliesTo(d.stages, knowledgeStage.value)))
+const hiddenKnowledge = computed(() => knowledgeDocs.value.length - suitableKnowledge.value.length)
+const shownKnowledge = computed(() => (knowledgeShowAll.value ? knowledgeDocs.value : suitableKnowledge.value))
+
 onMounted(async () => {
   try {
     packet.value = await api.post<ContextPacket>('/api/runs/preview', props.spec)
@@ -130,58 +139,67 @@ function confirm() {
         <span class="meta-item"><small>上下文</small><strong>{{ packet ? `${packet.blocks.length} 块 · ${(totalBytes / 1024).toFixed(1)} KB` : '…' }}</strong></span>
       </div>
 
-      <div class="dlg-context">
-        <small class="ctx-label">将发送给模型的内容（依据只读；接受才写盘）</small>
-        <p v-if="loading" class="ctx-loading">正在构建上下文预览…</p>
-        <p v-else-if="loadError" class="ctx-error">{{ loadError }}</p>
-        <template v-else-if="packet">
-          <div class="ctx-system"><small>系统提示词</small><p>{{ packet.systemPrompt }}</p></div>
-          <div v-if="basisBlocks.length" class="ctx-group">
-            <small class="ctx-group-label">重写依据（只读，不写回）</small>
-            <details v-for="b in basisBlocks" :key="b.id" class="ctx-block basis" :open="expandedBlock === b.id" @toggle="expandedBlock = ($event.target as HTMLDetailsElement).open ? b.id : ''">
-              <summary><span class="ctx-block-label">{{ b.label }}</span><span class="ctx-block-meta">{{ b.source }} · {{ b.bytes }} B</span></summary>
-              <pre>{{ b.content }}</pre>
-            </details>
-          </div>
-          <div class="ctx-blocks">
-            <details v-for="b in contentBlocks" :key="b.id" class="ctx-block" :open="expandedBlock === b.id" @toggle="expandedBlock = ($event.target as HTMLDetailsElement).open ? b.id : ''">
-              <summary><span class="ctx-block-label">{{ b.label }}</span><span class="ctx-block-meta">{{ b.source }} · {{ b.bytes }} B</span></summary>
-              <pre>{{ b.content }}</pre>
-            </details>
-          </div>
-        </template>
-      </div>
-
-      <div v-if="isReinit && preserveOptions.length" class="dlg-preserve">
-        <button class="preserve-toggle" @click="preserveOpen = !preserveOpen">
-          <span>接受时保留精修文件（不覆盖）{{ preserve.size ? ` · 已选 ${preserve.size}` : '' }}</span>
-          <span>{{ preserveOpen ? '收起' : '展开' }}</span>
-        </button>
-        <div v-if="preserveOpen" class="preserve-list">
-          <p class="preserve-note">勾选后，重新立项接受时这些文件保持现状；其余总纲派生设定按候选覆盖。</p>
-          <label v-for="p in preserveOptions" :key="p" class="preserve-item" :class="{ selected: preserve.has(p) }">
-            <input type="checkbox" :checked="preserve.has(p)" @change="togglePreserve(p)" />
-            <span>{{ p }}</span>
-          </label>
+      <div class="dlg-body">
+        <div class="dlg-context">
+          <small class="ctx-label">将发送给模型的内容（依据只读；接受才写盘）</small>
+          <p v-if="loading" class="ctx-loading">正在构建上下文预览…</p>
+          <p v-else-if="loadError" class="ctx-error">{{ loadError }}</p>
+          <template v-else-if="packet">
+            <div class="ctx-system"><small>系统提示词</small><p>{{ packet.systemPrompt }}</p></div>
+            <div v-if="basisBlocks.length" class="ctx-group">
+              <small class="ctx-group-label">重写依据（只读，不写回）</small>
+              <details v-for="b in basisBlocks" :key="b.id" class="ctx-block basis" :open="expandedBlock === b.id" @toggle="expandedBlock = ($event.target as HTMLDetailsElement).open ? b.id : ''">
+                <summary><span class="ctx-block-label">{{ b.label }}</span><span class="ctx-block-meta">{{ b.source }} · {{ b.bytes }} B</span></summary>
+                <pre>{{ b.content }}</pre>
+              </details>
+            </div>
+            <div class="ctx-blocks">
+              <details v-for="b in contentBlocks" :key="b.id" class="ctx-block" :open="expandedBlock === b.id" @toggle="expandedBlock = ($event.target as HTMLDetailsElement).open ? b.id : ''">
+                <summary><span class="ctx-block-label">{{ b.label }}</span><span class="ctx-block-meta">{{ b.source }} · {{ b.bytes }} B</span></summary>
+                <pre>{{ b.content }}</pre>
+              </details>
+            </div>
+          </template>
         </div>
-      </div>
 
-      <div class="dlg-knowledge" v-if="!isLocalFinalize && knowledgeDocs.length">
-        <button class="knowledge-toggle" @click="knowledgeOpen = !knowledgeOpen">
-          <span>参考知识（可选，内置 + 作者资料库）{{ selectedKnowledge.size ? ` · 已选 ${selectedKnowledge.size} 篇` : '' }}</span>
-          <span>{{ knowledgeOpen ? '收起' : '展开' }}</span>
-        </button>
-        <div v-if="knowledgeOpen" class="knowledge-list">
-          <p class="knowledge-note">勾选的文章会作为「方法/风格参考」附加到本次调用，不写入正文事实。</p>
-          <label v-for="d in knowledgeDocs" :key="d.id" class="knowledge-item" :class="{ selected: selectedKnowledge.has(d.id) }">
-            <input type="checkbox" :checked="selectedKnowledge.has(d.id)" @change="toggleKnowledge(d.id)" />
-            <span class="knowledge-info"><strong>{{ d.title }}</strong><small>{{ d.summary }}</small></span>
-            <span class="knowledge-bytes">{{ (d.bytes / 1024).toFixed(1) }}KB</span>
-          </label>
+        <div v-if="isReinit && preserveOptions.length" class="dlg-preserve">
+          <button class="preserve-toggle" @click="preserveOpen = !preserveOpen">
+            <span>接受时保留精修文件（不覆盖）{{ preserve.size ? ` · 已选 ${preserve.size}` : '' }}</span>
+            <span>{{ preserveOpen ? '收起' : '展开' }}</span>
+          </button>
+          <div v-if="preserveOpen" class="preserve-list">
+            <p class="preserve-note">勾选后，重新立项接受时这些文件保持现状；其余总纲派生设定按候选覆盖。</p>
+            <label v-for="p in preserveOptions" :key="p" class="preserve-item" :class="{ selected: preserve.has(p) }">
+              <input type="checkbox" :checked="preserve.has(p)" @change="togglePreserve(p)" />
+              <span>{{ p }}</span>
+            </label>
+          </div>
         </div>
-      </div>
 
-      <p v-if="riskNote" class="dlg-risk">{{ riskNote }}</p>
+        <div class="dlg-knowledge" v-if="!isLocalFinalize && knowledgeDocs.length">
+          <button class="knowledge-toggle" @click="knowledgeOpen = !knowledgeOpen">
+            <span>参考知识（可选，内置 + 作者资料库）{{ selectedKnowledge.size ? ` · 已选 ${selectedKnowledge.size} 篇` : '' }}</span>
+            <span>{{ knowledgeOpen ? '收起' : '展开' }}</span>
+          </button>
+          <div v-if="knowledgeStage" class="knowledge-scope">
+            <span v-if="!knowledgeShowAll">适用于「{{ knowledgeStageText }}」· {{ suitableKnowledge.length }} 篇<template v-if="hiddenKnowledge">，已隐藏 {{ hiddenKnowledge }} 篇不适用</template></span>
+            <span v-else>「{{ knowledgeStageText }}」适用 {{ suitableKnowledge.length }} 篇 · 已显示全部 {{ knowledgeDocs.length }} 篇</span>
+            <button v-if="hiddenKnowledge" class="scope-link" @click="knowledgeShowAll = !knowledgeShowAll">{{ knowledgeShowAll ? '只看适用' : '显示全部' }}</button>
+          </div>
+          <div v-if="knowledgeOpen" class="knowledge-list">
+            <p class="knowledge-note">勾选的文章会作为「方法/风格参考」附加到本次调用，不写入正文事实。</p>
+            <label v-for="d in shownKnowledge" :key="d.id" class="knowledge-item"
+              :class="{ selected: selectedKnowledge.has(d.id), 'off-stage': !knowledgeAppliesTo(d.stages, knowledgeStage) }">
+              <input type="checkbox" :checked="selectedKnowledge.has(d.id)" @change="toggleKnowledge(d.id)" />
+              <span class="knowledge-info"><strong>{{ d.title }}</strong><small>{{ d.summary }}</small></span>
+              <span class="knowledge-bytes">{{ (d.bytes / 1024).toFixed(1) }}KB</span>
+            </label>
+            <p v-if="!shownKnowledge.length" class="knowledge-empty">知识库里还没有标记为适用于「{{ knowledgeStageText }}」的文章；可在「知识库」页给文章补上适合的写作步骤。</p>
+          </div>
+        </div>
+
+        <p v-if="riskNote" class="dlg-risk">{{ riskNote }}</p>
+      </div>
 
       <div v-if="!isLocalFinalize" class="dlg-instruction">
         <label>追加指令（可选，会附加到本次调用的用户提示）</label>
@@ -208,7 +226,8 @@ function confirm() {
 .meta-item { display: grid; gap: 2px; }
 .meta-item small { color: var(--ink-soft); font-size: 10px; }
 .meta-item strong { font-size: 13px; }
-.dlg-context { flex: 1; overflow-y: auto; padding: 16px 24px; min-height: 0; }
+.dlg-body { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
+.dlg-context { padding: 16px 24px; }
 .ctx-label { color: var(--ink-soft); font-size: 11px; font-weight: 600; display: block; margin-bottom: 10px; }
 .ctx-loading, .ctx-error { color: var(--ink-soft); font-size: 13px; }
 .ctx-error { color: var(--bad); }
@@ -235,8 +254,12 @@ function confirm() {
 .knowledge-toggle { display: flex; justify-content: space-between; align-items: center; width: 100%; border: none; background: transparent; padding: 14px 24px; text-align: left; font-size: 13px; color: var(--ink); }
 .knowledge-toggle span:last-child { color: var(--accent); font-size: 12px; }
 .knowledge-list { padding: 0 24px 14px; }
+.knowledge-scope { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 0 24px 10px; font-size: 11px; color: var(--ink-soft); }
+.scope-link { border: none; background: transparent; color: var(--accent); font-size: 11px; padding: 0; }
 .knowledge-note { margin: 0 0 10px; font-size: 11px; color: var(--ink-soft); line-height: 1.6; }
+.knowledge-empty { margin: 0; padding: 10px 0; font-size: 12px; color: var(--ink-soft); line-height: 1.6; }
 .knowledge-item { display: flex; align-items: flex-start; gap: 10px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; margin-bottom: 6px; cursor: pointer; }
+.knowledge-item.off-stage { opacity: .55; }
 .knowledge-item.selected { border-color: var(--accent); background: rgba(15,107,92,.05); }
 .knowledge-item input { margin-top: 3px; }
 .knowledge-info { display: grid; gap: 2px; flex: 1; min-width: 0; }
