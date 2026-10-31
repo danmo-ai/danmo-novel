@@ -64,7 +64,7 @@ async function onInstallUpdate() {
   }
 }
 
-type Tab = 'providers' | 'stages' | 'modelConfig'
+type Tab = 'version' | 'providers' | 'stages' | 'modelConfig'
 const activeTab = ref<Tab>('providers')
 const showForm = ref(false)
 const editingId = ref('')
@@ -264,20 +264,21 @@ async function saveAssignments() {
 <template>
   <section class="settings-page">
     <header class="settings-hero">
-      <p class="eyebrow">模型设置</p>
+      <p class="eyebrow">设置</p>
       <h1>配置你的写作引擎。</h1>
-      <p class="sub">提供商 · 创作阶段 · 模型参数</p>
+      <p class="sub">版本 · 提供商 · 创作阶段 · 模型参数</p>
     </header>
 
     <nav class="tab-bar">
+      <button :class="{ active: activeTab === 'version' }" @click="activeTab = 'version'">版本</button>
       <button :class="{ active: activeTab === 'providers' }" @click="activeTab = 'providers'">提供商</button>
       <button :class="{ active: activeTab === 'stages' }" @click="activeTab = 'stages'">创作阶段</button>
       <button :class="{ active: activeTab === 'modelConfig' }" @click="activeTab = 'modelConfig'">模型参数</button>
     </nav>
 
-    <!-- ===== Providers Tab ===== -->
-    <div v-if="activeTab === 'providers'" class="tab-content">
-      <section class="panel block update-block">
+    <!-- ===== Version Tab ===== -->
+    <div v-if="activeTab === 'version'" class="tab-content">
+      <section class="panel block">
         <header class="block-head">
           <h2>桌面版</h2>
           <span v-if="availableVersion" class="update-badge">有更新</span>
@@ -297,8 +298,10 @@ async function saveAssignments() {
           </button>
         </div>
       </section>
+    </div>
 
-      <section class="panel block">
+    <!-- ===== Providers Tab ===== -->
+    <div v-else-if="activeTab === 'providers'" class="tab-content">
         <header class="block-head">
           <h2>提供商</h2>
           <button class="primary" @click="openNew()">添加</button>

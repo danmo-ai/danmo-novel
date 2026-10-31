@@ -620,7 +620,7 @@ function roleLabel(role?: string) {
       @confirm="confirmRun" @cancel="confirmSpec = null" />
 
     <div v-if="runDrawer" class="run-drawer panel">
-      <header><strong>运行中心</strong><button @click="runDrawer = false">×</button></header>
+      <header><strong>模型日志</strong><button @click="runDrawer = false">×</button></header>
       <div v-if="store.activeRun">
         <p>{{ runKindLabel(store.activeRun.kind, store.activeRun.spec?.mode) }} · {{ store.activeRun.status }}</p>
         <p class="muted">模型 {{ store.activeRun.modelId }} · 调用 {{ store.activeRun.callsUsed }}/{{ store.activeRun.policy?.maxCalls || '计算中' }}</p>

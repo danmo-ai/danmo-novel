@@ -28,8 +28,8 @@ onMounted(async () => {
       <nav class="topnav" aria-label="应用导航">
         <router-link to="/">书架</router-link>
         <router-link to="/knowledge">知识库</router-link>
-        <router-link to="/runs">运行中心</router-link>
-        <router-link to="/settings">模型设置</router-link>
+        <router-link to="/runs">模型日志</router-link>
+        <router-link to="/settings">设置</router-link>
       </nav>
     </header>
     <main class="app-main">

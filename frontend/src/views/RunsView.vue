@@ -64,7 +64,7 @@ onMounted(load)
 <template>
   <section class="runs-page">
     <div class="page-head">
-      <div><p class="eyebrow">Observability</p><h1>LLM 运行中心</h1><p>排查每本书的模型调用、输入输出、阶段、成本与失败原因。</p></div>
+      <div><p class="eyebrow">Observability</p><h1>模型日志</h1><p>排查每本书的模型调用、输入输出、阶段、成本与失败原因。</p></div>
       <button @click="load">刷新</button>
     </div>
     <div class="summary-grid">
