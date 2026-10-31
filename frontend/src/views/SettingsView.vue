@@ -302,6 +302,7 @@ async function saveAssignments() {
 
     <!-- ===== Providers Tab ===== -->
     <div v-else-if="activeTab === 'providers'" class="tab-content">
+      <section class="panel block">
         <header class="block-head">
           <h2>提供商</h2>
           <button class="primary" @click="openNew()">添加</button>
