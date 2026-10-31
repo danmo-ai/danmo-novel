@@ -112,9 +112,9 @@ onMounted(load)
 
 <style scoped>
 .runs-page { display: grid; gap: 18px; }
-.page-head { display: flex; justify-content: space-between; align-items: flex-end; gap: 20px; }
-.eyebrow { margin: 0; color: var(--accent); font-size: 11px; letter-spacing: .12em; text-transform: uppercase; }
-h1 { margin: 4px 0 6px; font-family: var(--font-prose); font-size: 32px; }
+.page-head { display: flex; justify-content: space-between; align-items: flex-end; gap: 20px; padding: 32px 4px 24px; }
+.eyebrow { margin: 0; color: var(--accent); font-size: 12px; letter-spacing: 0.16em; text-transform: uppercase; }
+h1 { margin: 8px 0 8px; font-family: var(--font-prose); font-size: clamp(28px, 3.5vw, 44px); line-height: 1.05; }
 .page-head p:not(.eyebrow) { margin: 0; color: var(--ink-soft); font-size: 13px; }
 .summary-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
 .summary { padding: 16px; display: grid; gap: 6px; }

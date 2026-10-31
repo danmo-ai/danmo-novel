@@ -160,9 +160,9 @@ function renderMarkdown(raw: string) {
 </template>
 
 <style scoped>
-.page-head { display: flex; justify-content: space-between; align-items: flex-end; gap: 20px; padding: 4px 0 20px; }
-.eyebrow { color: var(--accent); font-size: 11px; letter-spacing: .12em; text-transform: uppercase; margin: 0; }
-.page-head h1 { font-family: var(--font-prose); font-size: 30px; margin: 4px 0 8px; }
+.page-head { display: flex; justify-content: space-between; align-items: flex-end; gap: 20px; padding: 32px 4px 24px; }
+.eyebrow { color: var(--accent); letter-spacing: 0.16em; text-transform: uppercase; font-size: 12px; margin: 0; }
+.page-head h1 { font-family: var(--font-prose); font-size: clamp(28px, 3.5vw, 44px); margin: 8px 0 8px; line-height: 1.05; }
 .sub { color: var(--ink-soft); font-size: 12px; margin: 0; max-width: 640px; line-height: 1.7; }
 .doc-count { color: var(--ink-soft); font-size: 13px; }
 .kb-layout { display: grid; grid-template-columns: 300px minmax(0, 1fr); gap: 18px; align-items: start; }
