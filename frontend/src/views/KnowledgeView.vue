@@ -109,7 +109,7 @@ function renderMarkdown(raw: string) {
       <div>
         <p class="eyebrow">Knowledge Base</p>
         <h1>知识库</h1>
-        <p class="sub">内置创作方法与题材指南随版本提供，本地编辑会形成个人副本。知识不是 canon，只有在创作确认窗口勾选后才作为「方法/风格参考」附加。</p>
+        <p class="sub">内置方法与题材指南；本地编辑形成个人副本，仅在创作确认窗口勾选后附加为参考。</p>
       </div>
       <span class="doc-count">{{ docs.length }} 篇</span>
     </header>
@@ -163,7 +163,7 @@ function renderMarkdown(raw: string) {
 .page-head { display: flex; justify-content: space-between; align-items: flex-end; gap: 20px; padding: 32px 4px 24px; }
 .eyebrow { color: var(--accent); letter-spacing: 0.16em; text-transform: uppercase; font-size: 12px; margin: 0; }
 .page-head h1 { font-family: var(--font-prose); font-size: clamp(28px, 3.5vw, 44px); margin: 8px 0 8px; line-height: 1.05; }
-.sub { color: var(--ink-soft); font-size: 12px; margin: 0; max-width: 640px; line-height: 1.7; }
+.sub { color: var(--ink-soft); font-size: 13px; margin: 0; max-width: 640px; line-height: 1.7; }
 .doc-count { color: var(--ink-soft); font-size: 13px; }
 .kb-layout { display: grid; grid-template-columns: 300px minmax(0, 1fr); gap: 18px; align-items: start; }
 .kb-nav { padding: 12px; max-height: 78vh; overflow-y: auto; }

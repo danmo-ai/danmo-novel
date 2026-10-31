@@ -498,9 +498,9 @@ async function saveAssignments() {
 
 <style scoped>
 .settings-hero { padding: 32px 4px 24px; }
-.eyebrow { color: var(--accent); letter-spacing: 0.16em; text-transform: uppercase; font-size: 12px; }
+.eyebrow { color: var(--accent); letter-spacing: 0.16em; text-transform: uppercase; font-size: 12px; margin: 0; }
 .settings-hero h1 { font-family: var(--font-prose); font-size: clamp(28px, 3.5vw, 44px); line-height: 1.05; margin: 8px 0 8px; }
-.sub { color: var(--ink-soft); margin: 0; }
+.sub { color: var(--ink-soft); font-size: 13px; line-height: 1.7; margin: 0; }
 .tab-bar { display: flex; gap: 0; border-bottom: 1px solid var(--line); margin-bottom: 22px; }
 .tab-bar button { padding: 10px 22px; border: none; background: none; cursor: pointer; font-size: 14px; color: var(--ink-soft); border-bottom: 2px solid transparent; margin-bottom: -1px; border-radius: 0; }
 .tab-bar button:hover:not(:disabled) { color: var(--accent); background: none; border-color: transparent; }
