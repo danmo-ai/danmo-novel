@@ -64,7 +64,8 @@ async function onInstallUpdate() {
   }
 }
 
-const activeTab = ref<'providers' | 'modelConfig'>('providers')
+type Tab = 'providers' | 'stages' | 'modelConfig'
+const activeTab = ref<Tab>('providers')
 const showForm = ref(false)
 const editingId = ref('')
 const form = ref<any>({ provider: 'openai', name: '', apiKey: '', baseUrl: '', defaultProtocolDialect: '', models: [] })
@@ -262,43 +263,48 @@ async function saveAssignments() {
 
 <template>
   <section class="settings-page">
-    <h1>模型设置</h1>
+    <header class="settings-hero">
+      <p class="eyebrow">模型设置</p>
+      <h1>配置你的写作引擎。</h1>
+      <p class="sub">提供商 · 创作阶段 · 模型参数</p>
+    </header>
 
-    <div class="tab-bar">
+    <nav class="tab-bar">
       <button :class="{ active: activeTab === 'providers' }" @click="activeTab = 'providers'">提供商</button>
+      <button :class="{ active: activeTab === 'stages' }" @click="activeTab = 'stages'">创作阶段</button>
       <button :class="{ active: activeTab === 'modelConfig' }" @click="activeTab = 'modelConfig'">模型参数</button>
-    </div>
+    </nav>
 
-    <div v-if="activeTab === 'providers'">
-    <section class="panel block update-block">
-      <header class="block-head">
-        <h2>桌面版</h2>
-        <span v-if="availableVersion" class="update-badge">有更新</span>
-      </header>
-      <p class="muted">当前版本 {{ appVersion || '…' }} · {{ updaterStatusText }}</p>
-      <div class="row-actions" style="margin-top:10px">
-        <button :disabled="!isDesktop() || updaterBusy" @click="onCheckUpdate">
-          {{ updaterStatus === 'checking' ? '检查中…' : '检查更新' }}
-        </button>
-        <button
-          v-if="updaterStatus === 'available'"
-          class="primary"
-          :disabled="updaterBusy"
-          @click="onInstallUpdate"
-        >
-          安装并重启
-        </button>
-      </div>
-    </section>
+    <!-- ===== Providers Tab ===== -->
+    <div v-if="activeTab === 'providers'" class="tab-content">
+      <section class="panel block update-block">
+        <header class="block-head">
+          <h2>桌面版</h2>
+          <span v-if="availableVersion" class="update-badge">有更新</span>
+        </header>
+        <p class="muted">当前版本 {{ appVersion || '…' }} · {{ updaterStatusText }}</p>
+        <div class="row-actions" style="margin-top:10px">
+          <button :disabled="!isDesktop() || updaterBusy" @click="onCheckUpdate">
+            {{ updaterStatus === 'checking' ? '检查中…' : '检查更新' }}
+          </button>
+          <button
+            v-if="updaterStatus === 'available'"
+            class="primary"
+            :disabled="updaterBusy"
+            @click="onInstallUpdate"
+          >
+            安装并重启
+          </button>
+        </div>
+      </section>
 
-    <div class="settings-grid">
       <section class="panel block">
         <header class="block-head">
           <h2>提供商</h2>
           <button class="primary" @click="openNew()">添加</button>
         </header>
         <div class="preset-row">
-          <button v-for="p in store.presets.slice(0, 8)" :key="p.id" @click="openNew(p)">{{ p.name }}</button>
+          <button v-for="p in store.presets" :key="p.id" class="preset-chip" @click="openNew(p)">{{ p.name }}</button>
         </div>
         <div v-for="p in store.providers" :key="p.id" class="provider-row">
           <div>
@@ -314,6 +320,19 @@ async function saveAssignments() {
         <p v-if="!store.providers.length" class="muted">还没有提供商。点上方预设开始。</p>
       </section>
 
+      <section class="panel block">
+        <header class="block-head"><h2>可用模型</h2></header>
+        <div v-for="m in store.models" :key="m.id" class="model-row">
+          <span>{{ m.id }}</span>
+          <button @click="test(m.id)">{{ testing[m.id] ? '测试中' : '测试' }}</button>
+          <span class="muted">{{ testResult[m.id] }}</span>
+        </div>
+        <p v-if="!store.models.length" class="muted">还没有可用模型。先添加提供商。</p>
+      </section>
+    </div>
+
+    <!-- ===== Stages Tab ===== -->
+    <div v-else-if="activeTab === 'stages'" class="tab-content">
       <section class="panel block">
         <header class="block-head"><h2>创作阶段模型</h2><button class="primary" @click="saveAssignments">保存</button></header>
         <div v-for="r in roles" :key="r.id" class="assign-block">
@@ -333,65 +352,11 @@ async function saveAssignments() {
           </div>
           <p class="assign-hint">{{ r.hint }}</p>
         </div>
-        <h3 style="margin-top:18px">可用模型</h3>
-        <div v-for="m in store.models" :key="m.id" class="model-row">
-          <span>{{ m.id }}</span>
-          <button @click="test(m.id)">{{ testing[m.id] ? '测试中' : '测试' }}</button>
-          <span class="muted">{{ testResult[m.id] }}</span>
-        </div>
       </section>
     </div>
 
-    <div v-if="showForm" class="modal-mask" @click.self="showForm = false">
-      <div class="modal panel">
-        <h2>{{ editingId ? '编辑提供商' : '添加提供商' }}</h2>
-        <label>协议
-          <select v-model="form.provider" :disabled="!!editingId">
-            <option value="openai">OpenAI Chat Completions</option>
-            <option value="openai_responses">OpenAI Responses</option>
-            <option value="anthropic">Anthropic Messages</option>
-            <option value="mock">Mock</option>
-          </select>
-        </label>
-        <label>名称<input v-model="form.name" :disabled="!!editingId" /></label>
-        <label>API Key<input v-model="form.apiKey" type="password" placeholder="留空保留原密钥" /></label>
-        <label>Base URL<input v-model="form.baseUrl" /></label>
-        <label>默认方言
-          <select v-model="form.defaultProtocolDialect">
-            <option value="">自动</option>
-            <option value="openai">openai</option><option value="deepseek">deepseek</option>
-            <option value="qwen">qwen</option><option value="kimi">kimi</option>
-            <option value="kimi_code">kimi_code</option><option value="kimi_k3">kimi_k3</option>
-            <option value="glm">glm</option><option value="minimax">minimax</option>
-            <option value="gemini">gemini</option><option value="grok">grok</option>
-          </select>
-        </label>
-        <div class="model-tools">
-          <button @click="fetchModels">刷新模型列表</button>
-          <input v-model="manualModel" placeholder="手工添加模型" @keydown.enter.prevent="addModel" />
-          <button @click="addModel">添加模型</button>
-        </div>
-        <div v-for="m in form.models" :key="m.name" class="model-edit-row">
-          <span>{{ m.name }}</span>
-          <select v-model="m.protocolDialect">
-            <option value="">自动</option>
-            <option value="openai">openai</option><option value="deepseek">deepseek</option>
-            <option value="qwen">qwen</option><option value="kimi">kimi</option>
-            <option value="kimi_code">kimi_code</option><option value="kimi_k3">kimi_k3</option>
-            <option value="glm">glm</option><option value="minimax">minimax</option>
-            <option value="gemini">gemini</option><option value="grok">grok</option>
-          </select>
-          <input v-model="m.enabled" type="checkbox" />
-        </div>
-        <div class="modal-actions">
-          <button @click="showForm = false">取消</button>
-          <button class="primary" @click="save">保存</button>
-        </div>
-      </div>
-    </div>
-    </div>
-
-    <div v-else-if="activeTab === 'modelConfig'">
+    <!-- ===== Model Config Tab ===== -->
+    <div v-else-if="activeTab === 'modelConfig'" class="tab-content">
       <section class="panel block">
         <header class="block-head">
           <h2>模型参数</h2>
@@ -465,21 +430,78 @@ async function saveAssignments() {
         </div>
       </div>
     </div>
+
+    <!-- ===== Provider Form Modal (shared) ===== -->
+    <div v-if="showForm" class="modal-mask" @click.self="showForm = false">
+      <div class="modal panel">
+        <h2>{{ editingId ? '编辑提供商' : '添加提供商' }}</h2>
+        <label>协议
+          <select v-model="form.provider" :disabled="!!editingId">
+            <option value="openai">OpenAI Chat Completions</option>
+            <option value="openai_responses">OpenAI Responses</option>
+            <option value="anthropic">Anthropic Messages</option>
+            <option value="mock">Mock</option>
+          </select>
+        </label>
+        <label>名称<input v-model="form.name" :disabled="!!editingId" /></label>
+        <label>API Key<input v-model="form.apiKey" type="password" placeholder="留空保留原密钥" /></label>
+        <label>Base URL<input v-model="form.baseUrl" /></label>
+        <label>默认方言
+          <select v-model="form.defaultProtocolDialect">
+            <option value="">自动</option>
+            <option value="openai">openai</option><option value="deepseek">deepseek</option>
+            <option value="qwen">qwen</option><option value="kimi">kimi</option>
+            <option value="kimi_code">kimi_code</option><option value="kimi_k3">kimi_k3</option>
+            <option value="glm">glm</option><option value="minimax">minimax</option>
+            <option value="gemini">gemini</option><option value="grok">grok</option>
+          </select>
+        </label>
+        <div class="model-tools">
+          <button @click="fetchModels">刷新模型列表</button>
+          <input v-model="manualModel" placeholder="手工添加模型" @keydown.enter.prevent="addModel" />
+          <button @click="addModel">添加模型</button>
+        </div>
+        <div v-for="m in form.models" :key="m.name" class="model-edit-row">
+          <span>{{ m.name }}</span>
+          <select v-model="m.protocolDialect">
+            <option value="">自动</option>
+            <option value="openai">openai</option><option value="deepseek">deepseek</option>
+            <option value="qwen">qwen</option><option value="kimi">kimi</option>
+            <option value="kimi_code">kimi_code</option><option value="kimi_k3">kimi_k3</option>
+            <option value="glm">glm</option><option value="minimax">minimax</option>
+            <option value="gemini">gemini</option><option value="grok">grok</option>
+          </select>
+          <input v-model="m.enabled" type="checkbox" />
+        </div>
+        <div class="modal-actions">
+          <button @click="showForm = false">取消</button>
+          <button class="primary" @click="save">保存</button>
+        </div>
+      </div>
+    </div>
   </section>
 </template>
 
 <style scoped>
-.settings-page h1 { font-family: var(--font-prose); }
-.update-block { margin-bottom: 18px; padding: 18px; }
+.settings-hero { padding: 32px 4px 24px; }
+.eyebrow { color: var(--accent); letter-spacing: 0.16em; text-transform: uppercase; font-size: 12px; }
+.settings-hero h1 { font-family: var(--font-prose); font-size: clamp(28px, 3.5vw, 44px); line-height: 1.05; margin: 8px 0 8px; }
+.sub { color: var(--ink-soft); margin: 0; }
+.tab-bar { display: flex; gap: 0; border-bottom: 1px solid var(--line); margin-bottom: 22px; }
+.tab-bar button { padding: 10px 22px; border: none; background: none; cursor: pointer; font-size: 14px; color: var(--ink-soft); border-bottom: 2px solid transparent; margin-bottom: -1px; border-radius: 0; }
+.tab-bar button:hover:not(:disabled) { color: var(--accent); background: none; border-color: transparent; }
+.tab-bar button.active { color: var(--accent); border-bottom-color: var(--accent); font-weight: 600; }
+.tab-content { display: grid; gap: 18px; align-items: start; }
+.block { padding: 20px; }
+.block-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; }
+.block-head h2 { margin: 0; font-size: 17px; }
+.update-block { margin-bottom: 0; }
 .update-badge {
   font-size: 12px; font-weight: 700; color: var(--accent);
   border: 1px solid var(--accent); border-radius: 999px; padding: 2px 10px;
 }
-.settings-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; align-items: start; }
-.block { padding: 18px; }
-.block-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
-.block-head h2 { margin: 0; font-size: 18px; }
 .preset-row { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 16px; }
+.preset-chip { font-size: 12px; padding: 6px 12px; }
 .provider-row { display: flex; justify-content: space-between; gap: 10px; padding: 12px 0; border-top: 1px solid var(--line); }
 .muted { color: var(--ink-soft); font-size: 12px; }
 .row-actions { display: flex; gap: 6px; }
@@ -488,28 +510,24 @@ async function saveAssignments() {
 .assign-row { display: grid; grid-template-columns: 64px 1fr; gap: 12px; align-items: center; }
 .assign-label { font-weight: 600; font-size: 14px; }
 .assign-controls { display: grid; grid-template-columns: 1fr 150px; gap: 8px; }
-.assign-row select, .modal input, .modal select { padding: 8px 10px; border-radius: 8px; border: 1px solid var(--line); width: 100%; }
+.assign-row select, .modal input, .modal select { padding: 10px 12px; border-radius: 10px; border: 1px solid var(--line); width: 100%; }
 .effort-select { color: var(--accent); }
 .assign-hint { margin: 8px 0 0 76px; font-size: 11px; color: var(--ink-soft); line-height: 1.65; }
 .model-row { display: flex; gap: 8px; align-items: center; padding: 8px 0; border-top: 1px solid var(--line); font-size: 13px; }
 .modal-mask { position: fixed; inset: 0; background: rgba(20,35,31,0.3); display: grid; place-items: center; z-index: 40; }
-.modal { width: min(520px, 94vw); max-height: 90vh; overflow: auto; padding: 22px; display: grid; gap: 12px; }
+.modal { width: min(520px, 94vw); max-height: 90vh; overflow: auto; padding: 24px; display: grid; gap: 14px; }
 .modal label { display: grid; gap: 6px; font-size: 13px; color: var(--ink-soft); }
 .model-tools { display: flex; gap: 8px; flex-wrap: wrap; }
 .model-tools input { flex: 1; }
 .model-edit-row { display: grid; grid-template-columns: 1fr 130px 30px; gap: 8px; align-items: center; font-size: 13px; }
 .modal-actions { display: flex; justify-content: flex-end; gap: 10px; }
-.tab-bar { display: flex; gap: 0; margin-bottom: 18px; border-bottom: 1px solid var(--line); }
-.tab-bar button { padding: 10px 20px; border: none; background: none; cursor: pointer; font-size: 14px; color: var(--ink-soft); border-bottom: 2px solid transparent; margin-bottom: -1px; }
-.tab-bar button.active { color: var(--accent); border-bottom-color: var(--accent); font-weight: 600; }
 .mc-form { display: grid; gap: 14px; }
-.mc-group { display: grid; gap: 10px; padding: 14px; background: rgba(0,0,0,0.03); border-radius: 10px; }
+.mc-group { display: grid; gap: 10px; padding: 14px; background: rgba(20,35,31,.04); border-radius: 12px; }
 .mc-group h3 { margin: 0; font-size: 13px; font-weight: 600; color: var(--ink-soft); text-transform: uppercase; letter-spacing: 0.5px; }
 .mc-field { display: grid; gap: 6px; font-size: 13px; }
 .mc-field .mc-label { color: var(--ink-soft); font-size: 12px; }
-.mc-field input, .mc-field select { padding: 8px 10px; border-radius: 8px; border: 1px solid var(--line); width: 100%; }
+.mc-field input, .mc-field select { padding: 10px 12px; border-radius: 10px; border: 1px solid var(--line); width: 100%; }
 .mc-switch { display: flex; align-items: center; gap: 8px; }
 .mc-switch input { width: auto; }
-.mc-delete { margin-top: 8px; color: #c0392b; background: none; border: 1px solid #c0392b; border-radius: 8px; padding: 6px 14px; cursor: pointer; font-size: 13px; }
-@media (max-width: 900px) { .settings-grid { grid-template-columns: 1fr; } }
+.mc-delete { margin-top: 8px; color: var(--bad); background: none; border: 1px solid var(--bad); border-radius: 10px; padding: 6px 14px; cursor: pointer; font-size: 13px; }
 </style>
