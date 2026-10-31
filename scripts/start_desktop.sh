@@ -44,7 +44,12 @@ fi
 SIDECAR_PATH="$DQ_ROOT/desktop/src-tauri/bin/$SIDECAR_NAME"
 DEV_BACKEND_BIN="$DQ_RUN_DIR/backend-bin"
 echo "==> Building dev backend -> $DEV_BACKEND_BIN"
-(cd "$DQ_ROOT" && go build -o "$DEV_BACKEND_BIN" ./cmd/danmo-novel)
+# Inject a real version so the UI can show an identifier instead of "dev".
+DEV_VERSION="$(cd "$DQ_ROOT" && git describe --tags --always --dirty 2>/dev/null || echo dev)"
+(cd "$DQ_ROOT" && go build \
+  -ldflags "-X 'github.com/danmo-ai/danmo-novel/core/version.Version=${DEV_VERSION}'" \
+  -o "$DEV_BACKEND_BIN" ./cmd/danmo-novel)
+echo "    Version : ${DEV_VERSION}"
 mkdir -p "$(dirname "$SIDECAR_PATH")"
 cp -f "$DEV_BACKEND_BIN" "$SIDECAR_PATH"
 if [[ -d "$HOME/.danmo-novel/bin" ]]; then

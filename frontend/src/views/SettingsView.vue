@@ -19,10 +19,11 @@ const {
   downloadAndInstallUpdate,
 } = useAppUpdater()
 
-// "dev" / "dirty" build tags are placeholders, not shippable versions.
+// Show the build version whenever it is a real identifier; "dev" only means the
+// backend could not report one.
 const versionLabel = computed(() => {
   const v = appVersion.value.trim()
-  return v === '' || v === 'dev' || v.includes('dirty') ? '开发版' : v
+  return v === '' || v === 'dev' ? '开发版' : v
 })
 
 const updaterStatusText = computed(() => {
@@ -30,7 +31,7 @@ const updaterStatusText = computed(() => {
     case 'checking':
       return '正在检查更新…'
     case 'upToDate':
-      return `已是最新版本（${versionLabel.value}）`
+      return '已是最新版本'
     case 'available':
       return `发现新版本 ${availableVersion.value}`
     case 'downloading':
@@ -42,7 +43,7 @@ const updaterStatusText = computed(() => {
     case 'error':
       return updaterError.value || '检查更新失败'
     default:
-      return isDesktop() ? `当前版本 ${versionLabel.value}，可检查桌面版更新` : `当前版本 ${versionLabel.value}；自升级仅在桌面版可用`
+      return isDesktop() ? '可检查桌面版更新' : '自升级仅在桌面版可用'
   }
 })
 
@@ -296,11 +297,14 @@ async function saveAssignments() {
     <div v-if="activeTab === 'version'" class="tab-content">
       <section class="panel block">
         <header class="block-head">
-          <h2>桌面版</h2>
+          <h2>版本</h2>
           <span v-if="availableVersion" class="update-badge">有更新</span>
         </header>
-        <p class="muted">{{ updaterStatusText }}</p>
-        <div class="row-actions" style="margin-top:10px">
+        <div class="version-row">
+          <span class="version-value">{{ versionLabel }}</span>
+          <span class="muted">{{ updaterStatusText }}</span>
+        </div>
+        <div class="row-actions" style="margin-top:14px">
           <button :disabled="!isDesktop() || updaterBusy" @click="onCheckUpdate">
             {{ updaterStatus === 'checking' ? '检查中…' : '检查更新' }}
           </button>
@@ -516,6 +520,8 @@ async function saveAssignments() {
 .block-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; }
 .block-head h2 { margin: 0; font-size: 17px; }
 .update-block { margin-bottom: 0; }
+.version-row { display: grid; gap: 6px; }
+.version-value { font-family: var(--font-prose); font-size: 24px; line-height: 1.2; word-break: break-all; }
 .update-badge {
   font-size: 12px; font-weight: 700; color: var(--accent);
   border: 1px solid var(--accent); border-radius: 999px; padding: 2px 10px;

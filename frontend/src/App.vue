@@ -9,11 +9,8 @@ const store = useAppStore()
 const { toast, error } = storeToRefs(store)
 const { appVersion, hasUpdate, availableVersion, startSilentUpdateCheck, initAppVersion } = useAppUpdater()
 
-// Hide placeholder build tags ("dev", "dirty", empty) — only show a real version.
-const showVersion = computed(() => {
-  const v = appVersion.value.trim()
-  return v !== '' && v !== 'dev' && !v.includes('dirty')
-})
+// Brand shows only clean release tags (v1.2.3); dev build strings stay hidden.
+const showVersion = computed(() => /^v?\d+\.\d+(\.\d+)?$/.test(appVersion.value.trim()))
 
 onMounted(async () => {
   await waitForBackend()

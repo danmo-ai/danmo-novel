@@ -26,7 +26,12 @@ fi
 
 DEV_BACKEND_BIN="$DQ_RUN_DIR/backend-bin"
 echo "==> Building dev backend"
-(cd "$DQ_ROOT" && go build -o "$DEV_BACKEND_BIN" ./cmd/danmo-novel)
+# Inject a real version so the UI can show an identifier instead of "dev".
+DEV_VERSION="$(cd "$DQ_ROOT" && git describe --tags --always --dirty 2>/dev/null || echo dev)"
+(cd "$DQ_ROOT" && go build \
+  -ldflags "-X 'github.com/danmo-ai/danmo-novel/core/version.Version=${DEV_VERSION}'" \
+  -o "$DEV_BACKEND_BIN" ./cmd/danmo-novel)
+echo "    Version : ${DEV_VERSION}"
 
 export DQ_DEV_ENV=$'DQ_HTTP_HOST=127.0.0.1'$'\nDQ_BACKEND_PORT='"${BACKEND_PORT}"
 dq_dev_start backend "$DQ_ROOT" "$DEV_BACKEND_BIN"
