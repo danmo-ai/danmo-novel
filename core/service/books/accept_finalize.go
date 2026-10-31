@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -155,12 +156,19 @@ func upsertCastSnapshot(facts, outlineRaw string) string {
 	return strings.Join(out, "\n")
 }
 
-// appendVolumeSummary appends per-chapter摘要 to continuity/summaries/vNN.md.
+// appendVolumeSummary upserts per-chapter 摘要 into continuity/summaries/vNN.md.
+//
+// 重写单元会再次定稿同一批章：旧实现按章追加，重写后同一章会出现两行。
+// 现在先按上一次定稿账本记录的章范围删除旧行，再写入新行（幂等）。
 func appendVolumeSummary(root string, unit domain.UnitInfo, chapters []domain.ChapterDraft) error {
 	path := filepath.Join(root, "continuity", "summaries", fmt.Sprintf("v%02d.md", unit.Volume))
 	var b strings.Builder
 	if raw, err := os.ReadFile(path); err == nil {
-		b.WriteString(strings.TrimRight(string(raw), "\n"))
+		text := strings.TrimRight(string(raw), "\n")
+		if from, to := committedChapterRange(root, unit.UnitID); from > 0 && to >= from {
+			text = dropSummaryRows(text, from, to)
+		}
+		b.WriteString(text)
 		b.WriteString("\n")
 	} else {
 		fmt.Fprintf(&b, "# 第 %d 卷章摘要\n\n| 章 | 事件 | 状态变化 | 伏笔 | 钩子 |\n|----|------|----------|------|------|\n", unit.Volume)
@@ -217,6 +225,42 @@ func writeCommitLog(root string, unit domain.UnitInfo, chapters []domain.Chapter
 }
 
 // ---- helpers ----
+
+var chapterRowRe = regexp.MustCompile(`^\|\s*(\d+)\s*\|`)
+
+// dropSummaryRows removes table rows whose 章 falls in [from, to].
+func dropSummaryRows(text string, from, to int) string {
+	lines := strings.Split(text, "\n")
+	out := make([]string, 0, len(lines))
+	for _, line := range lines {
+		if m := chapterRowRe.FindStringSubmatch(strings.TrimSpace(line)); m != nil {
+			if n, err := strconv.Atoi(m[1]); err == nil && n >= from && n <= to {
+				continue
+			}
+		}
+		out = append(out, line)
+	}
+	return strings.Join(out, "\n")
+}
+
+// committedChapterRange reads the previous 定稿账本's章范围 for a unit.
+func committedChapterRange(root, unitID string) (int, int) {
+	raw, err := os.ReadFile(filepath.Join(root, "continuity", "commits", unitID+".md"))
+	if err != nil {
+		return 0, 0
+	}
+	re := regexp.MustCompile(`章范围:\s*(\d+)\s*-\s*(\d+)`)
+	m := re.FindStringSubmatch(string(raw))
+	if m == nil {
+		return 0, 0
+	}
+	from, err1 := strconv.Atoi(m[1])
+	to, err2 := strconv.Atoi(m[2])
+	if err1 != nil || err2 != nil {
+		return 0, 0
+	}
+	return from, to
+}
 
 func mdYAMLSection(raw, key string) string {
 	re := regexp.MustCompile(`(?m)^` + regexp.QuoteMeta(key) + `:\s*\n((?:[ \t]+.*\n?)*)`)

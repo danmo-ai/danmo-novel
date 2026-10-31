@@ -86,7 +86,7 @@ func TestWritePacketIncludesRevealConstraint(t *testing.T) {
 		OutlineRaw: "unit_id: v02-U1\non_stage: [lin]\n",
 	}}
 	unit := snap.Units[0]
-	p := BuildWritePacket(snap, unit, 0)
+	p := BuildWritePacket(snap, unit, "", 0)
 	var reveal string
 	for _, b := range p.Blocks {
 		if b.ID == "reveal" {

@@ -28,7 +28,7 @@ func TestWriteBudgetNoTools(t *testing.T) {
 		AddText(`{"chapters":[{"chapter":2,"title":"二","body":"`+body+`"}]}`).
 		AddText(`{"chapters":[{"chapter":3,"title":"三","body":"`+body+`"}]}`)
 	r := New(mock)
-	res, err := r.RunWrite(context.Background(), snap, unit, "mock/mock-gpt-4")
+	res, err := r.RunWrite(context.Background(), snap, unit, "", "mock/mock-gpt-4")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -80,7 +80,7 @@ func TestRepairFailedChaptersOnly(t *testing.T) {
 		AddText(`{"chapters":[{"chapter":3,"title":"三","body":"`+long+`"}]}`).
 		AddText(`{"chapters":[{"chapter":2,"title":"二·修","body":"`+long+`"}]}`) // 修复只针对第2章
 	r := New(mock)
-	res, err := r.RunWrite(context.Background(), snap, unit, "mock/mock-gpt-4")
+	res, err := r.RunWrite(context.Background(), snap, unit, "", "mock/mock-gpt-4")
 	if err != nil {
 		t.Fatal(err)
 	}

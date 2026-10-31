@@ -13,6 +13,7 @@ import (
 	"github.com/danmo-ai/danmo-novel/core/domain"
 	"github.com/danmo-ai/danmo-novel/core/port"
 	"github.com/danmo-ai/danmo-novel/core/service/books"
+	"github.com/danmo-ai/danmo-novel/core/service/chain"
 	"github.com/danmo-ai/danmo-novel/core/service/knowledge"
 	"github.com/danmo-ai/danmo-novel/core/service/llmconfig"
 	"github.com/danmo-ai/danmo-novel/core/service/runs"
@@ -28,6 +29,7 @@ type App struct {
 	Models   *llmconfig.ModelRegistry
 	LLM      port.LLMProvider
 	Runs     *runs.Service
+	Chains   *chain.Service
 }
 
 func NewRouter(app *App) *gin.Engine {
@@ -138,6 +140,7 @@ func NewRouter(app *App) *gin.Engine {
 		registerLLM(api, app)
 		registerBooks(api, app)
 		registerRuns(api, app)
+		registerChains(api, app)
 	}
 	mountMCP(r, app)
 	return r
@@ -406,7 +409,13 @@ func registerBooks(api *gin.RouterGroup, app *App) {
 			return
 		}
 		kind, unit, vol := books.SelectPrimaryAction(snap)
-		c.JSON(200, gin.H{"book": snap, "primary": gin.H{"kind": kind, "unitId": unit, "volume": vol}})
+		out := gin.H{"book": snap, "primary": gin.H{"kind": kind, "unitId": unit, "volume": vol}}
+		if app.Chains != nil {
+			if ch, ok := app.Chains.Latest(c.Request.Context(), snap.Summary.ID); ok {
+				out["chain"] = ch
+			}
+		}
+		c.JSON(200, out)
 	})
 	api.POST("/books/:id/scaffold-missing", func(c *gin.Context) {
 		root, readOnly, err := app.Store.GetBookRoot(c.Request.Context(), c.Param("id"))

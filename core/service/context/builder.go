@@ -60,7 +60,19 @@ func DefaultPolicy(kind domain.TaskKind, chapterCount int) domain.CallPolicy {
 	return p
 }
 
-func BuildWritePacket(snap domain.BookSnapshot, unit domain.UnitInfo, modelMaxOut int) domain.ContextPacket {
+// withUserInstruction appends the author's 追加指令 to the stage's default
+// instruction. The default text carries the output-format and gate contract, so
+// it is never replaced — the author's wording is layered on top as 补充要求.
+// 手工点击与连续重写走同一个 builder，因此两者此字段完全一致。
+func withUserInstruction(base, instruction string) string {
+	instruction = strings.TrimSpace(instruction)
+	if instruction == "" {
+		return base
+	}
+	return base + "\n\n补充要求（作者追加；不得违反上面的输出格式与门禁约束）：\n" + instruction
+}
+
+func BuildWritePacket(snap domain.BookSnapshot, unit domain.UnitInfo, instruction string, modelMaxOut int) domain.ContextPacket {
 	policy := DefaultPolicy(domain.TaskWrite, unit.ChapterTo-unit.ChapterFrom+1)
 	policy.MaxOutputTokens = CapMaxOutput(policy.MaxOutputTokens, modelMaxOut)
 	if modelMaxOut > 0 && modelMaxOut < 4000 && !policy.SplitByChapter && unit.ChapterTo > unit.ChapterFrom {
@@ -136,7 +148,7 @@ func BuildWritePacket(snap domain.BookSnapshot, unit domain.UnitInfo, modelMaxOu
 	system := novel.WriteSystemPrompt()
 	user := BuildUserPrompt("write", "", map[string]any{
 		"id": snap.Summary.ID, "unitId": unit.UnitID, "volumeId": volumeID,
-	}, "请按单元合同与场面节拍一次写出全部章节正文。章与章之间不要输出 ---；body 内是纯散文。", blocks, nil)
+	}, withUserInstruction("请按单元合同与场面节拍一次写出全部章节正文。章与章之间不要输出 ---；body 内是纯散文。", instruction), blocks, nil)
 
 	packet := domain.ContextPacket{
 		ContractVersion:  ContractVersion,
@@ -159,7 +171,7 @@ func BuildWritePacket(snap domain.BookSnapshot, unit domain.UnitInfo, modelMaxOu
 	return packet
 }
 
-func BuildOutlinePacket(snap domain.BookSnapshot, volume int, unitIDs []string, modelMaxOut int) domain.ContextPacket {
+func BuildOutlinePacket(snap domain.BookSnapshot, volume int, unitIDs []string, instruction string, modelMaxOut int) domain.ContextPacket {
 	policy := DefaultPolicy(domain.TaskOutline, 0)
 	policy.MaxOutputTokens = CapMaxOutput(policy.MaxOutputTokens, modelMaxOut)
 	volTag := fmt.Sprintf("v%02d", volume)
@@ -205,7 +217,7 @@ func BuildOutlinePacket(snap domain.BookSnapshot, volume int, unitIDs []string, 
 		hashes[b.Source] = shortHash(b.Content)
 	}
 	system := novel.OutlineSystemPrompt()
-	instr := "为 unitIds 列出的单元生成/重写细纲合同，输出 {\"units\":[...]}（即使只有 1 个单元也必须用数组）。不得改卷纲已定的 function / next_hook.type；scenes / nextHook / storyDay / gapFromPrev / infoControl 必须给出。已有细纲头时在其基础上补全或优化，不要返回空 units。"
+	instr := withUserInstruction("为 unitIds 列出的单元生成/重写细纲合同，输出 {\"units\":[...]}（即使只有 1 个单元也必须用数组）。不得改卷纲已定的 function / next_hook.type；scenes / nextHook / storyDay / gapFromPrev / infoControl 必须给出。已有细纲头时在其基础上补全或优化，不要返回空 units。", instruction)
 	user := BuildUserPrompt("outline", "", map[string]any{
 		"id": snap.Summary.ID, "volumeId": volTag, "unitIds": unitIDs,
 	}, instr, blocks, nil)

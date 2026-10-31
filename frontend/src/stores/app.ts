@@ -1,7 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import { api } from '@/api/client'
-import type { BookSnapshot, BookSummary, Candidate, LLMModel, ProviderPublic, Run } from '@/types'
+import type { BookSnapshot, BookSummary, Candidate, Chain, LLMModel, ProviderPublic, Run } from '@/types'
 
 export const useAppStore = defineStore('app', () => {
   const books = ref<BookSummary[]>([])
@@ -16,15 +16,17 @@ export const useAppStore = defineStore('app', () => {
   const assignments = ref<{ role: string; modelId: string }[]>([])
   const toast = ref('')
   const error = ref('')
+  const chain = ref<Chain | null>(null)
 
   function note(msg: string) { toast.value = msg; setTimeout(() => { if (toast.value === msg) toast.value = '' }, 4000) }
   function fail(e: any) { error.value = e?.message || String(e); setTimeout(() => { if (error.value) error.value = '' }, 8000) }
 
   async function loadBooks() { books.value = (await api.get<BookSummary[] | null>('/api/books')) ?? [] }
   async function loadBook(id: string) {
-    const res = await api.get<{ book: BookSnapshot; primary: any }>(`/api/books/${id}`)
+    const res = await api.get<{ book: BookSnapshot; primary: any; chain?: Chain }>(`/api/books/${id}`)
     currentBook.value = res.book
     primary.value = res.primary
+    chain.value = res.chain ?? null
     await Promise.all([loadCandidates(id), loadRuns(id)])
   }
   async function loadCandidates(id: string) { candidates.value = (await api.get<Candidate[] | null>(`/api/books/${id}/candidates`)) ?? [] }
@@ -60,10 +62,36 @@ export const useAppStore = defineStore('app', () => {
   }
   async function rejectCandidate(id: string, reason = '') { await api.post(`/api/candidates/${id}/reject`, { reason }) }
 
+  // ---- 连续单元重写（chain）----
+  async function startChain(spec: any) {
+    const ch = await api.post<Chain>('/api/chains', spec)
+    chain.value = ch
+    note('连续重写已开始')
+    return ch
+  }
+  async function pollChain(id: string) {
+    const ch = await api.get<Chain>(`/api/chains/${id}`)
+    chain.value = ch
+    return ch
+  }
+  async function resumeChain(id: string) {
+    const ch = await api.post<Chain>(`/api/chains/${id}/resume`)
+    chain.value = ch
+    note('连续重写继续')
+    return ch
+  }
+  async function cancelChain(id: string) {
+    await api.post(`/api/chains/${id}/cancel`)
+    note('连续重写已取消')
+    if (chain.value?.id === id) chain.value = { ...chain.value, status: 'cancelled' }
+  }
+  function clearChain() { chain.value = null }
+
   return {
-    books, currentBook, primary, candidates, runs, activeRun,
+    books, currentBook, primary, candidates, runs, activeRun, chain,
     providers, models, presets, assignments, toast, error,
     note, fail, loadBooks, loadBook, loadCandidates, loadRuns,
     loadLLM, startRun, pollRun, clearActiveRun, acceptCandidate, rejectCandidate,
+    startChain, pollChain, resumeChain, cancelChain, clearChain,
   }
 })

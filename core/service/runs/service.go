@@ -56,6 +56,12 @@ func (s *Service) modelMaxOut(modelID string) int {
 	return s.Models.MaxOutputTokens(modelID)
 }
 
+// ResolveModel returns the model a spec would use (explicit ModelID wins,
+// otherwise the stage role assignment). Exported for the chain preflight.
+func (s *Service) ResolveModel(spec domain.TaskSpec) string {
+	return s.resolveModel(spec)
+}
+
 func (s *Service) resolveModel(spec domain.TaskSpec) string {
 	if spec.ModelID != "" {
 		return spec.ModelID
@@ -134,7 +140,7 @@ func (s *Service) execute(ctx context.Context, run domain.Run, snap domain.BookS
 		if !ok {
 			err = fmt.Errorf("unit not found: %s", run.Spec.UnitID)
 		} else {
-			res, err = s.Pipeline.RunWrite(ctx, snap, unit, modelID)
+			res, err = s.Pipeline.RunWrite(ctx, snap, unit, run.Spec.Instruction, modelID)
 		}
 	case domain.TaskOutline:
 		ids := run.Spec.ExtraContextIDs
@@ -153,7 +159,7 @@ func (s *Service) execute(ctx context.Context, run domain.Run, snap domain.BookS
 				vnum = u.Volume
 			}
 		}
-		res, err = s.Pipeline.RunOutline(ctx, snap, vnum, ids, modelID)
+		res, err = s.Pipeline.RunOutline(ctx, snap, vnum, ids, run.Spec.Instruction, modelID)
 	case domain.TaskPlan:
 		mode := strings.TrimSpace(run.Spec.Mode)
 		if mode == "" {
@@ -219,6 +225,8 @@ func (s *Service) execute(ctx context.Context, run domain.Run, snap domain.BookS
 		unit, ok := findUnit(snap, run.Spec.UnitID)
 		if !ok {
 			err = fmt.Errorf("unit not found")
+		} else if !unit.HasProse {
+			err = fmt.Errorf("单元尚无正文，无法定稿")
 		} else {
 			res, err = s.Pipeline.RunFinalize(ctx, snap, unit)
 		}
@@ -275,7 +283,7 @@ func (s *Service) PreviewPacket(_ context.Context, spec domain.TaskSpec) (domain
 		if !ok {
 			return domain.ContextPacket{}, fmt.Errorf("unit not found: %s", spec.UnitID)
 		}
-		return contextsvc.BuildWritePacket(snap, unit, s.modelMaxOut(s.resolveModel(spec))), nil
+		return contextsvc.BuildWritePacket(snap, unit, spec.Instruction, s.modelMaxOut(s.resolveModel(spec))), nil
 	case domain.TaskOutline:
 		vnum := 1
 		if spec.VolumeID != "" {
@@ -290,7 +298,7 @@ func (s *Service) PreviewPacket(_ context.Context, spec domain.TaskSpec) (domain
 		if len(ids) == 0 && spec.UnitID != "" {
 			ids = []string{spec.UnitID}
 		}
-		return contextsvc.BuildOutlinePacket(snap, vnum, ids, s.modelMaxOut(s.resolveModel(spec))), nil
+		return contextsvc.BuildOutlinePacket(snap, vnum, ids, spec.Instruction, s.modelMaxOut(s.resolveModel(spec))), nil
 	case domain.TaskPlan:
 		mode := strings.TrimSpace(spec.Mode)
 		if mode == "" {
@@ -352,6 +360,29 @@ func (s *Service) Cancel(ctx context.Context, runID string) error {
 		return s.Store.SaveRun(ctx, run)
 	}
 	return nil
+}
+
+// WaitRun blocks until the run leaves pending/running, then reloads it.
+// Used by orchestration (chains) that must act on the produced candidate.
+func (s *Service) WaitRun(ctx context.Context, runID string) (domain.Run, error) {
+	ticker := time.NewTicker(400 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		run, err := s.Store.GetRun(ctx, runID)
+		if err != nil {
+			return domain.Run{}, err
+		}
+		switch run.Status {
+		case domain.RunPending, domain.RunRunning:
+		default:
+			return run, nil
+		}
+		select {
+		case <-ctx.Done():
+			return run, ctx.Err()
+		case <-ticker.C:
+		}
+	}
 }
 
 func (s *Service) Accept(ctx context.Context, cmd domain.AcceptCommand) (domain.Candidate, error) {

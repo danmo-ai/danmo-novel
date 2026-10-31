@@ -61,7 +61,7 @@ func TestWritePacketFieldLevel(t *testing.T) {
 `
 	snap.Files["canon/author-lore.md"] = "# Author lore\n\n## 终局真相\n头号宿敌是林尘生父。\n"
 
-	packet := BuildWritePacket(snap, unit, 0)
+	packet := BuildWritePacket(snap, unit, "", 0)
 
 	// 1) 底牌禁读：任何 block 不得引用 author-lore。
 	for _, b := range packet.Blocks {
@@ -148,4 +148,44 @@ func findBlock(p domain.ContextPacket, id string) *domain.ContextBlock {
 		}
 	}
 	return nil
+}
+
+// 追加指令：细纲/正文阶段接受作者指令，且默认的格式与门禁约束必须保留。
+// 空指令时 prompt 与旧行为完全一致（防回归）。
+func TestStageInstructionAppended(t *testing.T) {
+	snap := loadFixture(t)
+	unit := findUnit(t, snap, "v01-U1")
+
+	withInstr := BuildWritePacket(snap, unit, "追加要求ABC", 0)
+	payload, err := DecodeUserPayload(withInstr.UserPrompt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(payload.Instruction, "追加要求ABC") {
+		t.Fatalf("write instruction not forwarded: %q", payload.Instruction)
+	}
+	if !strings.Contains(payload.Instruction, "请按单元合同与场面节拍") {
+		t.Fatal("write default format contract must be preserved")
+	}
+
+	plain := BuildWritePacket(snap, unit, "", 0)
+	plainPayload, err := DecodeUserPayload(plain.UserPrompt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(plainPayload.Instruction, "补充要求") {
+		t.Fatalf("empty instruction must not change prompt: %q", plainPayload.Instruction)
+	}
+
+	outline := BuildOutlinePacket(snap, 1, []string{unit.UnitID}, "细纲追加XYZ", 0)
+	op, err := DecodeUserPayload(outline.UserPrompt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(op.Instruction, "细纲追加XYZ") {
+		t.Fatalf("outline instruction not forwarded: %q", op.Instruction)
+	}
+	if !strings.Contains(op.Instruction, "不得改卷纲已定的 function") {
+		t.Fatal("outline gate contract must be preserved")
+	}
 }

@@ -171,8 +171,28 @@ proposed → accepted → drafted → reviewed
    - `### Cursor`：`last_committed_ch` / 当前卷单元 / next action
    - `## Open loops`：`state_deltas` 中标记 `paid`/`payoff` 的 FS-id → `paid`，回填实际回收章
    - `### Cast snapshot`：on_stage 人物缺失行按 `state_deltas` 的 position/status 补入，已有行保持
-3. `continuity/summaries/vNN.md`：每章一行（事件 / 状态变化 / 伏笔 / 钩子）
+3. `continuity/summaries/vNN.md`：每章一行（事件 / 状态变化 / 伏笔 / 钩子）。**upsert**：重写单元时按 `continuity/commits/<unit>.md` 记录的旧章范围先删除旧行，再写新行，同一章永不重复。
 4. `continuity/commits/<unit>.md`：定稿时间、章范围、总字数、门禁计数、next_hook、state_deltas
+
+## 连续单元重写（Chain）
+
+在总纲、卷纲、设定已确定（**链不重写它们**）的前提下，按卷内单元顺序自动完成 `细纲 → 正文 → 审校 → 定稿`。
+
+| 项 | 契约 |
+|---|---|
+| 范围 | 指定卷内，从 `fromUnitId` 到卷末（可选 `toUnitId` 收窄） |
+| 自动化 | 四个阶段的候选**自动接受**；任一门禁 blocking、调用/解析失败、Accept 拒绝 → 立即 `waiting_manual` |
+| 触发 | `POST /api/chains`；进度 `GET /api/chains/:id`；`.../resume`、`.../cancel` |
+| 串行 | 一次一个单元、一个阶段。下一单元写作必须读到上一单元的定稿回写；`Runner.KnowledgeDocs` 也是共享字段 |
+| 重写 vs 新写 | 同一状态机；差别只在覆盖前是否备份（`backups/<stamp>-chain/units/<id>.md`，`backups/` 被 loader 忽略） |
+| 恢复 | 按单元当前状态推导起点：`proposed→细纲`、`accepted→正文`、`drafted→审校`；已 `reviewed` 视为人工已完成。该单元仍有待审候选时拒绝恢复 |
+
+**与手工点击完全同源**：链不构造 prompt，每阶段都用同一个 `TaskSpec` 走 `runs.Service` → `Pipeline` → `ContextBuilder`，系统提示词、上下文块、调用预算与手工同 kind 时逐字节一致。想核对输入用 `POST /api/runs/preview`。
+
+**分阶段追加指令与参考知识**：`ChainSpec.Outline` / `ChainSpec.Write` 各带一份 `instruction` + `knowledgeIds`，整条链对该阶段所有单元生效；`review` / `finalize` 不带。
+
+- 指令落到 `UserPayload.instruction`，作为默认格式与门禁约束之外的「补充要求」追加（`withUserInstruction`），默认文本永不替换；`outline` / `write` 的 `TaskSpec.Instruction` 现在也用于手工点击。
+- 参考知识沿用既有语义：`TaskSpec.KnowledgeIDs` → `loadKnowledge` → `Runner.KnowledgeDocs` → user payload `references`，仅作方法/风格参考，不写入正文事实；启动前用 `knowledge.List` 校验，缺失直接报错。
 5. `novel-state.yaml`：`last_committed_ch`
 
 ## LLM 调用的定向修复（Retry 策略）

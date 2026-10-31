@@ -23,10 +23,13 @@ func Open(path string) (*Store, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, err
 	}
-	db, err := sql.Open("sqlite", path)
+	db, err := sql.Open("sqlite", path+"?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)")
 	if err != nil {
 		return nil, err
 	}
+	// 连续重写会按阶段密集写入（chain + run + candidate + 正文），
+	// busy_timeout 防止读轮询期间写事务直接 SQLITE_BUSY 丢一次 SaveRun。
+	db.SetMaxOpenConns(1)
 	s := &Store{db: db}
 	if err := s.migrate(); err != nil {
 		_ = db.Close()
@@ -78,6 +81,14 @@ func (s *Store) migrate() error {
 		`CREATE TABLE IF NOT EXISTS model_assignments (
 			role TEXT PRIMARY KEY,
 			model_id TEXT NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS chains (
+			id TEXT PRIMARY KEY,
+			book_id TEXT NOT NULL,
+			status TEXT NOT NULL,
+			payload TEXT NOT NULL,
+			created_at TEXT,
+			updated_at TEXT
 		)`,
 	}
 	for _, q := range stmts {
@@ -309,4 +320,99 @@ func (s *Store) ListOpenCandidates(ctx context.Context, bookID string) ([]domain
 		out = append(out, c)
 	}
 	return out, nil
+}
+
+// ---- Chains ----
+
+func (s *Store) SaveChain(ctx context.Context, c domain.Chain) error {
+	b, err := json.Marshal(c)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.ExecContext(ctx, `INSERT INTO chains(id, book_id, status, payload, created_at, updated_at)
+		VALUES(?,?,?,?,?,?)
+		ON CONFLICT(id) DO UPDATE SET status=excluded.status, payload=excluded.payload, updated_at=excluded.updated_at`,
+		c.ID, c.BookID, string(c.Status), string(b),
+		c.CreatedAt.UTC().Format(time.RFC3339), c.UpdatedAt.UTC().Format(time.RFC3339))
+	return err
+}
+
+func (s *Store) GetChain(ctx context.Context, id string) (domain.Chain, error) {
+	var payload string
+	err := s.db.QueryRowContext(ctx, `SELECT payload FROM chains WHERE id = ?`, id).Scan(&payload)
+	if err != nil {
+		return domain.Chain{}, err
+	}
+	var c domain.Chain
+	if err := json.Unmarshal([]byte(payload), &c); err != nil {
+		return domain.Chain{}, err
+	}
+	return c, nil
+}
+
+func (s *Store) ListChains(ctx context.Context, bookID string) ([]domain.Chain, error) {
+	query := `SELECT payload FROM chains`
+	args := []any{}
+	if bookID != "" {
+		query += ` WHERE book_id = ?`
+		args = append(args, bookID)
+	}
+	query += ` ORDER BY updated_at DESC, created_at DESC LIMIT 100`
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]domain.Chain, 0)
+	for rows.Next() {
+		var payload string
+		if err := rows.Scan(&payload); err != nil {
+			return nil, err
+		}
+		var c domain.Chain
+		if err := json.Unmarshal([]byte(payload), &c); err != nil {
+			continue
+		}
+		out = append(out, c)
+	}
+	return out, nil
+}
+
+// FindActiveChain returns the pending/running chain for a book, if any.
+func (s *Store) FindActiveChain(ctx context.Context, bookID string) (domain.Chain, bool, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT payload FROM chains WHERE book_id = ? AND status IN ('pending','running')`, bookID)
+	if err != nil {
+		return domain.Chain{}, false, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var payload string
+		if err := rows.Scan(&payload); err != nil {
+			return domain.Chain{}, false, err
+		}
+		var c domain.Chain
+		if err := json.Unmarshal([]byte(payload), &c); err != nil {
+			continue
+		}
+		return c, true, nil
+	}
+	return domain.Chain{}, false, nil
+}
+
+// LatestChain returns the most recently updated chain for a book (any status).
+func (s *Store) LatestChain(ctx context.Context, bookID string) (domain.Chain, bool, error) {
+	var payload string
+	err := s.db.QueryRowContext(ctx,
+		`SELECT payload FROM chains WHERE book_id = ? ORDER BY updated_at DESC, created_at DESC LIMIT 1`, bookID).Scan(&payload)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return domain.Chain{}, false, nil
+		}
+		return domain.Chain{}, false, err
+	}
+	var c domain.Chain
+	if err := json.Unmarshal([]byte(payload), &c); err != nil {
+		return domain.Chain{}, false, err
+	}
+	return c, true, nil
 }

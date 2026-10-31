@@ -47,8 +47,8 @@ type Result struct {
 	LocalGate gates.Report
 }
 
-func (r *Runner) RunWrite(ctx context.Context, snap domain.BookSnapshot, unit domain.UnitInfo, modelID string) (Result, error) {
-	packet := contextsvc.BuildWritePacket(snap, unit, r.modelMaxOut(modelID))
+func (r *Runner) RunWrite(ctx context.Context, snap domain.BookSnapshot, unit domain.UnitInfo, instruction string, modelID string) (Result, error) {
+	packet := contextsvc.BuildWritePacket(snap, unit, instruction, r.modelMaxOut(modelID))
 	if !packet.Policy.SplitByChapter {
 		return r.runJSON(ctx, snap, packet, modelID, domain.TaskWrite, unit.UnitID, unit.ProsePath, func(raw string, cand *domain.Candidate) error {
 			var parsed struct {
@@ -103,8 +103,8 @@ func (r *Runner) RunWrite(ctx context.Context, snap domain.BookSnapshot, unit do
 	return Result{Candidate: cand, Calls: calls, Packet: packet, LocalGate: rep}, nil
 }
 
-func (r *Runner) RunOutline(ctx context.Context, snap domain.BookSnapshot, volume int, unitIDs []string, modelID string) (Result, error) {
-	packet := contextsvc.BuildOutlinePacket(snap, volume, unitIDs, r.modelMaxOut(modelID))
+func (r *Runner) RunOutline(ctx context.Context, snap domain.BookSnapshot, volume int, unitIDs []string, instruction string, modelID string) (Result, error) {
+	packet := contextsvc.BuildOutlinePacket(snap, volume, unitIDs, instruction, r.modelMaxOut(modelID))
 	var volCast []string
 	for _, v := range snap.Volumes {
 		if v.Volume == volume {

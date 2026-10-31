@@ -39,6 +39,50 @@ export interface BookSnapshot {
   cast: CastCard[]
   files: Record<string, string>
   revision: string
+  chain?: Chain | null
+}
+
+export type ChainStatus = 'pending' | 'running' | 'waiting_manual' | 'completed' | 'failed' | 'cancelled'
+export type ChainUnitStatus = 'pending' | 'running' | 'done' | 'blocked'
+
+export interface ChainStageConfig {
+  instruction?: string
+  knowledgeIds?: string[]
+}
+
+export interface ChainSpec {
+  bookId: string
+  volumeId: string
+  fromUnitId: string
+  toUnitId?: string
+  modelId?: string
+  outline: ChainStageConfig
+  write: ChainStageConfig
+}
+
+export interface ChainUnitState {
+  unitId: string
+  stage: string
+  status: ChainUnitStatus
+  runId?: string
+  candidateId?: string
+  error?: string
+  /** 新写 | 重写 */
+  note?: string
+}
+
+export interface Chain {
+  id: string
+  bookId: string
+  volume: number
+  status: ChainStatus
+  cursor: number
+  stage: string
+  units: ChainUnitState[]
+  spec: ChainSpec
+  error?: string
+  createdAt: string
+  updatedAt: string
 }
 
 export interface ChapterDraft { chapter: number; title: string; body: string }

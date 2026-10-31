@@ -9,6 +9,7 @@ import (
 	adaptermcp "github.com/danmo-ai/danmo-novel/core/adapter/mcp"
 	"github.com/danmo-ai/danmo-novel/core/config"
 	"github.com/danmo-ai/danmo-novel/core/runtimepaths"
+	"github.com/danmo-ai/danmo-novel/core/service/chain"
 	"github.com/danmo-ai/danmo-novel/core/service/llmconfig"
 	"github.com/danmo-ai/danmo-novel/core/service/runs"
 	"github.com/danmo-ai/danmo-novel/core/store/sqlite"
@@ -32,6 +33,7 @@ func main() {
 
 	runSvc := runs.New(db, settings, provider)
 	runSvc.Models = models
+	chainSvc := chain.New(db, settings, runSvc)
 	app := &httpapi.App{
 		Settings: settings,
 		Store:    db,
@@ -39,6 +41,7 @@ func main() {
 		Models:   models,
 		LLM:      provider,
 		Runs:     runSvc,
+		Chains:   chainSvc,
 	}
 	r := httpapi.NewRouter(app)
 	host := first(os.Getenv("DQ_HTTP_HOST"), "127.0.0.1")

@@ -11,7 +11,9 @@ import UnitProse from '@/components/book/UnitProse.vue'
 import UnitContract from '@/components/book/UnitContract.vue'
 import UnitFlowActions from '@/components/book/UnitFlowActions.vue'
 import RunConfirmDialog from '@/components/book/RunConfirmDialog.vue'
+import ChainPanel from '@/components/book/ChainPanel.vue'
 import { planModeLabel as sharedPlanModeLabel, runKindLabel } from '@/utils/runLabels'
+import type { Chain, ChainSpec } from '@/types'
 
 const route = useRoute()
 const store = useAppStore()
@@ -93,8 +95,12 @@ const primaryInfo = computed(() => {
 onMounted(async () => {
   await store.loadLLM().catch(() => {})
   await reload()
+  if (store.chain && (store.chain.status === 'running' || store.chain.status === 'pending')) startChainPoll()
 })
-onUnmounted(() => { if (pollTimer.value) clearInterval(pollTimer.value) })
+onUnmounted(() => {
+  if (pollTimer.value) clearInterval(pollTimer.value)
+  stopChainPoll()
+})
 
 watch(selectedUnit, () => { editingProse.value = false; editingOutline.value = false; void openSelected() })
 watch(view, () => {
@@ -147,6 +153,68 @@ async function saveFile(path = editorPath.value, content = editorContent.value) 
 
 const confirmSpec = ref<Record<string, any> | null>(null)
 const confirmTitle = ref('')
+
+// ---- 连续单元重写（chain）----
+const chainPollTimer = ref<number | null>(null)
+const chainSignature = ref('')
+
+function signatureOf(ch: Chain | null | undefined) {
+  if (!ch) return ''
+  return `${ch.status}|${ch.cursor}|${ch.stage}|${ch.units.map((u) => u.status).join(',')}`
+}
+
+function stopChainPoll() {
+  if (chainPollTimer.value) clearInterval(chainPollTimer.value)
+  chainPollTimer.value = null
+}
+
+/** 每个阶段接受都会改 revision，签名变化时整书重载一次。 */
+function startChainPoll() {
+  stopChainPoll()
+  chainSignature.value = signatureOf(store.chain)
+  chainPollTimer.value = window.setInterval(async () => {
+    const id = store.chain?.id
+    if (!id) { stopChainPoll(); return }
+    try {
+      const ch = await store.pollChain(id)
+      const sig = signatureOf(ch)
+      if (sig !== chainSignature.value) {
+        chainSignature.value = sig
+        await reload()
+      }
+      if (ch.status !== 'running' && ch.status !== 'pending') stopChainPoll()
+    } catch (e) { store.fail(e); stopChainPoll() }
+  }, 1500)
+}
+
+async function beginChain(spec: ChainSpec) {
+  try {
+    await store.startChain(spec)
+    chainSignature.value = ''
+    startChainPoll()
+    await reload()
+  } catch (e) { store.fail(e) }
+}
+
+async function continueChain() {
+  const id = store.chain?.id
+  if (!id) return
+  try {
+    await store.resumeChain(id)
+    startChainPoll()
+    await reload()
+  } catch (e) { store.fail(e) }
+}
+
+async function stopChain() {
+  const id = store.chain?.id
+  if (!id) return
+  try {
+    await store.cancelChain(id)
+    stopChainPoll()
+    await reload()
+  } catch (e) { store.fail(e) }
+}
 
 function start(kind: string, opts: { mode?: string; volumeId?: string; title?: string } = {}) {
   const book = store.currentBook
@@ -542,6 +610,16 @@ function roleLabel(role?: string) {
       </section>
 
       <aside v-if="view === 'write'" class="context-panel">
+        <ChainPanel
+          :units="store.currentBook.units"
+          :selected-unit="selectedUnit"
+          :chain="store.chain"
+          :read-only="store.currentBook.summary.readOnly"
+          :busy="busy"
+          @start="beginChain"
+          @resume="continueChain"
+          @cancel="stopChain"
+        />
         <section class="side-card panel">
           <h4>全书下一步</h4>
           <div class="next-step">
