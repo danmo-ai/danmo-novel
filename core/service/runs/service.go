@@ -362,6 +362,35 @@ func (s *Service) Cancel(ctx context.Context, runID string) error {
 	return nil
 }
 
+// RecoverInterrupted fails runs left pending/running by a previous process.
+// Call it once at startup, before serving requests: execute() runs in-process,
+// so after a restart nothing will ever advance those rows, the UI polls them
+// forever, and FindActiveRun keeps rejecting new tasks for the same
+// book/kind/unit.
+func (s *Service) RecoverInterrupted(ctx context.Context) (int, error) {
+	list, err := s.Store.ListUnfinishedRuns(ctx)
+	if err != nil {
+		return 0, err
+	}
+	n := 0
+	for _, run := range list {
+		s.mu.Lock()
+		_, live := s.cancels[run.ID]
+		s.mu.Unlock()
+		if live {
+			continue
+		}
+		run.Status = domain.RunFailed
+		run.Error = "服务重启导致任务中断，请重新发起"
+		run.UpdatedAt = time.Now().UTC()
+		if err := s.Store.SaveRun(ctx, run); err != nil {
+			return n, err
+		}
+		n++
+	}
+	return n, nil
+}
+
 // WaitRun blocks until the run leaves pending/running, then reloads it.
 // Used by orchestration (chains) that must act on the produced candidate.
 func (s *Service) WaitRun(ctx context.Context, runID string) (domain.Run, error) {

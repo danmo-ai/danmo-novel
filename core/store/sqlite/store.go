@@ -254,6 +254,31 @@ func (s *Store) ListRuns(ctx context.Context, bookID string) ([]domain.Run, erro
 	return out, nil
 }
 
+// ListUnfinishedRuns returns every run still marked pending/running. execute()
+// only lives in process memory, so after a restart these rows can never
+// finish; startup recovery must fail them explicitly (they also block new
+// runs for the same book/kind/unit via FindActiveRun).
+func (s *Store) ListUnfinishedRuns(ctx context.Context) ([]domain.Run, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT payload FROM runs WHERE status IN ('pending','running')`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]domain.Run, 0)
+	for rows.Next() {
+		var payload string
+		if err := rows.Scan(&payload); err != nil {
+			return nil, err
+		}
+		var run domain.Run
+		if err := json.Unmarshal([]byte(payload), &run); err != nil {
+			continue
+		}
+		out = append(out, run)
+	}
+	return out, rows.Err()
+}
+
 func (s *Store) FindActiveRun(ctx context.Context, bookID string, kind domain.TaskKind, unitID string) (domain.Run, bool, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT payload FROM runs WHERE book_id = ? AND kind = ? AND status IN ('pending','running','waiting_accept')`, bookID, string(kind))
 	if err != nil {
@@ -376,6 +401,30 @@ func (s *Store) ListChains(ctx context.Context, bookID string) ([]domain.Chain, 
 		out = append(out, c)
 	}
 	return out, nil
+}
+
+// ListUnfinishedChains returns every chain still marked pending/running. The
+// chain executor is in-process only, so a restart orphans them; recovery moves
+// them to waiting_manual so the author can resume from the interrupted stage.
+func (s *Store) ListUnfinishedChains(ctx context.Context) ([]domain.Chain, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT payload FROM chains WHERE status IN ('pending','running')`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]domain.Chain, 0)
+	for rows.Next() {
+		var payload string
+		if err := rows.Scan(&payload); err != nil {
+			return nil, err
+		}
+		var c domain.Chain
+		if err := json.Unmarshal([]byte(payload), &c); err != nil {
+			continue
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
 }
 
 // FindActiveChain returns the pending/running chain for a book, if any.

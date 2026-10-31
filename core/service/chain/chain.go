@@ -136,6 +136,37 @@ func (s *Service) Latest(ctx context.Context, bookID string) (domain.Chain, bool
 	return ch, ok
 }
 
+// RecoverInterrupted moves chains orphaned by a process restart to
+// waiting_manual so the author can resume from the interrupted stage instead of
+// polling a "running" chain forever. Call once at startup.
+func (s *Service) RecoverInterrupted(ctx context.Context) (int, error) {
+	list, err := s.Store.ListUnfinishedChains(ctx)
+	if err != nil {
+		return 0, err
+	}
+	n := 0
+	for _, ch := range list {
+		s.mu.Lock()
+		_, live := s.cancels[ch.ID]
+		s.mu.Unlock()
+		if live {
+			continue
+		}
+		ch.Status = domain.ChainWaitingManual
+		ch.Error = "服务重启导致连续重写中断，可点击继续从中断处恢复"
+		if ch.Cursor < len(ch.Units) && ch.Units[ch.Cursor].Status == domain.ChainUnitRunning {
+			ch.Units[ch.Cursor].Status = domain.ChainUnitBlocked
+			ch.Units[ch.Cursor].Error = ch.Error
+		}
+		ch.UpdatedAt = time.Now().UTC()
+		if err := s.Store.SaveChain(ctx, ch); err != nil {
+			return n, err
+		}
+		n++
+	}
+	return n, nil
+}
+
 // Cancel stops the chain and its current child run.
 func (s *Service) Cancel(ctx context.Context, chainID string) error {
 	ch, err := s.Store.GetChain(ctx, chainID)

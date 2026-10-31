@@ -392,3 +392,59 @@ func TestChainRejectsMissingPreconditions(t *testing.T) {
 		t.Fatal("expected volume/precondition error")
 	}
 }
+
+// 后端重启会丢掉链的执行 goroutine：启动收尾应把 running/pending 链转到
+// waiting_manual（可 Resume），并让当前单元的 running 标记不再悬空。
+func TestRecoverInterruptedChainBecomesResumable(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("NOVEL_HOME", dir)
+	settings, err := config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	db, err := sqlite.Open(filepath.Join(dir, "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	svc := New(db, settings, runs.New(db, settings, &fakeLLM{}))
+
+	now := time.Now().UTC()
+	ch := domain.Chain{
+		ID: "chain-orphan", BookID: "b-origin", Volume: 1,
+		Status: domain.ChainRunning, Stage: domain.ChainStageWrite,
+		CreatedAt: now, UpdatedAt: now,
+		Units: []domain.ChainUnitState{{
+			UnitID: "v01-U1", Stage: domain.ChainStageWrite,
+			Status: domain.ChainUnitRunning,
+		}},
+	}
+	if err := db.SaveChain(context.Background(), ch); err != nil {
+		t.Fatal(err)
+	}
+
+	n, err := svc.RecoverInterrupted(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("recovered=%d, want 1", n)
+	}
+	got, err := db.GetChain(context.Background(), "chain-orphan")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != domain.ChainWaitingManual {
+		t.Fatalf("status=%s, want waiting_manual", got.Status)
+	}
+	if got.Error == "" {
+		t.Fatal("recovered chain should explain the restart")
+	}
+	if got.Units[0].Status != domain.ChainUnitBlocked {
+		t.Fatalf("unit status=%s, want blocked", got.Units[0].Status)
+	}
+	// waiting_manual 是 Resume 允许的状态。
+	if got.Status != domain.ChainWaitingManual {
+		t.Fatalf("chain cannot be resumed from %s", got.Status)
+	}
+}
