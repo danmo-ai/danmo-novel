@@ -90,6 +90,10 @@ func sampleVolumeOutline() string {
 - entry_cause: 开卷目标受阻
 - exit_result: 获得许可
 - state_changes: lin.role=新人->复核人
+- clock_start_day: 1
+- clock_end_day: 3
+- clock_gap_days: 0
+- timeline_id: main
 - thread_ids: main
 - event_ids: event-1
 - reveal_ids: R1
@@ -109,6 +113,10 @@ func sampleVolumeOutline() string {
 - entry_cause: v01-U1.next_hook
 - exit_result: 获得实证
 - state_changes: lin.evidence=疑点->实证
+- clock_start_day: 4
+- clock_end_day: 6
+- clock_gap_days: 1
+- timeline_id: main
 - thread_ids: main
 - event_ids: event-1
 - reveal_ids: R1

@@ -45,13 +45,18 @@ func outlineViolations(doc domain.StructuredMarkdown, kind string) []Violation {
 			out = append(out, Violation{Path: "units", Want: "至少一个单元实体", Got: "0"})
 		}
 	}
+	if kind == "volume" {
+		if err := books.ValidateVolumeClockContract(doc); err != nil {
+			out = append(out, Violation{Path: "clock", Want: "合法且衔接的单元时间合同", Got: err.Error()})
+		}
+	}
 	for _, e := range doc.Entities {
 		path := e.Kind + "[" + e.ID + "]"
 		switch e.Kind {
 		case "分卷":
 			requireFields(e, []string{"title", "chapter_range", "purpose", "dramatic_question", "central_conflict", "stakes", "entry_state", "exit_state", "thread_moves", "deliverables", "open_questions", "next_volume_entry"}, &out)
 		case "单元":
-			requireFields(e, []string{"title", "chapter_range", "objective", "obstacle", "attempt", "setback", "choice", "cost", "outcome", "entry_cause", "exit_result", "state_changes", "thread_ids", "next_hook"}, &out)
+			requireFields(e, []string{"title", "chapter_range", "objective", "obstacle", "attempt", "setback", "choice", "cost", "outcome", "entry_cause", "exit_result", "state_changes", "clock_start_day", "clock_end_day", "clock_gap_days", "thread_ids", "next_hook"}, &out)
 			from, to := books.ChapterWindow(e.Value("chapter_range"))
 			if from <= 0 || to < from || to-from+1 > 10 {
 				out = append(out, Violation{Path: path + ".chapter_range", Want: "有效范围且不超过 10 章", Got: e.Value("chapter_range")})

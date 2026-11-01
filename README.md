@@ -32,6 +32,12 @@ make pack-macos-desktop RELEASE_VERSION=0.1.0
 
 书架 → 导入已有书目录，填 `novel/<book-id>/` 的绝对路径。默认只读；需要写回时在书内启用写入。
 
+## 文档
+
+- [实体模型与职责](docs/novel-entity-model.md)
+- [创作与重写流程、模型输入输出](docs/novel-production-workflows.md)
+- [标准书籍模板与迁移占位符](docs/novel-book-templates.md)
+
 ## 数据
 
 - `~/.danmo-novel/novel.db` — provider、任务、候选

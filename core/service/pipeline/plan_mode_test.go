@@ -153,6 +153,10 @@ func testVolumeOutlineMarkdown() string {
 - entry_cause: 开卷目标受阻
 - exit_result: 获得许可
 - state_changes: lin.role=新人->复核人
+- clock_start_day: 1
+- clock_end_day: 6
+- clock_gap_days: 0
+- timeline_id: main
 - thread_ids: main
 - event_ids: event-1
 - reveal_ids: R1

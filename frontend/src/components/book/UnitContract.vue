@@ -1,10 +1,9 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed } from 'vue'
 import { useAppStore } from '@/stores/app'
 import type { UnitInfo } from '@/types'
 
 const props = defineProps<{ unit: UnitInfo; compact?: boolean }>()
-const expanded = ref(false)
 const store = useAppStore()
 
 function scalar(raw: string, key: string): string {
@@ -75,7 +74,44 @@ const onStageIdentities = computed(() =>
   onStage.value.map((s) => ({ stem: s, name: castName(s), identity: identityAt(s) })).filter((x) => x.identity)
 )
 
+type ChapterView = { chapter: string; goal: string; change: string; cutHook: string; dayOffset: string; scenes: Scene[] }
 type Scene = { id: string; chapter: string; beat: string; who: string; where: string }
+
+function parseChapters(text: string): ChapterView[] {
+  const body = text.trim()
+  if (!body || body === '[]') return []
+  const chapters: ChapterView[] = []
+  let current: ChapterView | null = null
+  let currentScene: Scene | null = null
+  for (const line of body.split('\n')) {
+    const top = line.match(/^\s*-\s+chapter:\s*(\d+)/)
+    const nested = line.match(/^\s+chapter:\s*(\d+)/)
+    const field = line.match(/^\s+(goal|change|cut_hook|day_offset):\s*(.*)$/)
+    if (top) {
+      current = { chapter: top[1], goal: '', change: '', cutHook: '', dayOffset: '0', scenes: [] }
+      chapters.push(current)
+      currentScene = null
+      continue
+    }
+    if (!current) continue
+    if (field) {
+      if (field[1] === 'goal') current.goal = field[2]
+      if (field[1] === 'change') current.change = field[2]
+      if (field[1] === 'cut_hook') current.cutHook = field[2]
+      if (field[1] === 'day_offset') current.dayOffset = field[2]
+      continue
+    }
+    if (nested) {
+      currentScene = { id: '', chapter: nested[1], beat: '', who: '', where: '' }
+      current.scenes.push(currentScene)
+      continue
+    }
+    if (/^\s+goal:/.test(line) && currentScene) currentScene.beat = line.replace(/^\s+goal:\s*/, '')
+  }
+  return chapters
+}
+
+const chapterPlans = computed(() => parseChapters(section(raw.value, 'chapters')))
 /** 解析 scenes：支持 `- id:/chapter:` 列表，也支持扁平重复的 chapter/beat/who 块。 */
 function parseScenes(text: string): Scene[] {
   const body = text.trim()
@@ -128,8 +164,19 @@ function parseScenes(text: string): Scene[] {
   }).filter((s) => s.chapter || s.beat || s.id)
 }
 const scenes = computed<Scene[]>(() => parseScenes(section(raw.value, 'scenes')))
-const visibleScenes = computed(() => (props.compact && !expanded.value ? scenes.value.slice(0, 3) : scenes.value))
-const hasContent = computed(() => fields.value.length > 0 || scenes.value.length > 0)
+const sceneGroups = computed(() => {
+  const groups: { chapter: string; scenes: Scene[] }[] = []
+  for (const scene of scenes.value) {
+    let group = groups.find((g) => g.chapter === scene.chapter)
+    if (!group) {
+      group = { chapter: scene.chapter, scenes: [] }
+      groups.push(group)
+    }
+    group.scenes.push(scene)
+  }
+  return groups
+})
+const hasContent = computed(() => fields.value.length > 0 || chapterPlans.value.length > 0 || scenes.value.length > 0)
 </script>
 
 <template>
@@ -153,17 +200,27 @@ const hasContent = computed(() => fields.value.length > 0 || scenes.value.length
         </div>
       </div>
       <p v-if="infoControl" class="info-control"><small>信息控制</small>{{ infoControl }}</p>
-      <div v-if="scenes.length" class="contract-scenes">
-        <small class="scenes-label">场面节拍 · {{ scenes.length }}</small>
-        <div v-for="(s, i) in visibleScenes" :key="i" class="scene-row">
-          <span class="scene-ch">第 {{ s.chapter || '?' }} 章</span>
-          <span class="scene-beat"><strong v-if="s.id">{{ s.id }}</strong> {{ s.beat || '（无节拍文案）' }}</span>
-          <span v-if="s.where" class="scene-where">{{ s.where }}</span>
-        </div>
-        <button v-if="compact && scenes.length > 3" class="scenes-toggle" @click="expanded = !expanded">
-          {{ expanded ? '收起场面' : `展开全部 ${scenes.length} 个场面` }}
-        </button>
+      <div v-if="chapterPlans.length" class="contract-scenes chapter-plans">
+        <small class="scenes-label">逐章推进 · {{ chapterPlans.length }} 章</small>
+        <article v-for="chapter in chapterPlans" :key="chapter.chapter" class="chapter-plan">
+          <header><span>第 {{ chapter.chapter }} 章</span><small>第 {{ chapter.dayOffset }} 日偏移</small></header>
+          <p><strong>目标</strong>{{ chapter.goal }}</p>
+          <p><strong>变化</strong>{{ chapter.change }}</p>
+          <p><strong>断章</strong>{{ chapter.cutHook }}</p>
+          <div v-if="chapter.scenes.length" class="chapter-scenes"><small>必要行动辅助</small><p v-for="scene in chapter.scenes" :key="scene.chapter + scene.beat">{{ scene.beat }}</p></div>
+        </article>
       </div>
+      <details v-if="!chapterPlans.length && sceneGroups.length" class="contract-scenes legacy-scenes">
+        <summary><span>行动参考 · {{ scenes.length }} 个场面</span><small>旧格式，非章合同</small></summary>
+        <p class="legacy-note">当前单元仍是旧场面表。章合同需在后续 Agent 迁移中生成；以下仅作为行动参考，不代表每章的目标、变化与断章钩。</p>
+        <div v-for="group in sceneGroups" :key="group.chapter" class="legacy-scene-group">
+          <h5>第 {{ group.chapter || '?' }} 章</h5>
+          <div v-for="(s, i) in group.scenes" :key="i" class="scene-row">
+            <span class="scene-beat"><strong v-if="s.id">{{ s.id }}</strong>{{ s.beat || '（无行动说明）' }}</span>
+            <span v-if="s.where" class="scene-where">{{ s.where }}</span>
+          </div>
+        </div>
+      </details>
     </template>
   </div>
 </template>
@@ -195,6 +252,7 @@ const hasContent = computed(() => fields.value.length > 0 || scenes.value.length
 .scene-beat { color: var(--ink-soft); line-height: 1.6; flex: 1; }
 .scene-beat strong { color: var(--ink); margin-right: 4px; }
 .scene-where { color: var(--ink-soft); font-size: 11px; flex-shrink: 0; }
-.scenes-toggle { margin-top: 8px; border: none; background: transparent; color: var(--accent); font-size: 12px; padding: 4px 0; }
+.legacy-scenes summary { display: flex; align-items: baseline; gap: 10px; cursor: pointer; color: var(--accent); font-size: 12px; }.legacy-scenes summary small { color: var(--warn); font-size: 10px; }.legacy-note { color: var(--ink-soft); font-size: 11px; line-height: 1.65; max-width: 80ch; }.legacy-scene-group { margin-top: 12px; padding-top: 8px; border-top: 1px solid var(--line); }.legacy-scene-group h5 { color: var(--accent); font-size: 11px; margin: 0 0 6px; }
+.chapter-plans { display: grid; gap: 10px; }.chapter-plan { border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; }.chapter-plan header { display: flex; justify-content: space-between; color: var(--accent); font-size: 12px; margin-bottom: 8px; }.chapter-plan header small { color: var(--ink-soft); }.chapter-plan p { color: var(--ink-soft); font-size: 12px; line-height: 1.65; margin: 6px 0; }.chapter-plan p strong { color: var(--ink); margin-right: 8px; font-weight: 600; }.chapter-scenes { margin-top: 10px; border-top: 1px solid var(--line); padding-top: 8px; }.chapter-scenes small { color: var(--accent); }
 @media (max-width: 720px) { .contract-fields { grid-template-columns: 1fr; } .scene-where { display: none; } }
 </style>

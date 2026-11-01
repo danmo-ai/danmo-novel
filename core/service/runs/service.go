@@ -887,7 +887,23 @@ func serializeUnitYAML(u domain.UnitOutlineDraft) string {
 	fmt.Fprintf(&b, "pov: %q\n", u.POV)
 	fmt.Fprintf(&b, "chapter_range: [%d, %d]\n", u.ChapterFrom, u.ChapterTo)
 	fmt.Fprintf(&b, "on_stage: [%s]\n", strings.Join(quoteAll(u.OnStage), ", "))
-	// 完整保留结构化 scenes（写作与审校的场面节拍来源）。
+	// 章合同是生产的基本输入；场面只是复杂章的可选辅助。
+	if len(u.Chapters) > 0 {
+		b.WriteString("chapters:\n")
+		for _, ch := range u.Chapters {
+			fmt.Fprintf(&b, "  - chapter: %d\n", ch.Chapter)
+			fmt.Fprintf(&b, "    goal: %q\n", ch.Goal)
+			fmt.Fprintf(&b, "    change: %q\n", ch.Change)
+			fmt.Fprintf(&b, "    cut_hook: %q\n", ch.CutHook)
+			fmt.Fprintf(&b, "    day_offset: %d\n", ch.DayOffset)
+			if len(ch.Scenes) > 0 {
+				b.WriteString("    scenes:\n")
+				for _, scene := range ch.Scenes {
+					writeSceneYAML(&b, scene)
+				}
+			}
+		}
+	}
 	if len(u.Scenes) > 0 {
 		b.WriteString("scenes:\n")
 		for _, s := range u.Scenes {
@@ -901,6 +917,11 @@ func serializeUnitYAML(u domain.UnitOutlineDraft) string {
 	}
 	if u.StoryDay != "" && u.StoryDay != "null" {
 		fmt.Fprintf(&b, "story_day: %s\n", u.StoryDay)
+	}
+	fmt.Fprintf(&b, "end_day: %d\n", u.EndDay)
+	fmt.Fprintf(&b, "gap_days: %d\n", u.GapDays)
+	if u.TimelineID != "" {
+		fmt.Fprintf(&b, "timeline_id: %s\n", u.TimelineID)
 	}
 	if u.GapFromPrev != "" {
 		fmt.Fprintf(&b, "gap_from_prev: %q\n", u.GapFromPrev)
@@ -925,6 +946,28 @@ func serializeUnitYAML(u domain.UnitOutlineDraft) string {
 		}
 	}
 	return b.String()
+}
+
+func writeSceneYAML(b *strings.Builder, scene domain.ScenePlan) {
+	fmt.Fprintf(b, "      - chapter: %d\n", scene.Chapter)
+	if scene.ID != "" {
+		fmt.Fprintf(b, "        id: %s\n", scene.ID)
+	}
+	fmt.Fprintf(b, "        goal: %q\n", scene.Goal)
+	fmt.Fprintf(b, "        conflict: %q\n", scene.Conflict)
+	fmt.Fprintf(b, "        turn: %q\n", scene.Turn)
+	fmt.Fprintf(b, "        outcome: %q\n", scene.Outcome)
+	for _, pair := range []struct {
+		key   string
+		items []string
+	}{{"must_land", scene.MustLand}, {"evidence_in", scene.EvidenceIn}, {"evidence_out", scene.EvidenceOut}} {
+		if len(pair.items) > 0 {
+			fmt.Fprintf(b, "        %s: [%s]\n", pair.key, strings.Join(quoteAll(pair.items), ", "))
+		}
+	}
+	if scene.DayOffset != nil {
+		fmt.Fprintf(b, "        day_offset: %d\n", *scene.DayOffset)
+	}
 }
 
 // stateDeltaRows flattens the model's stateDeltas into inline YAML mappings.

@@ -17,6 +17,8 @@ const bookProtocolSpec = `只输出一个结构化 Markdown 总纲文档。根�
 const volumeProtocolSpec = `只输出一个结构化 Markdown 卷纲文档。根字段包含 schema_version/volume_id/title/source_arc_id/chapter_range/goal/central_conflict/stakes/entry_state/exit_state/cast。
 用「## 节拍 · id」「## 单元 · v01-U1」「## 卷末交接 · handoff」声明实体。
 单元必填 title/chapter_range/objective/obstacle/attempt/setback/choice/cost/outcome/entry_cause/exit_result/state_changes/thread_ids/event_ids/reveal_ids/forbidden_reveal_ids/next_hook。
+单元必须一个主要戏剧问题、一个主结果、一种主要冲突形态；从属线必须改变主线选择或代价，不能拼接独立任务。
+每单元附 clock_start_day/clock_end_day（相对故事日整数）和 clock_gap_days（与上一单元的最少间隔天数）；可选 clock_deadline 为“事件ID@故事日”，timeline_id 默认为 main。
 节拍/转折必填 event/cause/effect/chapter_window；至少一个高潮与不可逆结果。
 职务/机构变化在所属单元后添加「### 身份变更 · 单元ID-人物stem」，含 stem/role_title/org/from_unit/reason，from_unit 等于所属单元 ID。`
 
@@ -90,6 +92,12 @@ const volumeProtocolTemplate = `# 卷纲 · {{v01}}
 - entry_cause: {{前序单元结果或钩子 ID}}
 - exit_result: {{本单元离场状态}}
 - state_changes: {{目标.字段=原状态->新状态}}
+- clock_start_day: {{本单元开场相对故事日整数}}
+- clock_end_day: {{本单元结束相对故事日整数，不早于开场}}
+- clock_gap_days: {{距上一单元的最少间隔天数}}
+- clock_deadline: {{可选：关键事件ID@死线故事日}}
+- timeline_id: {{main 或闪回/并行线 ID}}
+- allow_flashback: {{非 main 时间线时为 true，否则省略}}
 - thread_ids: {{故事线 ID}}
 - event_ids: {{承接的节拍 ID}}
 - reveal_ids: {{可揭示 ID}}

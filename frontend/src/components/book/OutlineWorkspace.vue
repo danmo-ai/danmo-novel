@@ -2,7 +2,6 @@
 import { computed, ref, watch } from 'vue'
 import { useAppStore } from '@/stores/app'
 import type { StructuredMarkdown, UnitInfo } from '@/types'
-import StoryTimeline from '@/components/book/StoryTimeline.vue'
 import StructuredOutline from '@/components/book/StructuredOutline.vue'
 
 const props = defineProps<{ saving: boolean; busy: boolean }>()
@@ -18,7 +17,6 @@ const activeVolume = ref(0)
 const showBook = ref(true)
 const rawMode = ref(false)
 const rawDraft = ref('')
-const unitViewMode = ref<'index' | 'timeline'>('index')
 const editing = ref<{ path: string; kind: string; entityId: string; field: string; value: string; label: string } | null>(null)
 const book = computed(() => store.currentBook)
 const bookRaw = computed(() => book.value?.files['outline/book_outline.md'] || '')
@@ -96,12 +94,6 @@ function openIndexedUnit(unit?: UnitInfo) { if (unit) emit('openUnit', unit) }
       </template>
     </article>
 
-    <article v-if="!showBook && volume" class="panel timeline-panel">
-      <div class="timeline-heading"><div class="unit-view-tabs"><button :class="{ active: unitViewMode === 'index' }" @click="unitViewMode = 'index'">单元生产索引 · {{ units.length }}</button><button :class="{ active: unitViewMode === 'timeline' }" @click="unitViewMode = 'timeline'">剧情时钟</button></div><span>点击单元进入细纲与正文生产</span></div>
-      <StoryTimeline v-if="unitViewMode === 'timeline'" :volume="volume.volume" @open="emit('openUnit', $event)" />
-      <div v-else class="unit-production-list"><button v-for="unit in units" :key="unit.unitId" @click="emit('openUnit', unit)"><strong>{{ unit.unitId }}</strong><span>{{ unit.title }}</span><small>{{ unit.chapterFrom }}–{{ unit.chapterTo }} 章 · {{ unit.status }}</small></button></div>
-    </article>
-
     <div v-if="editing" class="edit-backdrop" @click.self="editing = null">
       <form class="field-editor panel" @submit.prevent="saveField"><header><div><small>局部编辑 · 最小 MD 补丁</small><h3>{{ editing.label }}</h3></div><button type="button" @click="editing = null">×</button></header><textarea v-model="editing.value" autofocus spellcheck="false" /><p>保存时会重新解析整份 Markdown 并校验父子合同；不会重排其他文字或注释。</p><footer><button type="button" @click="editing = null">取消</button><button class="primary" :disabled="saving || !editing.value.trim()">保存字段</button></footer></form>
     </div>
@@ -117,9 +109,7 @@ function openIndexedUnit(unit?: UnitInfo) { if (unit) emit('openUnit', unit) }
 .outline-panel { padding: 20px; }.document-actions { justify-content: space-between; padding-bottom: 16px; margin-bottom: 20px; border-bottom: 1px solid var(--line); }.document-actions small { display: block; color: var(--accent); margin-bottom: 4px; }.document-actions span { font-size: 10px; color: var(--ok); }.document-actions .legacy { color: var(--warn); }
 .legacy-document > p { color: var(--warn); font-size: 12px; line-height: 1.7; }.legacy-document pre { white-space: pre-wrap; font: 13px/1.85 var(--font-ui); color: var(--ink-soft); max-height: 680px; overflow: auto; }
 .raw-editor > p { color: var(--ink-soft); font-size: 12px; }.raw-editor textarea { width: 100%; min-height: 600px; padding: 16px; border: 1px solid var(--line); border-radius: 12px; font: 13px/1.7 ui-monospace, monospace; resize: vertical; }.raw-editor > div { display: flex; justify-content: flex-end; gap: 8px; margin-top: 10px; }
-.timeline-panel { padding: 18px; }.timeline-heading { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 16px; }.timeline-heading > span { color: var(--ink-soft); font-size: 11px; }.unit-view-tabs { display: flex; gap: 6px; }.unit-view-tabs button.active { color: var(--accent); border-color: var(--accent); }
-.unit-production-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 8px; }.unit-production-list button { display: grid; text-align: left; gap: 4px; padding: 12px; }.unit-production-list strong { color: var(--accent); }.unit-production-list span { font-size: 12px; }.unit-production-list small { color: var(--ink-soft); }
 .empty { padding: 30px; text-align: center; color: var(--ink-soft); }
 .edit-backdrop { position: fixed; inset: 0; z-index: 30; display: grid; place-items: center; padding: 20px; background: rgba(20,35,31,.25); }.field-editor { width: min(680px, 100%); padding: 20px; }.field-editor header { display: flex; justify-content: space-between; align-items: flex-start; }.field-editor h3 { margin: 4px 0 16px; font-size: 18px; }.field-editor small { color: var(--accent); }.field-editor textarea { width: 100%; min-height: 180px; padding: 12px; border: 1px solid var(--line); border-radius: 10px; resize: vertical; font: 14px/1.8 var(--font-ui); }.field-editor p { color: var(--ink-soft); font-size: 11px; line-height: 1.7; }.field-editor footer { display: flex; justify-content: flex-end; gap: 8px; }
-@media (max-width: 720px) { .view-title, .document-actions { align-items: flex-start; flex-direction: column; }.outline-panel { padding: 14px; }.timeline-heading { align-items: flex-start; flex-direction: column; } }
+@media (max-width: 720px) { .view-title, .document-actions { align-items: flex-start; flex-direction: column; }.outline-panel { padding: 14px; } }
 </style>

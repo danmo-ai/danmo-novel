@@ -11,7 +11,8 @@ import (
 
 // ValidateClockContinuity checks 剧情时钟 across the volume's units:
 // story_day 必须单调不减（闪回单元除外），单元间隔不能为负。
-// Returns advisory findings (不 blocking，因为回填期字段可暂缺)。
+// Missing clock is advisory during planning, but free-form story_day is a
+// blocking production error: the writer needs a computable relative day.
 func ValidateClockContinuity(units []domain.UnitInfo, volume int) []domain.ReviewFinding {
 	var findings []domain.ReviewFinding
 	var prevDay int = -1
@@ -35,7 +36,7 @@ func ValidateClockContinuity(units []domain.UnitInfo, volume int) []domain.Revie
 		day, err := strconv.Atoi(dayStr)
 		if err != nil {
 			findings = append(findings, domain.ReviewFinding{
-				ID: "clock-invalid-" + u.UnitID, Severity: "advisory", Source: "local_gate", Lens: "clock",
+				ID: "clock-invalid-" + u.UnitID, Severity: "blocking", Source: "local_gate", Lens: "clock",
 				Title:    "故事日非数值",
 				Evidence: fmt.Sprintf("%s story_day=%q，应为相对天数", u.UnitID, dayStr),
 			})

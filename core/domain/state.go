@@ -34,6 +34,7 @@ type UnitState struct {
 	Volume   int                          `json:"volume,omitempty" yaml:"volume,omitempty"`
 	AfterCh  int                          `json:"afterCh,omitempty" yaml:"after_ch,omitempty"`
 	StoryDay int                          `json:"storyDay,omitempty" yaml:"story_day,omitempty"`
+	EndDay   int                          `json:"endDay,omitempty" yaml:"end_day,omitempty"`
 	Cast     map[string]CharacterSnapshot `json:"cast,omitempty" yaml:"cast,omitempty"`
 	Loops    []LoopEntry                  `json:"loops,omitempty" yaml:"loops,omitempty"`
 }

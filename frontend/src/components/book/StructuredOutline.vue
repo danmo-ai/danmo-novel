@@ -31,6 +31,7 @@ const labels: Record<string, string> = {
   outcome: '不可逆结果', entry_cause: '前置原因', exit_result: '离场结果', state_changes: '状态迁移',
   thread_ids: '故事线', event_ids: '关联事件', reveal_ids: '可揭示', forbidden_reveal_ids: '禁止提前揭示', next_hook: '下一钩',
   event: '事件', cause: '原因', effect: '影响', chapter_window: '落点范围',
+  clock_start_day: '开场日', clock_end_day: '结束日', clock_gap_days: '最小间隔', clock_deadline: '关键死线', timeline_id: '时间线',
 }
 function fieldLabel(key: string) { return labels[key] || key }
 function display(entity: MarkdownEntity, key: string) { return entity.fields.find((f) => f.name === key)?.value || '' }
@@ -45,6 +46,18 @@ function toggle(id: string) {
   expanded.value = next
 }
 function unitFor(id: string) { return props.units?.find((u) => u.unitId === id) }
+function clockLabel(entity: MarkdownEntity) {
+  const start = display(entity, 'clock_start_day')
+  const end = display(entity, 'clock_end_day')
+  if (!start || !end) return ''
+  const gap = display(entity, 'clock_gap_days') || '0'
+  return `故事第 ${start}–${end} 日 · 间隔≥${gap}日`
+}
+function nextAction(id: string) {
+  const unit = unitFor(id)
+  if (!unit) return '待生成细纲'
+  return ({ proposed: '生成细纲', accepted: '写正文', drafted: '审校正文', reviewed: '查看定稿' } as Record<string, string>)[unit.status] || '进入生产'
+}
 function status(id: string) {
   const value = unitFor(id)?.status || 'proposed'
   return ({ proposed: '待细纲', accepted: '待写', drafted: '草稿', reviewed: '定稿' } as Record<string, string>)[value] || value
@@ -97,17 +110,22 @@ function status(id: string) {
     </section>
 
     <section v-if="seeds.length" class="entity-section">
-      <h4>单元因果卡 <span>{{ seeds.length }}</span></h4>
+      <div class="unit-index-heading"><div><h4>单元索引 <span>{{ seeds.length }}</span></h4><p>每个单元是一个因果闭环；时间是索引的合同字段。点击卡片展开，或按下一步进入生产。</p></div><small>目标 → 选择 → 结果</small></div>
       <div class="seed-list">
         <article v-for="seed in seeds" :key="seed.id" class="seed-card">
-          <button class="seed-summary" @click="toggle(seed.id)">
-            <span><small>{{ seed.id }} · {{ display(seed, 'chapter_range') }}</small><strong>{{ display(seed, 'title') }}</strong></span>
-            <span class="seed-outcome">{{ display(seed, 'outcome') }}</span>
-            <span class="unit-status">{{ status(seed.id) }}</span>
-          </button>
+          <div class="seed-summary">
+            <button class="seed-main" @click="toggle(seed.id)">
+              <span class="seed-title"><small>{{ seed.id }} · {{ display(seed, 'chapter_range') }}</small><strong>{{ display(seed, 'title') }}</strong></span>
+              <span class="seed-goal"><small>目标</small>{{ display(seed, 'objective') }}</span>
+              <span class="seed-choice"><small>选择</small>{{ display(seed, 'choice') }}</span>
+              <span class="seed-outcome"><small>主结果</small>{{ display(seed, 'outcome') }}</span>
+              <span class="seed-clock"><small>剧情时钟</small>{{ clockLabel(seed) || '待锚定' }}</span>
+            </button>
+            <div class="seed-actions"><span class="unit-status">{{ status(seed.id) }}</span><button v-if="unitFor(seed.id)" @click="emit('openUnit', unitFor(seed.id)!)">{{ nextAction(seed.id) }}</button><button v-else disabled>待播种</button></div>
+          </div>
           <div v-if="expanded.has(seed.id)" class="seed-detail">
             <div class="causal-chain"><span>{{ display(seed, 'entry_cause') }}</span><b>→</b><span>{{ display(seed, 'objective') }}</span><b>→</b><span>{{ display(seed, 'choice') }}</span><b>→</b><span>{{ display(seed, 'outcome') }}</span></div>
-            <dl><div><dt>阻碍</dt><dd>{{ display(seed, 'obstacle') }}</dd></div><div><dt>尝试与缺口</dt><dd>{{ display(seed, 'attempt') }}；{{ display(seed, 'setback') }}</dd></div><div><dt>代价</dt><dd>{{ display(seed, 'cost') }}</dd></div><div><dt>状态迁移</dt><dd>{{ display(seed, 'state_changes') }}</dd></div><div><dt>下一钩</dt><dd>{{ display(seed, 'next_hook') }}</dd></div></dl>
+            <dl><div><dt>阻碍</dt><dd>{{ display(seed, 'obstacle') }}</dd></div><div><dt>尝试与缺口</dt><dd>{{ display(seed, 'attempt') }}；{{ display(seed, 'setback') }}</dd></div><div><dt>代价</dt><dd>{{ display(seed, 'cost') }}</dd></div><div><dt>状态迁移</dt><dd>{{ display(seed, 'state_changes') }}</dd></div><div><dt>下一钩</dt><dd>{{ display(seed, 'next_hook') }}</dd></div><div v-if="display(seed, 'clock_deadline')"><dt>关键死线</dt><dd>{{ display(seed, 'clock_deadline') }}</dd></div></dl>
             <footer><button class="text-action" :disabled="readOnly" @click="edit(seed, 'outcome', display(seed, 'outcome'))">编辑结果</button><button v-if="unitFor(seed.id)" class="text-action" @click="emit('openUnit', unitFor(seed.id)!)">进入单元生产</button></footer>
           </div>
         </article>
@@ -153,7 +171,15 @@ dt { color: var(--accent); font-size: 11px; } dd { margin: 0; color: var(--ink-s
 .beat-list strong { font-size: 12px; } .beat-list p { color: var(--ink-soft); font-size: 12px; line-height: 1.65; }
 .seed-list { display: grid; gap: 8px; }
 .seed-card { border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
-.seed-summary { width: 100%; display: grid; grid-template-columns: minmax(160px, .8fr) minmax(220px, 1.4fr) auto; align-items: center; gap: 16px; padding: 13px 15px; border: 0; background: rgba(255,255,255,.35); text-align: left; }
+.unit-index-heading { display: flex; justify-content: space-between; align-items: flex-end; gap: 16px; margin-bottom: 12px; }.unit-index-heading h4 { margin: 0; }.unit-index-heading h4 span { color: var(--ink-soft); font-size: 11px; font-weight: 400; }.unit-index-heading p { margin: 5px 0 0; color: var(--ink-soft); font-size: 11px; line-height: 1.65; }.unit-index-heading > small { color: var(--accent); white-space: nowrap; }
+.seed-summary { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: stretch; background: rgba(255,255,255,.35); }
+.seed-main { display: grid; grid-template-columns: minmax(135px, .7fr) minmax(160px, 1.15fr) minmax(160px, 1.15fr) minmax(160px, 1.1fr) minmax(155px, .85fr); gap: 14px; padding: 14px 16px; border: 0; text-align: left; background: transparent; min-width: 0; }
+.seed-main > span { min-width: 0; font-size: 12px; line-height: 1.65; color: var(--ink-soft); }
+.seed-main small { display: block; color: var(--accent); font-size: 10px; margin-bottom: 4px; }
+.seed-title small { color: var(--accent); }.seed-title strong { font-size: 14px; color: var(--ink); }
+.seed-clock { border-left: 1px solid var(--line); padding-left: 14px; }
+.seed-actions { display: flex; flex-direction: column; justify-content: center; align-items: flex-end; gap: 8px; padding: 12px 14px; border-left: 1px solid var(--line); min-width: 94px; }
+.seed-actions button { font-size: 11px; white-space: nowrap; padding: 5px 9px; }
 .seed-summary small { display: block; color: var(--accent); font-size: 10px; margin-bottom: 4px; }
 .seed-summary strong { font-size: 14px; } .seed-outcome { color: var(--ink-soft); font-size: 12px; line-height: 1.65; }
 .unit-status { font-size: 10px; color: var(--accent); white-space: nowrap; }
@@ -164,5 +190,6 @@ dt { color: var(--accent); font-size: 11px; } dd { margin: 0; color: var(--ink-s
 .handoff p { color: var(--ink-soft); font-size: 12px; }
 .diagnostics { padding: 14px; border: 1px solid var(--warn); border-radius: 12px; color: var(--warn); font-size: 12px; }
 .compact { max-height: 620px; overflow: auto; padding-right: 8px; }
-@media (max-width: 720px) { .root-contract { grid-template-columns: 1fr; } .arc-card header { flex-direction: column; } .arc-card header > span { max-width: none; } .seed-summary { grid-template-columns: 1fr auto; } .seed-outcome { grid-column: 1 / -1; grid-row: 2; } .arc-state { grid-template-columns: 1fr; } .arc-state b { transform: rotate(90deg); } }
+@media (max-width: 1050px) { .seed-main { grid-template-columns: repeat(2, minmax(0, 1fr)); } .seed-title { grid-column: 1 / -1; } .seed-clock { border-left: 0; padding-left: 0; } }
+@media (max-width: 720px) { .root-contract { grid-template-columns: 1fr; } .arc-card header { flex-direction: column; } .arc-card header > span { max-width: none; } .seed-summary { grid-template-columns: 1fr; } .seed-main { grid-template-columns: 1fr; } .seed-actions { flex-direction: row; justify-content: flex-start; align-items: center; border-left: 0; border-top: 1px solid var(--line); } .arc-state { grid-template-columns: 1fr; } .arc-state b { transform: rotate(90deg); } .unit-index-heading { align-items: flex-start; flex-direction: column; } }
 </style>

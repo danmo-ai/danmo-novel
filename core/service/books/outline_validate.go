@@ -48,7 +48,7 @@ func ValidateStructuredOutlineFile(snap domain.BookSnapshot, path, raw string) e
 		case "分卷":
 			required = []string{"title", "chapter_range", "purpose", "dramatic_question", "entry_state", "exit_state", "deliverables", "next_volume_entry"}
 		case "单元":
-			required = []string{"title", "chapter_range", "objective", "obstacle", "attempt", "setback", "choice", "cost", "outcome", "entry_cause", "exit_result", "state_changes", "thread_ids", "next_hook"}
+			required = []string{"title", "chapter_range", "objective", "obstacle", "attempt", "setback", "choice", "cost", "outcome", "entry_cause", "exit_result", "state_changes", "clock_start_day", "clock_end_day", "clock_gap_days", "thread_ids", "next_hook"}
 			from, to := ChapterWindow(e.Value("chapter_range"))
 			if from <= 0 || to < from || to-from+1 > 10 {
 				return fmt.Errorf("%s.chapter_range：有效范围且不超过 10 章", e.ID)
@@ -102,6 +102,9 @@ func ValidateStructuredOutlineFile(snap domain.BookSnapshot, path, raw string) e
 			return err
 		}
 		return validateReferences(snap, doc)
+	}
+	if err := ValidateVolumeClockContract(doc); err != nil {
+		return err
 	}
 	if doc.Root.Value("cast") == "" {
 		return fmt.Errorf("cast：本卷人物不能为空")

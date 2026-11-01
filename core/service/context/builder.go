@@ -727,7 +727,11 @@ func extractOnStage(yaml string) []string {
 func buildTimeGuidance(snap domain.BookSnapshot, unit domain.UnitInfo) string {
 	raw := unit.OutlineRaw
 	day := yamlScalarLocal(raw, "story_day")
+	endDay := yamlScalarLocal(raw, "end_day")
 	gap := yamlScalarLocal(raw, "gap_from_prev")
+	if gapDays := yamlScalarLocal(raw, "gap_days"); gapDays != "" {
+		gap = "至少 " + gapDays + " 天"
+	}
 	flashback := yamlScalarLocal(raw, "flashback") == "true"
 	var b strings.Builder
 	b.WriteString("时间书写规则：\n")
@@ -735,6 +739,9 @@ func buildTimeGuidance(snap domain.BookSnapshot, unit domain.UnitInfo) string {
 		fmt.Fprintf(&b, "- 本单元开场＝故事第 %s 天。正文时间用相对锚点（第 %s 天／次日／当晚／三天后），不得写具体年月日或星期。\n", day, day)
 	} else {
 		b.WriteString("- 本单元故事日未定：先用相对锚点（次日／几天后／当晚），不要虚构具体日期。\n")
+	}
+	if endDay != "" {
+		fmt.Fprintf(&b, "- 本单元结束不晚于故事第 %s 天；章级 day_offset 从本单元开场日起算，不得越出开闭区间。\n", endDay)
 	}
 	if gap != "" {
 		fmt.Fprintf(&b, "- 与上一单元的时间间隔：%s。开场必须体现这个间隔（如「三天后」「隔天清晨」），不得让角色状态/位置瞬间无解释跳变。\n", gap)

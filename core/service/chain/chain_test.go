@@ -95,7 +95,12 @@ func (f *fakeLLM) Chat(_ context.Context, req port.LLMChatRequest) (port.LLMChat
 				{"id": "S5", "chapter": 3, "beat": "爆发换资格", "who": []string{"linchen"}, "pov": "linchen", "where": "试炼场", "goal": "赢得资格", "conflict": "最后对手阻拦", "turn": "用代价换爆发", "outcome": "对手认输", "must_land": []string{"完成最后一击"}},
 				{"id": "S6", "chapter": 3, "beat": "入门", "who": []string{"linchen"}, "pov": "linchen", "where": "山门", "goal": "完成入门登记", "conflict": "执事复核代价", "turn": "林尘承担责任", "outcome": "取得入门资格", "must_land": []string{"领取身份牌"}},
 			},
-			"storyDay": "1", "gapFromPrev": "开场", "infoControl": "读者只知旧刀有异常，不知其来源",
+			"storyDay": "1", "endDay": 3, "gapDays": 0, "timelineId": "main", "gapFromPrev": "开场", "infoControl": "读者只知旧刀有异常，不知其来源",
+			"chapters": []map[string]any{
+				{"chapter": 1, "goal": "获得试炼资格", "change": "从被质疑到获得比试资格", "cutHook": "名额只剩一个", "dayOffset": 0},
+				{"chapter": 2, "goal": "改变打法撑过比试", "change": "扳回一局并付出身体代价", "cutHook": "是否继续爆发", "dayOffset": 1},
+				{"chapter": 3, "goal": "用代价换得试炼胜利", "change": "取得入门资格并暴露旧刀异常", "cutHook": "刀柄刻痕指向未知人物", "dayOffset": 2},
+			},
 			"stateDeltas": []map[string]any{{"stem": "linchen", "field": "goal", "from": "争取试炼资格", "to": "取得入门资格"}},
 		}}})
 		return port.LLMChatResponse{Content: string(out), Done: true}, nil

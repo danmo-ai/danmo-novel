@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/danmo-ai/danmo-novel/core/domain"
@@ -41,14 +42,43 @@ func ValidateOutlineContract(units []domain.UnitOutlineDraft, requested []string
 		if strings.TrimSpace(fmt.Sprint(u.NextHook["type"])) == "" || strings.TrimSpace(fmt.Sprint(u.NextHook["out"])) == "" {
 			vs = append(vs, Violation{Path: base + ".nextHook", Want: "{type,out} 均为具体非空内容", Got: fmt.Sprint(u.NextHook)})
 		}
-		if len(u.Scenes) == 0 {
-			vs = append(vs, Violation{Path: base + ".scenes", Want: "至少每章一个场面", Got: "空"})
+		if len(u.Chapters) == 0 {
+			vs = append(vs, Violation{Path: base + ".chapters", Want: "每章一个轻量 ChapterPlan", Got: "空"})
 		}
-		for j, scene := range u.Scenes {
-			for _, key := range []string{"goal", "conflict", "turn", "outcome", "must_land"} {
-				if _, ok := scene[key]; !ok || strings.TrimSpace(fmt.Sprint(scene[key])) == "" || fmt.Sprint(scene[key]) == "[]" {
-					vs = append(vs, Violation{Path: fmt.Sprintf("%s.scenes[%d].%s", base, j, key), Want: "可执行场面字段", Got: "缺失"})
+		covered := map[int]bool{}
+		for j, ch := range u.Chapters {
+			path := fmt.Sprintf("%s.chapters[%d]", base, j)
+			if ch.Chapter < u.ChapterFrom || ch.Chapter > u.ChapterTo {
+				vs = append(vs, Violation{Path: path + ".chapter", Want: "章号在本单元范围内", Got: fmt.Sprint(ch.Chapter)})
+			}
+			if covered[ch.Chapter] {
+				vs = append(vs, Violation{Path: path + ".chapter", Want: "章号唯一", Got: fmt.Sprint(ch.Chapter)})
+			}
+			covered[ch.Chapter] = true
+			if strings.TrimSpace(ch.Goal) == "" || strings.TrimSpace(ch.Change) == "" || strings.TrimSpace(ch.CutHook) == "" {
+				vs = append(vs, Violation{Path: path, Want: "goal/change/cutHook 均为具体非空内容", Got: "缺失"})
+			}
+			if ch.DayOffset < 0 {
+				vs = append(vs, Violation{Path: path + ".dayOffset", Want: "非负整数", Got: fmt.Sprint(ch.DayOffset)})
+			}
+			for k, scene := range ch.Scenes {
+				if scene.Chapter != ch.Chapter {
+					vs = append(vs, Violation{Path: fmt.Sprintf("%s.scenes[%d].chapter", path, k), Want: fmt.Sprint(ch.Chapter), Got: fmt.Sprint(scene.Chapter)})
 				}
+				if strings.TrimSpace(scene.Goal) == "" || strings.TrimSpace(scene.Conflict) == "" || strings.TrimSpace(scene.Turn) == "" || strings.TrimSpace(scene.Outcome) == "" {
+					vs = append(vs, Violation{Path: fmt.Sprintf("%s.scenes[%d]", path, k), Want: "最小场面 goal/conflict/turn/outcome", Got: "缺失"})
+				}
+				if len(scene.MustLand) > 2 {
+					vs = append(vs, Violation{Path: fmt.Sprintf("%s.scenes[%d].mustLand", path, k), Want: "最多 2 个可见落地事实", Got: fmt.Sprint(len(scene.MustLand))})
+				}
+				if scene.DayOffset != nil && (*scene.DayOffset < ch.DayOffset || *scene.DayOffset < 0) {
+					vs = append(vs, Violation{Path: fmt.Sprintf("%s.scenes[%d].dayOffset", path, k), Want: "不早于本章时间偏移", Got: fmt.Sprint(*scene.DayOffset)})
+				}
+			}
+		}
+		for chapter := u.ChapterFrom; chapter <= u.ChapterTo; chapter++ {
+			if !covered[chapter] {
+				vs = append(vs, Violation{Path: base + ".chapters", Want: "覆盖单元全部章节", Got: fmt.Sprintf("缺第 %d 章", chapter)})
 			}
 		}
 	}
@@ -57,8 +87,16 @@ func ValidateOutlineContract(units []domain.UnitOutlineDraft, requested []string
 			vs = append(vs, Violation{Path: "units", Want: "覆盖请求的单元 " + id, Got: "缺失"})
 		}
 	}
-	if err := validateOutlineScenes(units); err != nil {
-		vs = append(vs, Violation{Path: "scenes", Want: "章号合法且完整覆盖", Got: err.Error()})
+	for _, u := range units {
+		day, err := strconv.Atoi(strings.TrimSpace(u.StoryDay))
+		if err != nil || day <= 0 || u.EndDay < day || u.GapDays < 0 {
+			vs = append(vs, Violation{Path: u.UnitID + ".clock", Want: "整数 story_day/end_day，end_day >= story_day，gapDays >= 0", Got: fmt.Sprintf("%s/%d/%d", u.StoryDay, u.EndDay, u.GapDays)})
+		}
+		for _, ch := range u.Chapters {
+			if day > 0 && u.EndDay > 0 && day+ch.DayOffset > u.EndDay {
+				vs = append(vs, Violation{Path: fmt.Sprintf("%s.chapters[%d].dayOffset", u.UnitID, ch.Chapter), Want: "不超出单元结束日", Got: fmt.Sprint(ch.DayOffset)})
+			}
+		}
 	}
 	return contractFail("细纲", vs)
 }
@@ -106,12 +144,20 @@ func ValidateUnitSeedInheritance(unit domain.UnitOutlineDraft, seed domain.Markd
 	if unit.SourceSeedID != seed.ID {
 		vs = append(vs, Violation{Path: "sourceSeedId", Want: seed.ID, Got: unit.SourceSeedID})
 	}
+	if unit.StoryDay != seed.Value("clock_start_day") || unit.EndDay != mustAtoi(seed.Value("clock_end_day")) || unit.GapDays != mustAtoi(seed.Value("clock_gap_days")) {
+		vs = append(vs, Violation{Path: "clock", Want: "继承卷纲 clock_start_day/clock_end_day/clock_gap_days", Got: fmt.Sprintf("%s/%d/%d", unit.StoryDay, unit.EndDay, unit.GapDays)})
+	}
 	for _, pair := range []struct{ path, want, got string }{{"attempt", seed.Value("attempt"), unit.Attempt}, {"setback", seed.Value("setback"), unit.Setback}, {"cost", seed.Value("cost"), unit.Cost}} {
 		if strings.TrimSpace(pair.want) != strings.TrimSpace(pair.got) {
 			vs = append(vs, Violation{Path: pair.path, Want: "继承卷纲：" + pair.want, Got: pair.got})
 		}
 	}
 	return contractFail("细纲父子合同", vs)
+}
+
+func mustAtoi(value string) int {
+	n, _ := strconv.Atoi(strings.TrimSpace(value))
+	return n
 }
 
 func outlineOnStage(raw string) []string {

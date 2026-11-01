@@ -12,10 +12,23 @@ word_target: "2500"
 pov: "linchen"
 chapter_range: [1, 3]
 on_stage: ["linchen"]
-scenes:
-  - id: S1
-    chapter: 1
-    beat: "被点名"
-    who: [linchen]
-    pov: linchen
-    where: 试炼场
+story_day: 1
+end_day: 3
+gap_days: 0
+timeline_id: main
+chapters:
+  - chapter: 1
+    goal: 获得试炼资格并发现对手弱点
+    change: 从被质疑到获得比试资格
+    cut_hook: 名额只剩一个
+    day_offset: 0
+  - chapter: 2
+    goal: 在体力不足时改变打法
+    change: 从被动挨打到扳回一局，代价初现
+    cut_hook: 是否继续爆发
+    day_offset: 1
+  - chapter: 3
+    goal: 用代价换得试炼胜利
+    change: 取得入门资格并暴露旧刀异常
+    cut_hook: 刀柄刻痕指向未知人物
+    day_offset: 2

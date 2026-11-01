@@ -94,7 +94,11 @@ func continuityHeader(st domain.UnitState) string {
 		parts = append(parts, fmt.Sprintf("已定稿到第 %d 章", st.AfterCh))
 	}
 	if st.StoryDay > 0 {
-		parts = append(parts, fmt.Sprintf("故事日 %d", st.StoryDay))
+		clock := fmt.Sprintf("故事日 %d", st.StoryDay)
+		if st.EndDay > st.StoryDay {
+			clock = fmt.Sprintf("故事日 %d–%d", st.StoryDay, st.EndDay)
+		}
+		parts = append(parts, clock)
 	}
 	return "### 连续性状态\n" + strings.Join(parts, " · ")
 }

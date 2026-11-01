@@ -151,6 +151,30 @@ type ChapterDraft struct {
 	Body    string `json:"body"`
 }
 
+// ChapterPlan is the basic production contract. Scenes are optional helpers,
+// not a second mandatory outline layer.
+type ChapterPlan struct {
+	Chapter   int         `json:"chapter"`
+	Goal      string      `json:"goal"`
+	Change    string      `json:"change"`
+	CutHook   string      `json:"cutHook"`
+	DayOffset int         `json:"dayOffset"`
+	Scenes    []ScenePlan `json:"scenes,omitempty"`
+}
+
+type ScenePlan struct {
+	ID          string   `json:"id,omitempty"`
+	Chapter     int      `json:"chapter"`
+	Goal        string   `json:"goal"`
+	Conflict    string   `json:"conflict"`
+	Turn        string   `json:"turn"`
+	Outcome     string   `json:"outcome"`
+	MustLand    []string `json:"mustLand,omitempty"`
+	EvidenceIn  []string `json:"evidenceIn,omitempty"`
+	EvidenceOut []string `json:"evidenceOut,omitempty"`
+	DayOffset   *int     `json:"dayOffset,omitempty"`
+}
+
 type UnitOutlineDraft struct {
 	UnitID       string           `json:"unitId"`
 	Status       UnitStatus       `json:"status"`
@@ -168,6 +192,10 @@ type UnitOutlineDraft struct {
 	ChapterFrom  int              `json:"chapterFrom"`
 	ChapterTo    int              `json:"chapterTo"`
 	Scenes       []map[string]any `json:"scenes,omitempty"`
+	Chapters     []ChapterPlan    `json:"chapters,omitempty"`
+	EndDay       int              `json:"endDay"`
+	GapDays      int              `json:"gapDays"`
+	TimelineID   string           `json:"timelineId,omitempty"`
 	NextHook     map[string]any   `json:"nextHook,omitempty"`
 	StoryDay     string           `json:"storyDay,omitempty"`
 	GapFromPrev  string           `json:"gapFromPrev,omitempty"`

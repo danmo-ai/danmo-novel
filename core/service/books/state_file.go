@@ -134,6 +134,12 @@ func StateFromOutline(unit domain.UnitInfo, chapters []domain.ChapterDraft, iden
 			st.StoryDay = n
 		}
 	}
+	st.EndDay = st.StoryDay
+	if day := yamlScalarValue(unit.OutlineRaw, "end_day"); day != "" {
+		if n := atoiSafe(day); n >= st.StoryDay {
+			st.EndDay = n
+		}
+	}
 	cast := map[string]domain.CharacterSnapshot{}
 	for _, d := range parseStateDeltas(unit.OutlineRaw) {
 		if d.Stem == "" {

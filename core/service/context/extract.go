@@ -8,6 +8,7 @@ import (
 
 	"github.com/danmo-ai/danmo-novel/core/domain"
 	"github.com/danmo-ai/danmo-novel/core/service/books"
+	"gopkg.in/yaml.v3"
 )
 
 // Entity extraction is the single source of model-facing canon. No whole-card,
@@ -415,6 +416,32 @@ func displayName(stem string) string { return stem }
 // ChapterBeats prefers the structured scenes list, then chapters, then raw.
 func ChapterBeats(raw string) string { return chapterBeats(raw) }
 
+// ChapterContract returns the lightweight per-chapter plan and any optional
+// scenes. It is the primary production input; scenes only clarify complex action.
+func ChapterContract(raw string, chapter int) string {
+	var doc struct {
+		Chapters []struct {
+			Chapter   int    `yaml:"chapter"`
+			Goal      string `yaml:"goal"`
+			Change    string `yaml:"change"`
+			CutHook   string `yaml:"cut_hook"`
+			DayOffset int    `yaml:"day_offset"`
+			Scenes    []any  `yaml:"scenes"`
+		} `yaml:"chapters"`
+	}
+	if err := yaml.Unmarshal([]byte(raw), &doc); err != nil {
+		return ""
+	}
+	for _, ch := range doc.Chapters {
+		if ch.Chapter != chapter {
+			continue
+		}
+		body, _ := yaml.Marshal(ch)
+		return string(body)
+	}
+	return ""
+}
+
 func yamlScalar(raw, key string) string {
 	m := regexp.MustCompile(`(?m)^` + regexp.QuoteMeta(key) + `:\s*(.*)$`).FindStringSubmatch(raw)
 	if len(m) < 2 {
@@ -424,11 +451,11 @@ func yamlScalar(raw, key string) string {
 }
 
 func chapterBeats(raw string) string {
-	if scenes := mdYAMLList(raw, "scenes"); scenes != "" {
-		return scenes
-	}
 	if chapters := mdYAMLList(raw, "chapters"); chapters != "" {
 		return chapters
+	}
+	if scenes := mdYAMLList(raw, "scenes"); scenes != "" {
+		return scenes
 	}
 	return raw
 }
@@ -468,6 +495,9 @@ var sceneChapterRe = regexp.MustCompile(`(?m)^[ \t]*chapter:[ \t]*(\d+)`)
 // 调用都带全部 26 个场面，重复 6 遍。按 `chapter:` 过滤后单次提示词能省下大半。
 // 没有 `chapter` 字段的场面一律保留——宁可多带，也不要把作者的节拍丢掉。
 func BeatsForChapter(raw string, chapter int) string {
+	if contract := ChapterContract(raw, chapter); contract != "" {
+		return contract
+	}
 	block := ChapterBeats(raw)
 	if chapter <= 0 || strings.TrimSpace(block) == "" {
 		return block

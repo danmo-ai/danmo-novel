@@ -150,6 +150,10 @@ func TestStructuredVolumeSeedInheritsUnitContract(t *testing.T) {
 - entry_cause: v00-U9.next_hook
 - exit_result: 获得许可
 - state_changes: lin.role=新人->复核人
+- clock_start_day: 1
+- clock_end_day: 6
+- clock_gap_days: 0
+- timeline_id: main
 - thread_ids: main
 - event_ids: event-1
 - reveal_ids: R1
@@ -174,15 +178,15 @@ func TestStructuredVolumeSeedInheritsUnitContract(t *testing.T) {
 func TestStructuredSeedStateChangesReachFinalizationLedger(t *testing.T) {
 	unit := domain.UnitInfo{UnitID: "v01-U1", Volume: 1, OutlineRaw: "unit_id: v01-U1\nstory_day: 3\nstate_changes: lin.role_title=新人->复核人; lin.goal=申请->复核\nstate_deltas:\n  - stem: lin\n    field: role_title\n    from: 新人\n    to: 复核人\n  - stem: lin\n    field: goal\n    from: 申请\n    to: 复核\n"}
 	state := StateFromOutline(unit, []domain.ChapterDraft{{Chapter: 3, Body: "正文"}})
-	compact := StateFromOutline(domain.UnitInfo{UnitID: "v01-U1", Volume: 1, OutlineRaw: "story_day: 3\nstate_changes: lin.role_title=新人->复核人; lin.goal=申请->复核\n"}, []domain.ChapterDraft{{Chapter: 3, Body: "正文"}})
-	if compact.Cast["lin"].Goal != "复核" {
+	compact := StateFromOutline(domain.UnitInfo{UnitID: "v01-U1", Volume: 1, OutlineRaw: "story_day: 3\nend_day: 5\nstate_changes: lin.role_title=新人->复核人; lin.goal=申请->复核\n"}, []domain.ChapterDraft{{Chapter: 3, Body: "正文"}})
+	if compact.Cast["lin"].Goal != "复核" || compact.EndDay != 5 {
 		t.Fatalf("compact seed state was dropped: %+v", compact)
 	}
 	identified := StateFromOutline(unit, []domain.ChapterDraft{{Chapter: 3, Body: "正文"}}, []domain.IdentitySegment{{Stem: "lin", RoleTitle: "复核人", Org: "分局", FromUnit: "v01-U1"}})
 	if identified.Cast["lin"].RoleTitle != "复核人" {
 		t.Fatalf("identity timeline was not applied to state snapshot: %+v", identified)
 	}
-	if state.Cast["lin"].RoleTitle != "" || state.Cast["lin"].Goal != "复核" || state.StoryDay != 3 {
+	if state.Cast["lin"].RoleTitle != "" || state.Cast["lin"].Goal != "复核" || state.StoryDay != 3 || state.EndDay != 3 {
 		t.Fatalf("seed state did not reach continuity: %+v", state)
 	}
 }
@@ -283,6 +287,10 @@ func TestStructuredVolumeSeedAcceptKeepsExistingProse(t *testing.T) {
 - entry_cause: v00-U9.next_hook
 - exit_result: 获得许可
 - state_changes: lin.role=新人->复核人
+- clock_start_day: 1
+- clock_end_day: 6
+- clock_gap_days: 0
+- timeline_id: main
 - thread_ids: main
 - event_ids: event-1
 - reveal_ids: R1

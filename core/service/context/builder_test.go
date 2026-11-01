@@ -149,13 +149,43 @@ units:
 		t.Fatalf("cast block too large (whole-card?): %d bytes", len(cast.Content))
 	}
 
-	// 4) 场面节拍来自 scenes，不是整份 YAML。
+	// 4) 章合同来自 chapters，不是整份 YAML，也不依赖 scene ID。
 	beats := findBlock(packet, "unit-beats")
 	if beats == nil {
-		t.Fatal("missing beats block")
+		t.Fatal("missing chapter-plan block")
 	}
-	if !strings.Contains(beats.Content, "S1") || strings.Contains(beats.Content, "chapter_range") {
-		t.Fatalf("beats block not scene-focused: %s", beats.Content)
+	for _, want := range []string{"goal:", "change:", "cut_hook:", "day_offset:"} {
+		if !strings.Contains(beats.Content, want) {
+			t.Fatalf("chapter plan missing %s: %s", want, beats.Content)
+		}
+	}
+	if strings.Contains(beats.Content, "chapter_range") {
+		t.Fatalf("chapter plan leaked full contract: %s", beats.Content)
+	}
+}
+
+func TestChapterContractNarrowsToCurrentChapterWithoutScenes(t *testing.T) {
+	unit := domain.UnitInfo{UnitID: "v01-U1", Volume: 1, ChapterFrom: 1, ChapterTo: 2, OutlinePath: "outline/units/v01-U1.yaml", OutlineRaw: "unit_id: v01-U1\ndesire: 立足\nobstacle: 质疑\nchoice: 复查\npayoff: 获得许可\nforbidden: 禁揭\non_stage: [lin]\npov: lin\nstory_day: 3\nend_day: 4\nchapters:\n  - chapter: 1\n    goal: 第一章目标\n    change: 第一章变化\n    cut_hook: 第一章钩子\n    day_offset: 0\n  - chapter: 2\n    goal: 第二章目标\n    change: 第二章变化\n    cut_hook: 第二章钩子\n    day_offset: 1\n"}
+	packet := BuildWritePacket(domain.BookSnapshot{Summary: domain.BookSummary{ID: "b"}}, unit, "", 0)
+	narrow := NarrowBeats(packet, unit, 2)
+	if !strings.Contains(narrow.UserPrompt, "第二章目标") || strings.Contains(narrow.UserPrompt, "第一章目标") {
+		t.Fatalf("chapter-specific context was not narrowed: %s", narrow.UserPrompt)
+	}
+	before, err := DecodeUserPayload(packet.UserPrompt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	after, err := DecodeUserPayload(narrow.UserPrompt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range before.Documents {
+		if before.Documents[i].ID == "unit-beats" {
+			continue
+		}
+		if before.Documents[i] != after.Documents[i] {
+			t.Fatalf("chapter narrowing changed unrelated document: %+v", before.Documents[i])
+		}
 	}
 }
 
