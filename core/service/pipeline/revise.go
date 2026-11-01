@@ -117,14 +117,14 @@ func (r *Runner) RunReviseWithOptions(ctx context.Context, snap domain.BookSnaps
 
 	res := Result{Candidate: cand, Calls: calls, LocalGate: rep}
 	res.Packet = contextsvc.BuildReviseChapterPacket(snap, unit, chapters[0], findings, baseline, r.modelMaxOut(modelID))
-	// 预算按"实际要修的章数"计，UI 才不会显示 3/2 这种越界数字。
+	// 预算按"实际要修的章数 × 每章最多 2 次"，UI 才不会显示 3/2 这种越界数字。
 	touched := 0
 	for _, ch := range chapters {
 		if len(byChapter[ch.Chapter]) > 0 {
 			touched++
 		}
 	}
-	res.Packet.Policy.MaxCalls = touched
+	res.Packet.Policy.MaxCalls = touched * 2
 	return res, nil
 }
 

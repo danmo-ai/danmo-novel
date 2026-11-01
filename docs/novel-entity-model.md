@@ -199,14 +199,18 @@ proposed → accepted → drafted → reviewed
 
 | 操作 | 修复方式 | 预算 |
 |---|---|---|
-| 写正文 | **按章修复**：单章硬门不过（字数/破折号/英文泄漏），只重生成该章，其他章不动；回注 evidence+suggestion+原文 | 每章最多 1 次修复（`repair-ch{N}`） |
+| 写正文（整单元，未分章） | 一次定向修复：回注哪一章缺什么 | MaxCalls=2 |
+| 写正文（分章） | 每章最多一次结构修复（空 body / 章号错）；写成了但过不了本地硬门，另有一次按章修复 | 每章 ≤3 次 |
 | 细纲 | 一次定向修复：回注具体哪个单元哪个字段缺失/越界，要求只补该字段 | generate + 1 repair |
 | 立项/重新立项/重写卷纲 | 一次：回注结构错误（缺设定/缺单元索引表/缺 protagonist/人物卡字段不全） | generate + 1 repair |
-| 实体重写 | 一次：输出为空 | MaxCalls=2 |
-| 审校 | 一次定向修复：回注 `verdict`/`severity`/`id`/`title`/`evidence` 违规项；截断则翻倍预算重试 | generate + 1 repair |
-| 分章写正文 | 每章 1 次调用，结构不合规即中断该单元 | 不 retry |
-| 定向修订 | 每章 1 次调用；章号/正文不合规即中断 | MaxCalls=1 |
-| 局部编辑/定稿 | **不 retry**：局部编辑失败直接报；定稿不走 LLM | MaxCalls=1 |
+| 实体重写 | 一次定向修复 | generate + 1 repair |
+| 审校（整单元 / 分章） | 一次定向修复：回注 `verdict`/`severity`/`id`/`title`/`evidence` 违规项；截断则翻倍预算重试 | 每章 ≤2 次 |
+| 定向修订（按章） | 一次定向修复：回注章号/正文问题 | 每章 ≤2 次 |
+| 局部编辑 / 定稿 | **不 retry**：局部编辑失败直接报；定稿不走 LLM | MaxCalls=1 |
+
+`MaxCalls` 对分章路径是真实上限，不是装饰：写作按 `章数 × 3`、审校与修订按 `章数 × 2` 计，因为每章自身还能重试一次。之前按章数计，一旦发生修复，UI 就会显示 `5/4` 这种自相矛盾的预算。
+
+实际生效的是 packet 上的 policy，不是 `DefaultPolicy` 的默认值：`BuildReviseChapterPacket` 与 `BuildRewriteEntityPacket` 都把 `MaxCalls` 提到 2、`AllowOneRepair` 设为 true。
 
 修复证据写入 user JSON 的 `repair` 字段（`MergeRepairIntoUserPayload` + `detailedFindings`）：保留已通过部分原样、只修指出的问题、返回完整合规 JSON。错误信息带 evidence（差多少）+ suggestion（怎么改），不是只有标题。
 
@@ -216,12 +220,14 @@ proposed → accepted → drafted → reviewed
 
 | 任务 | 必填 / 必须满足 | 违反后果 |
 |---|---|---|
-| 正文 | `chapters[].chapter > 0` 唯一、`body` 非空、章号集合完整覆盖单元章范围 | 重试；再失败则该单元中断 |
+| 正文（整单元） | `chapters[].chapter > 0` 唯一、`body` 非空、章号集合完整覆盖单元章范围 | 重试；再失败则中断 |
+| 正文（分章） | 恰好 1 章、`body` 非空 | 该章重试一次；再失败则中断整单元 |
 | 细纲 | `scenes[].chapter` 落在本单元范围内、每章至少 1 个 scene（prompt 要求 2 个，硬性底线是 1） | 重试 |
 | 立项 | `cast[].stem/name/role/cardMarkdown` 齐全、`stem` 为英文小写连字符、至少 1 个 `protagonist` | 重试 |
 | 审校 | `verdict ∈ {pass,revise}`；每条 finding 的 `id/title/evidence` 非空、`severity ∈ {blocking,advisory}`、分章审校时 `chapter` 等于被审章 | 重试 |
-| 定向修订 | `chapter` 等于请求章、`body` 非空 | 中断（单次调用） |
-| 局部编辑 / 实体重写 | `replacement` / `content` 非空 | 中断（单次调用） |
+| 定向修订 | `chapter` 等于请求章、`body` 非空 | 重试；再失败则中断 |
+| 实体重写 | `content` 非空 | 重试；再失败则中断 |
+| 局部编辑 | `replacement` 非空 | 中断（MaxCalls=1） |
 
 两个刻意的例外：
 

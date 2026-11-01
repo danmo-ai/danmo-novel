@@ -352,29 +352,66 @@ func (r *Runner) RunFinalize(_ context.Context, snap domain.BookSnapshot, unit d
 }
 
 // generateChapter produces one chapter, returning the parsed draft.
+//
+// 单章结构与正文不同：空 body、章号错这类问题靠 repair 一次就能修好，而失败
+// 代价极高——它是分章写作路径，前面几章已经花掉的调用会随整单元一起作废。
+// 所以这里允许一次定向修复（与整单元 runJSON 同一条规则：只在 policy 允许时），
+// 而不是把结构错误直接抛给作者。
 func (r *Runner) generateChapter(ctx context.Context, modelID string, packet domain.ContextPacket, user string, ch int, calls *[]domain.CallRecord) (domain.ChapterDraft, domain.CallRecord, error) {
-	raw, rec, err := r.chat(ctx, modelID, packet.SystemPrompt, user, packet.Policy)
-	rec.Index = len(*calls) + 1
-	rec.Step = fmt.Sprintf("chapter-%d", ch)
-	*calls = append(*calls, rec)
-	if err != nil {
-		return domain.ChapterDraft{}, rec, err
+	policy := packet.Policy
+	max := 1
+	if policy.AllowOneRepair {
+		max = 2
 	}
+	var lastErr error
+	var lastRec domain.CallRecord
+	for attempt := 1; attempt <= max; attempt++ {
+		req := user
+		if attempt > 1 {
+			req = contextsvc.MergeRepairIntoUserPayload(user, lastErr)
+		}
+		raw, rec, err := r.chat(ctx, modelID, packet.SystemPrompt, req, policy)
+		rec.Index = len(*calls) + 1
+		rec.Step = fmt.Sprintf("chapter-%d", ch)
+		if attempt > 1 {
+			rec.Step = fmt.Sprintf("chapter-%d-repair", ch)
+		}
+		*calls = append(*calls, rec)
+		lastRec = rec
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		draft, perr := parseChapterDraft(raw, ch)
+		if perr == nil {
+			return draft, rec, nil
+		}
+		lastErr = perr
+		// 截断是唯一能靠"改预算"修掉的失败：原样重试必然在同一处再截断。
+		if truncatedOutput(rec, policy) && attempt < max {
+			policy.MaxOutputTokens = escalateOutputBudget(policy.MaxOutputTokens, r.modelMaxOut(modelID))
+		}
+	}
+	return domain.ChapterDraft{}, lastRec, lastErr
+}
+
+// parseChapterDraft enforces the one-chapter contract.
+func parseChapterDraft(raw string, ch int) (domain.ChapterDraft, error) {
 	var parsed struct {
 		Chapters []domain.ChapterDraft `json:"chapters"`
 	}
 	if err := unmarshalJSON(raw, &parsed); err != nil {
-		return domain.ChapterDraft{}, rec, fmt.Errorf("chapter %d: %w", ch, err)
+		return domain.ChapterDraft{}, fmt.Errorf("chapter %d: %w", ch, err)
 	}
 	if len(parsed.Chapters) != 1 {
-		return domain.ChapterDraft{}, rec, contractFail(fmt.Sprintf("第 %d 章正文", ch), []Violation{{
+		return domain.ChapterDraft{}, contractFail(fmt.Sprintf("第 %d 章正文", ch), []Violation{{
 			Path: "chapters",
 			Want: "恰好 1 章（本次只写这一章）",
 			Got:  fmt.Sprintf("%d 章", len(parsed.Chapters)),
 		}})
 	}
 	if strings.TrimSpace(parsed.Chapters[0].Body) == "" {
-		return domain.ChapterDraft{}, rec, contractFail(fmt.Sprintf("第 %d 章正文", ch), []Violation{{
+		return domain.ChapterDraft{}, contractFail(fmt.Sprintf("第 %d 章正文", ch), []Violation{{
 			Path: "chapters[0].body",
 			Want: "非空正文",
 			Got:  "空",
@@ -383,7 +420,7 @@ func (r *Runner) generateChapter(ctx context.Context, modelID string, packet dom
 	// 章号由调用方决定：这是"一次一章"的调用，模型给错号说明它理解偏差，
 	// 但正文仍属本章，覆盖比丢弃更安全（丢弃会让整单元重写）。
 	parsed.Chapters[0].Chapter = ch
-	return parsed.Chapters[0], rec, nil
+	return parsed.Chapters[0], nil
 }
 
 // repairFailedChapters re-generates only chapters that fail the local hard
@@ -412,9 +449,17 @@ func (r *Runner) repairFailedChapters(ctx context.Context, modelID string, packe
 				"rule":     fmt.Sprintf("第 %d 章未通过本地硬门，请定向修复这一章（其他章已合格，不需重写）；只返回这一章 JSON。", ch.Chapter),
 			},
 		})
-		fixed, rec, err := r.generateChapter(ctx, modelID, packet, user, ch.Chapter, calls)
-		rec.Step = fmt.Sprintf("repair-ch%d", ch.Chapter)
-		(*calls)[len(*calls)-1] = rec
+		// 记录起点：generateChapter 自己也可能重试一次，所以要按本次新增的
+		// 调用逐条打标，否则第一次尝试会被错标成生成调用。
+		start := len(*calls)
+		fixed, _, err := r.generateChapter(ctx, modelID, packet, user, ch.Chapter, calls)
+		for k := start; k < len(*calls); k++ {
+			label := fmt.Sprintf("repair-ch%d", ch.Chapter)
+			if k > start {
+				label = fmt.Sprintf("repair-ch%d-repair", ch.Chapter)
+			}
+			(*calls)[k].Step = label
+		}
 		if err == nil && strings.TrimSpace(fixed.Body) != "" {
 			chapters[i] = fixed
 		}

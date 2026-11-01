@@ -96,8 +96,9 @@ func TestRunReviewByChapterKeepsRealCallRecords(t *testing.T) {
 		}
 	}
 	// 分章预算按章数计；单章上限仍应小于整单元路径的 32768。
-	if res.Packet.Policy.MaxCalls != 3 {
-		t.Fatalf("maxCalls=%d want 3 (one per chapter)", res.Packet.Policy.MaxCalls)
+	// 每章最多 2 次（生成 + 一次结构修复），3 章合计上限 6。
+	if res.Packet.Policy.MaxCalls != 6 {
+		t.Fatalf("maxCalls=%d want 6 (two per chapter)", res.Packet.Policy.MaxCalls)
 	}
 	if res.Packet.Policy.MaxOutputTokens == 0 {
 		t.Fatal("policy lost: UI would show 0 budget")

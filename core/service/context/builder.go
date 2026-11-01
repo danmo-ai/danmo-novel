@@ -41,8 +41,11 @@ func DefaultPolicy(kind domain.TaskKind, chapterCount int) domain.CallPolicy {
 	case domain.TaskWrite:
 		if chapterCount > 0 && chapterCount*3500 > 6000 {
 			p.SplitByChapter = true
-			p.MaxCalls = chapterCount // fixed budget, no dynamic append
-			p.AllowOneRepair = false
+			// 每章最坏 3 次调用：生成 + 一次结构修复 + 一次硬门修复。
+			// 三种失败互相独立（结构不合规 → 修；写成了但字数/英文泄漏 → 也修），
+			// 所以上限必须按 3 倍算，否则 UI 上会出现 5/4 这种自相矛盾的预算。
+			p.MaxCalls = chapterCount * 3
+			p.AllowOneRepair = true
 		}
 	case domain.TaskReview:
 		// 审校输出是结构化 JSON，但思考型模型（deepseek/kimi/glm 等）的 reasoning
@@ -84,8 +87,8 @@ func BuildWritePacket(snap domain.BookSnapshot, unit domain.UnitInfo, instructio
 	policy.MaxOutputTokens = CapMaxOutput(policy.MaxOutputTokens, modelMaxOut)
 	if modelMaxOut > 0 && modelMaxOut < 4000 && !policy.SplitByChapter && unit.ChapterTo > unit.ChapterFrom {
 		policy.SplitByChapter = true
-		policy.MaxCalls = unit.ChapterTo - unit.ChapterFrom + 1
-		policy.AllowOneRepair = false
+		policy.MaxCalls = (unit.ChapterTo - unit.ChapterFrom + 1) * 3
+		policy.AllowOneRepair = true
 	}
 
 	blocks := []domain.ContextBlock{}

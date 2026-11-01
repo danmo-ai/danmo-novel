@@ -113,8 +113,9 @@ func (r *Runner) RunReviewByChapter(ctx context.Context, snap domain.BookSnapsho
 	res := Result{Candidate: cand, Calls: allCalls, LocalGate: local}
 	// 让 run.Policy / ContextSummary 有真实值，否则 UI 显示"调用预算 0 次"。
 	res.Packet = contextsvc.BuildChapterReviewPacket(snap, unit, chapters[0], baseline.PrevTail, baseline, r.modelMaxOut(modelID))
-	// 分章审校的预算是"每章一次"，不是单章的 2 次；否则 UI 会显示 6/2 这种越界数字。
-	res.Packet.Policy.MaxCalls = len(chapters)
+	// 分章预算是"每章最多 2 次"（生成 + 一次结构修复），不是单章的 2 次总和；
+	// 按章数记会让 UI 出现 6/2、7/3 这种越界数字。
+	res.Packet.Policy.MaxCalls = len(chapters) * 2
 
 	if len(failed) > 0 {
 		cand.Findings = append(cand.Findings, domain.ReviewFinding{
