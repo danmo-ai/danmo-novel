@@ -216,6 +216,8 @@ proposed → accepted → drafted → reviewed
 | 定向修订（按章） | 一次定向修复：回注章号/正文问题 | 每章 ≤2 次 |
 | 局部编辑 / 定稿 | **不 retry**：局部编辑失败直接报；定稿不走 LLM | MaxCalls=1 |
 
+链路的自动修复是**两轮封顶**（`maxAutoReviseRounds = 2`）：每轮 = 一次定向修订 + 一次复审，复审清零就继续走接受流程，两轮仍阻断则停机并把「已自动修订 N 轮」写进中断原因。两轮的依据是修订会引入新矛盾——加长正文最容易踩时间线，所以第一轮复审常常带着新问题回来。
+
 `MaxCalls` 对分章路径是真实上限，不是装饰：写作按 `章数 × 3`、审校与修订按 `章数 × 2` 计，因为每章自身还能重试一次。之前按章数计，一旦发生修复，UI 就会显示 `5/4` 这种自相矛盾的预算。
 
 实际生效的是 packet 上的 policy，不是 `DefaultPolicy` 的默认值：`BuildReviseChapterPacket` 与 `BuildRewriteEntityPacket` 都把 `MaxCalls` 提到 2、`AllowOneRepair` 设为 true。

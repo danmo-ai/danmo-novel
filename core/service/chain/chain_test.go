@@ -448,24 +448,30 @@ func TestChainAutoRevisesOnceThenCompletes(t *testing.T) {
 	}
 }
 
-// 只修一轮：复审仍阻断就停机交回人工，不会无限自我修复。
-func TestChainAutoReviseStopsAfterOneRound(t *testing.T) {
+// 两轮封顶：复审仍阻断就停机交回人工，不会无限自我修复。
+// 第一轮修 blocking 会引入新的连续性矛盾，所以第二轮针对新问题再修一次；
+// 第三轮起改为人工判断（边际收益低、成本线性上升）。
+func TestChainAutoReviseStopsAfterTwoRounds(t *testing.T) {
 	h := newHarness(t)
 	h.llm.setBlocking(true)
 	ch := h.start(t, domain.ChainSpec{})
 	if ch.Status != domain.ChainWaitingManual {
 		t.Fatalf("status=%s", ch.Status)
 	}
-	// 每章都报阻断，按章修订 → 3 次修订调用，但仍只跑一轮。
-	if got := h.countTask(domain.TaskRevise); got != 3 {
-		t.Fatalf("revise calls=%d want 3 (one per blocked chapter, still a single round)", got)
+	// 每章都报阻断，按章修订 → 3 章 × 2 轮 = 6 次修订调用，封顶。
+	if got := h.countTask(domain.TaskRevise); got != 6 {
+		t.Fatalf("revise calls=%d want 6 (3 blocked chapters x 2 rounds, capped)", got)
 	}
-	// 分章审校：3 章 × 2 轮后仍阻断就停，绝不发起第三轮。
-	if got := h.countTask(domain.TaskReview); got != 6 {
-		t.Fatalf("review calls=%d want 6 (3 chapters x 2 rounds, no third round)", got)
+	// 分章审校：首轮 3 次 + 每轮复审 3 次 × 2 轮 = 9 次，绝不发起第三轮。
+	if got := h.countTask(domain.TaskReview); got != 9 {
+		t.Fatalf("review calls=%d want 9 (3 initial + 3 chapters x 2 rounds, no third round)", got)
 	}
 	if !strings.Contains(ch.Error, "连续性错误") {
 		t.Fatalf("error=%q", ch.Error)
+	}
+	// 停机信息必须说明已经修过几轮，否则作者以为没尝试过。
+	if !strings.Contains(ch.Error, "已自动修订 2 轮") {
+		t.Fatalf("error should say how many rounds were spent: %q", ch.Error)
 	}
 	open, err := h.svc.Store.ListOpenCandidates(context.Background(), h.book)
 	if err != nil {

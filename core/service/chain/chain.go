@@ -22,6 +22,14 @@ import (
 // small and the prompt budget predictable.
 const maxInstructionRunes = 2000
 
+// maxAutoReviseRounds bounds how many 修订→复审 rounds a blocking review earns.
+//
+// 两轮的依据：第一轮按 blocking 清单定向改写，但改写会引入新的连续性矛盾
+// （加长正文最容易踩时间线），所以第一轮的复审常常带着"新问题"回来；第二轮
+// 针对这些新问题再修一次，实测能收敛掉大部分。第三轮起边际收益很低而成本线性
+// 上升，仍不通过就说明需要人判断，不该继续烧调用。
+const maxAutoReviseRounds = 2
+
 // errStop unwinds execute() after an interruption/cancel has been persisted.
 var errStop = errors.New("chain stopped")
 
@@ -429,24 +437,35 @@ func (s *Service) runStage(ctx context.Context, ch *domain.Chain, unitID string,
 		return s.interrupt(ch, stage, run.ID, err.Error())
 	}
 	lastRunID := run.ID
-	// 审校阻断先自动定向修订一轮再复审；预算固定（+1 revise、+1 review），不循环。
+	// 审校阻断先自动定向修订再复审。预算固定为 maxAutoReviseRounds 轮，
+	// 每轮都是「修订 → 复审」，复审仍阻断才进下一轮；轮数用完就停机交回人工。
 	if stage == domain.ChainStageReview && len(blockingOf(cand.Findings)) > 0 {
-		revised, freshSnap, reviewRunID, rerr := s.autoReviseReview(ctx, ch, unitID, cand)
-		if rerr != nil {
-			if ctx.Err() != nil {
-				return s.cancelChain(ch.ID)
+		for round := 1; round <= maxAutoReviseRounds; round++ {
+			revised, freshSnap, reviewRunID, rerr := s.autoReviseReview(ctx, ch, unitID, cand, round)
+			if rerr != nil {
+				if ctx.Err() != nil {
+					return s.cancelChain(ch.ID)
+				}
+				if reviewRunID != "" {
+					lastRunID = reviewRunID
+				}
+				return s.interrupt(ch, stage, lastRunID, rerr.Error())
 			}
-			if reviewRunID != "" {
-				lastRunID = reviewRunID
+			cand, snap, lastRunID = revised, freshSnap, reviewRunID
+			ch.Units[idx].CandidateID = cand.ID
+			ch.Units[idx].RunID = lastRunID
+			if len(blockingOf(cand.Findings)) == 0 {
+				break // 已清零，走正常接受流程
 			}
-			return s.interrupt(ch, stage, lastRunID, rerr.Error())
 		}
-		cand, snap, lastRunID = revised, freshSnap, reviewRunID
-		ch.Units[idx].CandidateID = cand.ID
-		ch.Units[idx].RunID = lastRunID
 	}
 	if blocking := blockingFindings(cand.Findings); len(blocking) > 0 {
-		return s.interrupt(ch, stage, lastRunID, "门禁未通过："+strings.Join(blocking, "；"))
+		// 说明已经自动修过几轮，作者才知道"剩下的不是没修，是修不动"。
+		prefix := ""
+		if stage == domain.ChainStageReview {
+			prefix = fmt.Sprintf("已自动修订 %d 轮仍不通过，", maxAutoReviseRounds)
+		}
+		return s.interrupt(ch, stage, lastRunID, prefix+"门禁未通过："+strings.Join(blocking, "；"))
 	}
 	// 覆盖已有正文前先备份旧稿（新写单元无文件，静默跳过）。
 	if stage == domain.ChainStageWrite {
@@ -504,10 +523,10 @@ func (s *Service) interrupt(ch *domain.Chain, stage domain.ChainStage, runID, ms
 
 // autoReviseReview turns a blocked review into one bounded 定向修订 + 复审.
 //
-// 预算固定：一次阻断最多换来 +1 次 revise 调用和 +1 次 review 调用，不做第二轮；
-// 复审仍不过就交回人工。必须等修订跑完再归档旧清单——修订任务是从 open 审校候选
+// 每一轮固定换取 +1 次 revise 和 +1 次 review；轮数由 maxAutoReviseRounds 决定，
+// 用完仍不过就交回人工。必须等修订跑完再归档旧清单——修订任务是从 open 审校候选
 // 里按 issueId 取 findings 的，提前归档会让它拿不到要修的问题。
-func (s *Service) autoReviseReview(ctx context.Context, ch *domain.Chain, unitID string, review domain.Candidate) (domain.Candidate, domain.BookSnapshot, string, error) {
+func (s *Service) autoReviseReview(ctx context.Context, ch *domain.Chain, unitID string, review domain.Candidate, round int) (domain.Candidate, domain.BookSnapshot, string, error) {
 	var zero domain.BookSnapshot
 	var ids []string
 	seen := map[string]bool{}
