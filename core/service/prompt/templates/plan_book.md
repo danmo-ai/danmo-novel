@@ -9,6 +9,7 @@ output_protocol: book-outline/v1
 修复要求：只修复反馈指出的事项，保留其他已通过内容，返回完整文档。
 {{OUTPUT_PROTOCOL}}
 同时返回人物卡与设定文件。人物卡 status 一律 candidate，必须有 protagonist；stem 为英文小写连字符。
+每位主要人物必须提供 initialIdentity：{"roleTitle":"初始公开职务","org":"所属机构","fromUnit":"v01-U1","note":"初始身份"}；与 stem 对应，后续通过单元边界的身份变更维护。
 cardMarkdown 第一行必须是 "# "+纯姓名，含 `tagline`、`role` 和「## 关系」表（对方 | 类型 | 当前）。
 输出外壳为严格 JSON：{"cast":[...],"bookOutlineMarkdown":"...","settings":{"files":{...}}}；其中 bookOutlineMarkdown 的内容必须遵守上述协议。
 settings.files 必须完整覆盖 user 数据包要求的设定路径，不输出 volumeOutlineMarkdown。

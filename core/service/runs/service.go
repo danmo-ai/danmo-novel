@@ -23,6 +23,7 @@ import (
 	"github.com/danmo-ai/danmo-novel/core/service/pipeline"
 	"github.com/danmo-ai/danmo-novel/core/store/sqlite"
 	"github.com/google/uuid"
+	"gopkg.in/yaml.v3"
 )
 
 type Service struct {
@@ -554,6 +555,11 @@ func (s *Service) Accept(ctx context.Context, cmd domain.AcceptCommand) (domain.
 		}
 		// 单元内部身份恒定：合同声明身份转换则必须拆单元。
 		for _, u := range cand.UnitOutlines {
+			if current, ok := findUnit(snap, u.UnitID); ok {
+				if err := books.ValidateIdentityCoverage(snap.IdentitySegments, snap.Cast, current, u.OnStage); err != nil {
+					return domain.Candidate{}, err
+				}
+			}
 			if u.StateDeltas == nil {
 				return domain.Candidate{}, fmt.Errorf("单元 %s 缺少结构化 stateDeltas，定稿无法回写状态迁移", u.UnitID)
 			}
@@ -622,6 +628,29 @@ func (s *Service) Accept(ctx context.Context, cmd domain.AcceptCommand) (domain.
 			}
 		}
 		// 整文件规范化重写，接受才落盘。
+		if cand.TargetPath == books.IdentityTimelinePath {
+			var file struct {
+				Segments []domain.IdentitySegment `yaml:"segments"`
+			}
+			if err := yaml.Unmarshal([]byte(cand.Replacement), &file); err != nil {
+				return domain.Candidate{}, fmt.Errorf("身份时间线格式错误: %w", err)
+			}
+			if err := books.ValidateIdentityTimeline(file.Segments, snap.Units); err != nil {
+				return domain.Candidate{}, err
+			}
+			for _, unit := range snap.Units {
+				if !unit.HasProse {
+					continue
+				}
+				for _, stem := range books.OnStageFromOutline(unit.OutlineRaw) {
+					oldIdentity := books.IdentityAt(snap.IdentitySegments, stem, unit.UnitID)
+					newIdentity := books.IdentityAt(file.Segments, stem, unit.UnitID)
+					if !cmd.ForceRiskAccept && ((oldIdentity == nil) != (newIdentity == nil) || (oldIdentity != nil && newIdentity != nil && (oldIdentity.RoleTitle != newIdentity.RoleTitle || oldIdentity.Org != newIdentity.Org))) {
+						return domain.Candidate{}, fmt.Errorf("%s 已有正文，身份候选需先进行影响确认", unit.UnitID)
+					}
+				}
+			}
+		}
 		if cand.TargetPath == "" || strings.TrimSpace(cand.Replacement) == "" {
 			return domain.Candidate{}, fmt.Errorf("missing rewrite content")
 		}
@@ -658,8 +687,11 @@ func (s *Service) Accept(ctx context.Context, cmd domain.AcceptCommand) (domain.
 		if !ok {
 			return domain.Candidate{}, fmt.Errorf("unit not found: %s", cand.UnitID)
 		}
+		if err := books.ValidateFinalizedIdentity(snap.IdentitySegments, snap.Cast, unit, unit.OutlineRaw); err != nil {
+			return domain.Candidate{}, err
+		}
 		// 唯一写回路径：状态、facts.md、Cast snapshot、伏笔、卷摘要、定稿账本。
-		if err := books.ApplyFinalizationLedger(root, unit, cand.Chapters, cand.Findings); err != nil {
+		if err := books.ApplyFinalizationLedger(root, unit, cand.Chapters, cand.Findings, snap.IdentitySegments); err != nil {
 			return domain.Candidate{}, err
 		}
 		for _, ch := range cand.CanonChanges {

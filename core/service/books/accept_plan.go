@@ -15,11 +15,12 @@ import (
 )
 
 type planCast struct {
-	Stem         string `json:"stem"`
-	Name         string `json:"name"`
-	Role         string `json:"role"`
-	Tagline      string `json:"tagline"`
-	CardMarkdown string `json:"cardMarkdown"`
+	Stem            string                  `json:"stem"`
+	Name            string                  `json:"name"`
+	Role            string                  `json:"role"`
+	Tagline         string                  `json:"tagline"`
+	CardMarkdown    string                  `json:"cardMarkdown"`
+	InitialIdentity *domain.IdentitySegment `json:"initialIdentity"`
 }
 
 type unitSeed struct {
@@ -150,9 +151,63 @@ func acceptPlanBook(root string, cand domain.Candidate) error {
 		}
 		writes[rel] = []byte(renderCastCard(c))
 	}
+	identity, err := initialIdentitiesFromCast(cast)
+	if err != nil {
+		return err
+	}
+	identityBody, err := MarshalIdentityTimeline(identity)
+	if err != nil {
+		return err
+	}
+	writes[IdentityTimelinePath] = identityBody
 	return commitPlanWrites(root, writes, map[string]string{
 		"stage": "planning", "next_action": "plan",
 	})
+}
+
+func initialIdentitiesFromCast(cast []planCast) ([]domain.IdentitySegment, error) {
+	out := []domain.IdentitySegment{}
+	for _, c := range cast {
+		if c.InitialIdentity == nil {
+			return nil, fmt.Errorf("人物 %s 缺少 initialIdentity（职务/机构/起始单元）", c.Stem)
+		}
+		identity := *c.InitialIdentity
+		identity.Stem = c.Stem
+		if identity.FromUnit == "" {
+			identity.FromUnit = "v01-U1"
+		}
+		if identity.Note == "" {
+			identity.Note = "初始身份"
+		}
+		out = append(out, identity)
+	}
+	return out, nil
+}
+
+func identityChangesFromVolume(snap domain.BookSnapshot, doc domain.StructuredMarkdown, seeds []unitSeed) ([]domain.IdentitySegment, error) {
+	segments := append([]domain.IdentitySegment(nil), snap.IdentitySegments...)
+	units := append([]domain.UnitInfo(nil), snap.Units...)
+	for _, seed := range seeds {
+		found := false
+		for _, u := range units {
+			if u.UnitID == seed.UnitID {
+				found = true
+				break
+			}
+		}
+		if !found {
+			units = append(units, domain.UnitInfo{UnitID: seed.UnitID})
+		}
+	}
+	changes := doc.EntitiesOf("身份变更")
+	for _, e := range changes {
+		var err error
+		segments, err = ApplyIdentityChange(segments, domain.IdentitySegment{Stem: e.Value("stem"), RoleTitle: e.Value("role_title"), Org: e.Value("org"), FromUnit: e.Value("from_unit"), Note: e.Value("reason")}, units)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return segments, nil
 }
 
 func acceptPlanVolume(root string, cand domain.Candidate) error {
@@ -177,16 +232,28 @@ func acceptPlanVolume(root string, cand domain.Candidate) error {
 	if err := ValidateStructuredOutlineFile(snap, "outline/volumes/"+cand.VolumeID+".md", outline); err != nil {
 		return err
 	}
+	identity, err := identityChangesFromVolume(snap, doc, seedsFromStructuredVolume(doc))
+	if err != nil {
+		return err
+	}
+	identityBody, err := MarshalIdentityTimeline(identity)
+	if err != nil {
+		return err
+	}
+	writes := map[string][]byte{
+		"outline/volumes/" + cand.VolumeID + ".md": []byte(outline),
+		IdentityTimelinePath:                       identityBody,
+	}
 	seeds := seedsFromStructuredVolume(doc)
 	if len(seeds) == 0 {
 		return fmt.Errorf("卷纲没有可识别的单元索引；请使用结构化单元实体或 unit_id 表")
 	}
 
-	writes := map[string][]byte{
-		"outline/volumes/" + cand.VolumeID + ".md": []byte(outline),
-	}
 	for _, s := range seeds {
 		rel := "outline/units/" + s.UnitID + ".yaml"
+		if err := ValidateIdentityCoverage(identity, snap.Cast, domain.UnitInfo{UnitID: s.UnitID}, splitList(doc.Root.Value("cast"))); err != nil {
+			return err
+		}
 		abs := filepath.Join(root, filepath.FromSlash(rel))
 		if _, err := os.Stat(abs); err == nil {
 			// Never overwrite existing unit contracts (prose progress preserved).
@@ -214,6 +281,10 @@ func acceptPlanVolume(root string, cand domain.Candidate) error {
 			contract["state_changes"] = s.Entity.Value("state_changes")
 			contract["state_deltas"] = stateDeltasFromMarkdown(s.Entity.Value("state_changes"))
 			contract["thread_ids"] = splitList(s.Entity.Value("thread_ids"))
+			if cast := splitList(doc.Root.Value("cast")); len(cast) > 0 {
+				contract["on_stage"] = cast
+				contract["pov"] = cast[0]
+			}
 			if hook := strings.SplitN(s.Entity.Value("next_hook"), "|", 2); len(hook) == 2 {
 				contract["next_hook"] = map[string]any{"type": strings.TrimSpace(hook[0]), "out": strings.TrimSpace(hook[1])}
 			}

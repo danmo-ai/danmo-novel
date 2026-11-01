@@ -114,6 +114,23 @@ func ValidateUnitSeedInheritance(unit domain.UnitOutlineDraft, seed domain.Markd
 	return contractFail("细纲父子合同", vs)
 }
 
+func outlineOnStage(raw string) []string {
+	for _, line := range strings.Split(raw, "\n") {
+		if !strings.HasPrefix(strings.TrimSpace(line), "on_stage:") {
+			continue
+		}
+		value := strings.Trim(strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "on_stage:")), "[]")
+		var out []string
+		for _, stem := range strings.Split(value, ",") {
+			if stem = strings.Trim(strings.TrimSpace(stem), `"'`); stem != "" {
+				out = append(out, stem)
+			}
+		}
+		return out
+	}
+	return nil
+}
+
 func containsString(items []string, want string) bool {
 	for _, item := range items {
 		if item == want {

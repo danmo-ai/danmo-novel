@@ -3,6 +3,7 @@ import { computed, ref, watch } from 'vue'
 import { useAppStore } from '@/stores/app'
 import { api } from '@/api/client'
 import RelationGraph from '@/components/book/RelationGraph.vue'
+import type { IdentitySegment } from '@/types'
 
 const props = defineProps<{ saving: boolean }>()
 const emit = defineEmits<{ save: [path: string, content: string]; openUnit: [unit: any]; rewrite: [spec: { targetPath: string; entityKind: string; title: string }] }>()
@@ -247,11 +248,42 @@ function gateIcon(v: string) {
 function startEdit() { draft.value = currentRaw.value; editing.value = true }
 
 const promoting = ref(false)
+const identityEditing = ref<{ action: 'append' | 'update' | 'close'; index: number; segment: IdentitySegment } | null>(null)
+const identitySaving = ref(false)
+function startIdentityEdit(index = -1) {
+  if (!selectedCast.value) return
+  const current = index >= 0 ? book.value?.identitySegments?.[index] : null
+  identityEditing.value = {
+    action: index >= 0 ? 'update' : 'append', index,
+    segment: current ? { ...current } : { stem: selectedCast.value, roleTitle: '', org: '', fromUnit: book.value?.units[0]?.unitId || 'v01-U1', toUnit: '', note: '' },
+  }
+}
+async function saveIdentity() {
+  if (!book.value || !identityEditing.value || identitySaving.value) return
+  identitySaving.value = true
+  try {
+    await api.post(`/api/books/${book.value.summary.id}/identity-segments`, { ...identityEditing.value, baseRevision: book.value.revision })
+    await store.loadBook(book.value.summary.id)
+    identityEditing.value = null
+    store.note('职务身份已更新；后续写作与审校将使用生效段')
+  } catch (e) { store.fail(e) } finally { identitySaving.value = false }
+}
+async function closeIdentity(index: number) {
+  if (!book.value) return
+  const segment = book.value.identitySegments?.[index]
+  if (!segment) return
+  identityEditing.value = { action: 'close', index, segment: { ...segment } }
+}
 async function promoteCast() {
   if (!selectedCast.value || !book.value) return
+  if (!book.value.identitySegments?.some((s) => s.stem === selectedCast.value)) {
+    store.note('请先在下方登记该人物的初始职务身份，再晋升 canon')
+    startIdentityEdit()
+    return
+  }
   promoting.value = true
   try {
-    await api.post(`/api/books/${book.value.summary.id}/cast/${selectedCast.value}/promote`, {})
+    await api.post(`/api/books/${book.value.summary.id}/cast/${selectedCast.value}/promote`, { initialIdentity: book.value.identitySegments.find((s) => s.stem === selectedCast.value), baseRevision: book.value.revision })
     await store.loadBook(book.value.summary.id)
     store.note(`${currentCast.value?.name} 已晋升 canon`)
   } catch (e) { store.fail(e) } finally { promoting.value = false }
@@ -279,6 +311,10 @@ const optimizeHint = computed(() => {
   }
   return '生产约束可独立优化；接受仅写本文件'
 })
+
+function requestIdentityRewrite() {
+  emit('rewrite', { targetPath: 'canon/identity-timeline.yaml', entityKind: 'identity', title: `${currentCast.value?.name || '人物'} · 身份时间线` })
+}
 
 function requestRewrite() {
   const path = currentFilePath.value
@@ -389,13 +425,16 @@ async function scaffoldMissing() {
         </div>
         <template v-else>
           <!-- 人物身份时间线（单元边界对齐，单元内部身份恒定） -->
-          <div v-if="selectedCast && castTimeline.length" class="identity-timeline">
-            <small class="timeline-label">职务身份时间线 · 单元内部身份恒定，转换只在单元边界</small>
+          <div v-if="selectedCast" class="identity-timeline">
+            <div class="identity-heading"><div><small class="timeline-label">职务身份时间线 · 单元内部身份恒定，转换只在单元边界</small><p>规划接受即生效；定稿只确认实际状态，不重复修改这里。</p></div><div class="identity-actions"><button :disabled="book?.summary.readOnly" @click="requestIdentityRewrite">候选重写</button><button :disabled="book?.summary.readOnly" @click="startIdentityEdit()">{{ castTimeline.length ? '新增身份段' : '登记初始身份' }}</button></div></div>
+            <p v-if="!castTimeline.length" class="identity-warning">尚未建立职务身份。正式写作前必须登记初始职务与机构。</p>
             <div class="identity-segs">
               <div v-for="(s, i) in castTimeline" :key="i" class="identity-seg" :class="{ current: !s.toUnit }">
                 <span class="seg-range">{{ s.fromUnit }}<template v-if="s.toUnit"> → {{ s.toUnit }}</template><template v-else> → 至今</template></span>
                 <strong>{{ s.roleTitle }}</strong>
                 <small v-if="s.org">{{ s.org }}</small>
+                <small v-if="s.note" class="identity-note">{{ s.note }}</small>
+                <div class="identity-actions"><button :disabled="book?.summary.readOnly" @click="startIdentityEdit(i)">修正</button><button v-if="!s.toUnit" :disabled="book?.summary.readOnly" @click="closeIdentity(i)">结束当前段</button></div>
               </div>
             </div>
           </div>
@@ -470,6 +509,19 @@ async function scaffoldMissing() {
         </template>
       </article>
     </div>
+    <div v-if="identityEditing" class="identity-modal" @click.self="identityEditing = null">
+      <form class="identity-dialog panel" @submit.prevent="saveIdentity">
+        <header><div><small>{{ identityEditing.action === 'append' ? '规划身份变更' : identityEditing.action === 'update' ? '修正身份段' : '结束当前身份段' }}</small><h3>{{ currentCast?.name }}</h3></div><button type="button" @click="identityEditing = null">×</button></header>
+        <p class="identity-dialog-note">身份只从指定单元开始生效；不会改写人物稳定人格或自动替正文认定变化。</p>
+        <label>职务 / 公开身份<input v-model="identityEditing.segment.roleTitle" required :disabled="identityEditing.action === 'close'" placeholder="例如：重案队试用" /></label>
+        <label>所属机构<input v-model="identityEditing.segment.org" required :disabled="identityEditing.action === 'close'" placeholder="例如：青江分局" /></label>
+        <label>起始单元<select v-model="identityEditing.segment.fromUnit" :disabled="identityEditing.action !== 'append'"><option v-for="u in book?.units" :key="u.unitId" :value="u.unitId">{{ u.unitId }} · {{ u.title }}</option></select></label>
+        <label v-if="identityEditing.action === 'close'">结束于单元<select v-model="identityEditing.segment.toUnit" required><option v-for="u in book?.units" :key="u.unitId" :value="u.unitId">{{ u.unitId }} · {{ u.title }}</option></select></label>
+        <label v-else>变更原因 / 依据<input v-model="identityEditing.segment.note" placeholder="例如：调令生效" /></label>
+        <p v-if="identityEditing.action === 'append'" class="identity-impact">将从 {{ identityEditing.segment.fromUnit }} 起使用「{{ identityEditing.segment.roleTitle || '新职务' }} · {{ identityEditing.segment.org || '新机构' }}」，并结束此前开放身份段。</p>
+        <footer><button type="button" @click="identityEditing = null">取消</button><button class="primary" :disabled="identitySaving">{{ identitySaving ? '校验并保存中…' : '校验并保存' }}</button></footer>
+      </form>
+    </div>
   </section>
 </template>
 
@@ -514,6 +566,8 @@ async function scaffoldMissing() {
 .seg-range { font-size: 11px; color: var(--accent); font-family: ui-monospace, monospace; white-space: nowrap; }
 .identity-seg strong { font-size: 13px; }
 .identity-seg small { color: var(--ink-soft); font-size: 11px; }
+.identity-heading { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; margin-bottom: 12px; }.identity-heading p { margin: 4px 0 0; color: var(--ink-soft); font-size: 11px; }.identity-heading .timeline-label { margin-bottom: 0; }.identity-warning { color: var(--warn); font-size: 12px; }.identity-actions { margin-left: auto; display: flex; gap: 8px; }.identity-actions button { font-size: 10px; padding: 3px 8px; }.identity-note { font-style: italic; }
+.identity-modal { position: fixed; inset: 0; z-index: 35; display: grid; place-items: center; padding: 20px; background: rgba(20,35,31,.25); }.identity-dialog { width: min(500px, 100%); padding: 22px; display: grid; gap: 14px; }.identity-dialog header { display: flex; justify-content: space-between; }.identity-dialog h3 { margin: 4px 0 0; }.identity-dialog small { color: var(--accent); }.identity-dialog label { display: grid; gap: 6px; color: var(--ink-soft); font-size: 12px; }.identity-dialog input, .identity-dialog select { width: 100%; padding: 9px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); color: var(--ink); }.identity-dialog footer { display: flex; justify-content: flex-end; gap: 8px; }.identity-dialog-note, .identity-impact { color: var(--ink-soft); font-size: 12px; line-height: 1.7; margin: 0; }
 .nav-empty { color: var(--ink-soft); font-size: 12px; padding: 8px; }
 .bible-content { overflow: hidden; padding-bottom: 16px; }
 .bible-content > .relation-view, .bible-content > .timeline-view { padding: 20px; }

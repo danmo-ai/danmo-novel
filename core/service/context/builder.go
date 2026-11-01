@@ -673,6 +673,8 @@ func rewriteEntitySystemPrompt(kind string) string {
 		return base + "\nBible 规范：读者承诺、logline、主角目标、故事引擎、终局方向（只到卷号，不写真相细节）、风格卡齐全。"
 	case "volume":
 		return base + "\n卷纲规范：卷目标、本卷人物 stem 列表、单元索引表（unit_id|章范围|一句话功能|终局边界|下一钩类型）、终局边界齐全；不重写单元合同。"
+	case "identity":
+		return base + "\n身份时间线规范：只修改 canon/identity-timeline.yaml；每个身份段 stem/role_title/org/from_unit 必填，from_unit/to_unit 是已有单元边界；同一人同一单元只能一个身份；不删除已有正文历史，不改正文或人物卡；新身份在规划 Accept 后生效。"
 	case "state":
 		return base + "\n只规范化 YAML 字段与注释，不改状态值。"
 	default:

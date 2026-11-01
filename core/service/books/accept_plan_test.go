@@ -13,6 +13,7 @@ func TestAcceptPlanVolumeSeedsUnits(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	seedTestIdentity(t, root)
 	if err := os.WriteFile(filepath.Join(root, "outline", "book_outline.md"), []byte(sampleBookOutline()), 0o644); err != nil {
 		t.Fatal(err)
 	}

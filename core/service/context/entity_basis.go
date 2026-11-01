@@ -27,7 +27,7 @@ func ClassifySetting(path string) SettingLayer {
 	case p == "canon/author-lore.md", p == "canon/locked-terms.yaml":
 		return LayerAuthorOnly
 	case p == "outline/book_outline.md", p == "book-bible.md",
-		strings.HasPrefix(p, "canon/cast/"),
+		strings.HasPrefix(p, "canon/cast/"), p == books.IdentityTimelinePath,
 		p == "canon/reveal-schedule.md", p == "canon/world.md", p == "canon/goldfinger.md":
 		return LayerDerived
 	default:
@@ -161,6 +161,14 @@ func AddRewriteBasis(snap domain.BookSnapshot, target string, add func(id, label
 		// 底牌重写允许读揭示计划（同层），不注入公开正文。
 		if body := strings.TrimSpace(snap.Files["canon/reveal-schedule.md"]); body != "" {
 			add("basis-reveal", "依据·揭示计划", "canon/reveal-schedule.md", clip(body, 1600))
+		}
+
+	case target == books.IdentityTimelinePath:
+		addBible()
+		for _, u := range snap.Units {
+			if u.HasProse {
+				add("affected-"+u.UnitID, "受影响单元·"+u.UnitID, u.OutlinePath, clip(u.OutlineRaw, 1000))
+			}
 		}
 
 	case target == "canon/world.md", target == "canon/goldfinger.md", target == "book-bible.md":

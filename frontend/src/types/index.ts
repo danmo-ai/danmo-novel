@@ -42,6 +42,7 @@ export interface UnitInfo {
   proseRaw?: string
 }
 export interface CastCard { stem: string; name: string; tagline?: string; status: string; role: string; raw?: string }
+export interface IdentitySegment { stem: string; roleTitle: string; org?: string; fromUnit: string; toUnit?: string; note?: string }
 export interface BookSnapshot {
   summary: BookSummary
   stateRaw?: string
@@ -51,6 +52,7 @@ export interface BookSnapshot {
   files: Record<string, string>
   revision: string
   structuredOutlines?: Record<string, StructuredMarkdown>
+  identitySegments?: IdentitySegment[]
   chain?: Chain | null
 }
 

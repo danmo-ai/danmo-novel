@@ -124,7 +124,7 @@ func sortStates(states []domain.UnitState) {
 //
 // state_deltas 是细纲里声明的"本单元结束后哪些事实变了"，是唯一权威来源：
 // 定稿时按它落段，而不是再写一套增量文本追加（旧 facts.md 就是这么腐化的）。
-func StateFromOutline(unit domain.UnitInfo, chapters []domain.ChapterDraft) domain.UnitState {
+func StateFromOutline(unit domain.UnitInfo, chapters []domain.ChapterDraft, identities ...[]domain.IdentitySegment) domain.UnitState {
 	st := domain.UnitState{Unit: unit.UnitID, Volume: unit.Volume}
 	if len(chapters) > 0 {
 		st.AfterCh = chapters[len(chapters)-1].Chapter
@@ -150,7 +150,13 @@ func StateFromOutline(unit domain.UnitInfo, chapters []domain.ChapterDraft) doma
 		case "goal":
 			snap.Goal = d.To
 		case "role_title", "identity", "title":
-			snap.RoleTitle = d.To
+			// Public identity is owned by identity-timeline, not by a prose
+			// delta. A next-unit promotion must not rewrite this unit's snapshot.
+			if len(identities) > 0 {
+				if identity := IdentityAt(identities[0], d.Stem, unit.UnitID); identity != nil {
+					snap.RoleTitle = identity.RoleTitle
+				}
+			}
 		case "knowledge", "knows":
 			if strings.TrimSpace(d.To) != "" {
 				snap.Knows = append(snap.Knows, d.To)

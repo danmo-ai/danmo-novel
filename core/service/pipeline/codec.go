@@ -17,7 +17,8 @@ const bookProtocolSpec = `只输出一个结构化 Markdown 总纲文档。根�
 const volumeProtocolSpec = `只输出一个结构化 Markdown 卷纲文档。根字段包含 schema_version/volume_id/title/source_arc_id/chapter_range/goal/central_conflict/stakes/entry_state/exit_state/cast。
 用「## 节拍 · id」「## 单元 · v01-U1」「## 卷末交接 · handoff」声明实体。
 单元必填 title/chapter_range/objective/obstacle/attempt/setback/choice/cost/outcome/entry_cause/exit_result/state_changes/thread_ids/event_ids/reveal_ids/forbidden_reveal_ids/next_hook。
-节拍/转折必填 event/cause/effect/chapter_window；至少一个高潮与不可逆结果。`
+节拍/转折必填 event/cause/effect/chapter_window；至少一个高潮与不可逆结果。
+职务/机构变化在所属单元后添加「### 身份变更 · 单元ID-人物stem」，含 stem/role_title/org/from_unit/reason，from_unit 等于所属单元 ID。`
 
 const bookProtocolTemplate = `# 全书总纲 · {{book.title}}
 - schema_version: 1

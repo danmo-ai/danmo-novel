@@ -126,7 +126,7 @@ func TestAcceptPlanInitWritesSettingsAndCastOnly(t *testing.T) {
 		Mode: domain.PlanModeInit,
 		PlanMarkdown: map[string]string{
 			"book_outline": sampleBookOutline(),
-			"cast_json":    `[{"stem":"lin","name":"林晚","role":"protagonist","tagline":"痕迹检验","cardMarkdown":"# 林晚\n"}]`,
+			"cast_json":    `[{"stem":"lin","name":"林晚","role":"protagonist","initialIdentity":{"roleTitle":"见习调查员","org":"青江分局","fromUnit":"v01-U1","note":"初始身份"},"tagline":"痕迹检验","cardMarkdown":"# 林晚\n"}]`,
 		},
 		PlanSettings: sampleSettings(),
 	}
@@ -200,7 +200,7 @@ func TestAcceptPlanReinitPreservesVolumeUnitsProse(t *testing.T) {
 		Mode: domain.PlanModeReinit,
 		PlanMarkdown: map[string]string{
 			"book_outline": sampleBookOutline(),
-			"cast_json":    `[{"stem":"lin","name":"林晚","role":"protagonist","cardMarkdown":"# 林晚\n"}]`,
+			"cast_json":    `[{"stem":"lin","name":"林晚","role":"protagonist","initialIdentity":{"roleTitle":"见习调查员","org":"青江分局","fromUnit":"v01-U1","note":"初始身份"},"cardMarkdown":"# 林晚\n"}]`,
 		},
 		PlanSettings: sampleSettings(),
 	}
@@ -256,7 +256,7 @@ func TestAcceptPlanReinitPreservePathsKeepsFiles(t *testing.T) {
 		PreservePaths: []string{"canon/cast/lin.md", "canon/world.md"},
 		PlanMarkdown: map[string]string{
 			"book_outline": sampleBookOutline(),
-			"cast_json":    `[{"stem":"lin","name":"林晚","role":"protagonist","cardMarkdown":"# 林晚 覆盖版\n"}]`,
+			"cast_json":    `[{"stem":"lin","name":"林晚","role":"protagonist","initialIdentity":{"roleTitle":"见习调查员","org":"青江分局","fromUnit":"v01-U1","note":"初始身份"},"cardMarkdown":"# 林晚 覆盖版\n"}]`,
 		},
 		PlanSettings: sampleSettings(),
 	}
@@ -277,11 +277,19 @@ func TestAcceptPlanReinitPreservePathsKeepsFiles(t *testing.T) {
 	}
 }
 
+func seedTestIdentity(t *testing.T, root string) {
+	t.Helper()
+	if err := SaveIdentityTimeline(root, []domain.IdentitySegment{{Stem: "lin", RoleTitle: "见习调查员", Org: "青江分局", FromUnit: "v01-U1"}}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestAcceptPlanVolumeDoesNotWriteSettingsCastOrBook(t *testing.T) {
 	root, err := CreateBookScaffold(t.TempDir(), "vol-test", "测试", "悬疑")
 	if err != nil {
 		t.Fatal(err)
 	}
+	seedTestIdentity(t, root)
 	if err := os.WriteFile(filepath.Join(root, "outline", "book_outline.md"), []byte(sampleBookOutline()), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -294,7 +302,7 @@ func TestAcceptPlanVolumeDoesNotWriteSettingsCastOrBook(t *testing.T) {
 		PlanMarkdown: map[string]string{
 			"book_outline":   "# 应忽略的总纲\n",
 			"volume_outline": sampleVolumeOutline(),
-			"cast_json":      `[{"stem":"lin","name":"林晚","role":"protagonist","cardMarkdown":"# 林晚\n"}]`,
+			"cast_json":      `[{"stem":"lin","name":"林晚","role":"protagonist","initialIdentity":{"roleTitle":"见习调查员","org":"青江分局","fromUnit":"v01-U1","note":"初始身份"},"cardMarkdown":"# 林晚\n"}]`,
 		},
 		PlanSettings: map[string]string{"book-bible.md": "# hacked\n"},
 	}

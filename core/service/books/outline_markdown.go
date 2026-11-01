@@ -17,7 +17,7 @@ const (
 
 var (
 	entityHeadingRe = regexp.MustCompile(`^(#{1,6})\s+(.+?)\s*$`)
-	entityNameRe    = regexp.MustCompile(`^(全书总纲|卷纲|故事线|分卷|单元|节拍|转折|承诺|约束|揭示|卷末交接|问题)\s*(?:·|:|：)?\s*(.*)$`)
+	entityNameRe    = regexp.MustCompile(`^(全书总纲|卷纲|故事线|分卷|单元|节拍|转折|承诺|约束|揭示|卷末交接|问题|身份变更)\s*(?:·|:|：)?\s*(.*)$`)
 	markdownFieldRe = regexp.MustCompile(`^\s*-\s+([a-z][a-z0-9_]*)\s*:\s*(.*)$`)
 )
 

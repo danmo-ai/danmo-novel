@@ -20,7 +20,7 @@ import (
 // 不再写 facts.md：那份文件被逐轮追加成 571 KB 的散文日志，游标自相矛盾、
 // 人物快照 30 多段从不合并，读写双方还因标题后缀静默失效。状态改由
 // state.yaml 按单元段表达。
-func ApplyFinalizationLedger(root string, unit domain.UnitInfo, chapters []domain.ChapterDraft, findings []domain.ReviewFinding) error {
+func ApplyFinalizationLedger(root string, unit domain.UnitInfo, chapters []domain.ChapterDraft, findings []domain.ReviewFinding, identities ...[]domain.IdentitySegment) error {
 	if len(chapters) == 0 {
 		return fmt.Errorf("finalize: no chapters")
 	}
@@ -30,7 +30,7 @@ func ApplyFinalizationLedger(root string, unit domain.UnitInfo, chapters []domai
 	}
 
 	// 连续性状态：从细纲的 state_deltas 落一段，供后续单元与重写读取。
-	if err := AppendUnitState(root, StateFromOutline(unit, chapters)); err != nil {
+	if err := AppendUnitState(root, StateFromOutline(unit, chapters, identities...)); err != nil {
 		return err
 	}
 

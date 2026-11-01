@@ -63,7 +63,7 @@ func (s *scriptedLLM) Chat(ctx context.Context, req port.LLMChatRequest) (port.L
 func TestRunPlanModeInitRequiresSettings(t *testing.T) {
 	snap := domain.BookSnapshot{Summary: domain.BookSummary{ID: "x", Genre: "悬疑"}, Files: map[string]string{"book-bible.md": "# b\n"}}
 	body, _ := json.Marshal(map[string]any{
-		"cast":                []map[string]any{{"stem": "lin", "name": "林晚", "role": "protagonist", "cardMarkdown": "# 林晚\n"}},
+		"cast":                []map[string]any{{"stem": "lin", "name": "林晚", "role": "protagonist", "initialIdentity": map[string]any{"roleTitle": "见习调查员", "org": "青江分局", "fromUnit": "v01-U1", "note": "初始身份"}, "cardMarkdown": "# 林晚\n"}},
 		"bookOutlineMarkdown": testBookOutlineMarkdown(),
 	})
 	r := New(&scriptedLLM{raw: string(body)})
@@ -82,7 +82,7 @@ func TestRunPlanModeInitAcceptsBookOnlyPayload(t *testing.T) {
 	files["canon/reveal-schedule.md"] = "# 揭示计划\n- schema_version: 1\n"
 	body, _ := json.Marshal(map[string]any{
 		"cast": []map[string]any{
-			{"stem": "lin", "name": "林晚", "role": "protagonist", "cardMarkdown": "# 林晚\n"},
+			{"stem": "lin", "name": "林晚", "role": "protagonist", "initialIdentity": map[string]any{"roleTitle": "见习调查员", "org": "青江分局", "fromUnit": "v01-U1", "note": "初始身份"}, "cardMarkdown": "# 林晚\n"},
 		},
 		"bookOutlineMarkdown": testBookOutlineMarkdown(),
 		"settings":            map[string]any{"files": files},
@@ -163,7 +163,7 @@ func testVolumeOutlineMarkdown() string {
 
 func TestRunPlanModeVolumeRejectsSettingsCastBook(t *testing.T) {
 	body, _ := json.Marshal(map[string]any{
-		"cast":                  []map[string]any{{"stem": "lin", "name": "林晚", "role": "protagonist"}},
+		"cast":                  []map[string]any{{"stem": "lin", "name": "林晚", "role": "protagonist", "initialIdentity": map[string]any{"roleTitle": "见习调查员", "org": "青江分局", "fromUnit": "v01-U1", "note": "初始身份"}}},
 		"bookOutlineMarkdown":   "# no",
 		"volumeOutlineMarkdown": testVolumeOutlineMarkdown(),
 		"settings":              map[string]any{"files": map[string]string{"book-bible.md": "x"}},

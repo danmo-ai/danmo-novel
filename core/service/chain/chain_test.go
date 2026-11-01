@@ -96,7 +96,7 @@ func (f *fakeLLM) Chat(_ context.Context, req port.LLMChatRequest) (port.LLMChat
 				{"id": "S6", "chapter": 3, "beat": "入门", "who": []string{"linchen"}, "pov": "linchen", "where": "山门", "goal": "完成入门登记", "conflict": "执事复核代价", "turn": "林尘承担责任", "outcome": "取得入门资格", "must_land": []string{"领取身份牌"}},
 			},
 			"storyDay": "1", "gapFromPrev": "开场", "infoControl": "读者只知旧刀有异常，不知其来源",
-			"stateDeltas": []map[string]any{{"stem": "linchen", "field": "role_title", "from": "外门弟子", "to": "入门弟子"}},
+			"stateDeltas": []map[string]any{{"stem": "linchen", "field": "goal", "from": "争取试炼资格", "to": "取得入门资格"}},
 		}}})
 		return port.LLMChatResponse{Content: string(out), Done: true}, nil
 	case domain.TaskWrite:

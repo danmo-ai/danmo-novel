@@ -286,6 +286,10 @@ func validatePlanCast(rows []map[string]any) error {
 		if status := strings.ToLower(field("status")); status != "candidate" && status != "canon" {
 			vs = append(vs, Violation{Path: base + ".status", Want: "candidate（立项一律 candidate，由作者晋升）", Got: field("status")})
 		}
+		identity, hasIdentity := row["initialIdentity"].(map[string]any)
+		if !hasIdentity || strings.TrimSpace(fmt.Sprint(identity["roleTitle"])) == "" || strings.TrimSpace(fmt.Sprint(identity["org"])) == "" || strings.TrimSpace(fmt.Sprint(identity["fromUnit"])) == "" {
+			vs = append(vs, Violation{Path: base + ".initialIdentity", Want: "{roleTitle,org,fromUnit} 均非空", Got: fmt.Sprint(row["initialIdentity"])})
+		}
 		if md := field("cardMarkdown"); !strings.HasPrefix(strings.TrimSpace(md), "# ") {
 			vs = append(vs, Violation{Path: base + ".cardMarkdown", Want: "第一行是 `# 纯姓名`", Got: "缺少标题行"})
 		}

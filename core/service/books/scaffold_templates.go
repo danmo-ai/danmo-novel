@@ -155,6 +155,11 @@ aliases: {}
 # - status: locked
 # - locked_terms: 暂不可公开的关键词
 `,
+		"canon/identity-timeline.yaml": `# 职务身份时间线：单元边界对齐，单元内部身份恒定。
+# 规划 Accept 时创建/续接；定稿只复核，不自动改本文件。
+version: 1
+segments: []
+`,
 		"continuity/state.yaml": `# 连续性状态账本（机器可读，按单元段）
 # 每个已定稿单元追加一段；读取时取目标单元之前最近的一段。
 # 只存随剧情变化的事实：位置、伤势、资源、目标、知情范围、伏笔。

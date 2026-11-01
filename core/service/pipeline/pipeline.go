@@ -132,6 +132,15 @@ func (r *Runner) RunWrite(ctx context.Context, snap domain.BookSnapshot, unit do
 }
 
 func (r *Runner) RunOutline(ctx context.Context, snap domain.BookSnapshot, volume int, unitIDs []string, instruction string, modelID string) (Result, error) {
+	for _, id := range unitIDs {
+		for _, u := range snap.Units {
+			if u.UnitID == id {
+				if err := books.ValidateIdentityCoverage(snap.IdentitySegments, snap.Cast, u, outlineOnStage(u.OutlineRaw)); err != nil {
+					return Result{}, err
+				}
+			}
+		}
+	}
 	packet := contextsvc.BuildOutlinePacket(snap, volume, unitIDs, instruction, r.modelMaxOut(modelID))
 	var volCast []string
 	for _, v := range snap.Volumes {

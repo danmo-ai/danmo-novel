@@ -114,6 +114,7 @@ func TestStructuredVolumeSeedInheritsUnitContract(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	seedTestIdentity(t, root)
 	if err := writeTestFile(root, "outline/book_outline.md", testBookMD); err != nil {
 		t.Fatal(err)
 	}
@@ -174,11 +175,48 @@ func TestStructuredSeedStateChangesReachFinalizationLedger(t *testing.T) {
 	unit := domain.UnitInfo{UnitID: "v01-U1", Volume: 1, OutlineRaw: "unit_id: v01-U1\nstory_day: 3\nstate_changes: lin.role_title=新人->复核人; lin.goal=申请->复核\nstate_deltas:\n  - stem: lin\n    field: role_title\n    from: 新人\n    to: 复核人\n  - stem: lin\n    field: goal\n    from: 申请\n    to: 复核\n"}
 	state := StateFromOutline(unit, []domain.ChapterDraft{{Chapter: 3, Body: "正文"}})
 	compact := StateFromOutline(domain.UnitInfo{UnitID: "v01-U1", Volume: 1, OutlineRaw: "story_day: 3\nstate_changes: lin.role_title=新人->复核人; lin.goal=申请->复核\n"}, []domain.ChapterDraft{{Chapter: 3, Body: "正文"}})
-	if compact.Cast["lin"].RoleTitle != "复核人" || compact.Cast["lin"].Goal != "复核" {
+	if compact.Cast["lin"].Goal != "复核" {
 		t.Fatalf("compact seed state was dropped: %+v", compact)
 	}
-	if state.Cast["lin"].RoleTitle != "复核人" || state.Cast["lin"].Goal != "复核" || state.StoryDay != 3 {
+	identified := StateFromOutline(unit, []domain.ChapterDraft{{Chapter: 3, Body: "正文"}}, []domain.IdentitySegment{{Stem: "lin", RoleTitle: "复核人", Org: "分局", FromUnit: "v01-U1"}})
+	if identified.Cast["lin"].RoleTitle != "复核人" {
+		t.Fatalf("identity timeline was not applied to state snapshot: %+v", identified)
+	}
+	if state.Cast["lin"].RoleTitle != "" || state.Cast["lin"].Goal != "复核" || state.StoryDay != 3 {
 		t.Fatalf("seed state did not reach continuity: %+v", state)
+	}
+}
+
+func TestVolumeIdentityChangeIsAtomicAndEffective(t *testing.T) {
+	root, err := CreateBookScaffold(t.TempDir(), "identity-plan", "测试", "悬疑")
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedTestIdentity(t, root)
+	if err := writeTestFile(root, "outline/book_outline.md", testBookMD); err != nil {
+		t.Fatal(err)
+	}
+	volume := strings.Replace(sampleVolumeOutline(), "## 单元 · v01-U2", `### 身份变更 · v01-U2-lin
+- stem: lin
+- role_title: 重案队试用
+- org: 青江分局重案队
+- from_unit: v01-U2
+- reason: 调令生效
+
+## 单元 · v01-U2`, 1)
+	cand := domain.Candidate{Mode: domain.PlanModeVolume, VolumeID: "v01", PlanMarkdown: map[string]string{"volume_outline": volume}}
+	if err := AcceptPlan(root, cand); err != nil {
+		t.Fatal(err)
+	}
+	segments, err := LoadIdentityTimeline(root)
+	if err != nil || len(segments) != 2 {
+		t.Fatalf("identity segments=%+v err=%v", segments, err)
+	}
+	if got := IdentityAt(segments, "lin", "v01-U2"); got == nil || got.RoleTitle != "重案队试用" {
+		t.Fatalf("planned identity is not effective for next unit: %+v", got)
+	}
+	if segments[0].ToUnit != "v01-U1" {
+		t.Fatalf("old segment was not closed: %+v", segments[0])
 	}
 }
 
@@ -198,7 +236,7 @@ func TestAcceptRejectsInvalidStructuredBook(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cand := domain.Candidate{Mode: domain.PlanModeInit, PlanMarkdown: map[string]string{"book_outline": "# 总纲\n- schema_version: 1\n- book_id: x\n", "cast_json": `[{"stem":"lin","name":"林晚","role":"protagonist"}]`}, PlanSettings: sampleSettings()}
+	cand := domain.Candidate{Mode: domain.PlanModeInit, PlanMarkdown: map[string]string{"book_outline": "# 总纲\n- schema_version: 1\n- book_id: x\n", "cast_json": `[{"stem":"lin","name":"林晚","role":"protagonist","initialIdentity":{"roleTitle":"见习调查员","org":"青江分局","fromUnit":"v01-U1"}}]`}, PlanSettings: sampleSettings()}
 	if err := AcceptPlan(root, cand); err == nil {
 		t.Fatal("Accept must not bypass outline validation")
 	}
@@ -209,6 +247,7 @@ func TestStructuredVolumeSeedAcceptKeepsExistingProse(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	seedTestIdentity(t, root)
 	if err := writeTestFile(root, "outline/book_outline.md", testBookMD); err != nil {
 		t.Fatal(err)
 	}

@@ -558,6 +558,11 @@ func registerBooks(api *gin.RouterGroup, app *App) {
 			c.JSON(403, gin.H{"error": "read-only book"})
 			return
 		}
+		var body struct {
+			InitialIdentity *domain.IdentitySegment `json:"initialIdentity"`
+			BaseRevision    string                  `json:"baseRevision"`
+		}
+		_ = c.BindJSON(&body)
 		stem := c.Param("stem")
 		if stem == "" || strings.Contains(stem, "/") || strings.Contains(stem, "..") {
 			c.JSON(400, gin.H{"error": "invalid stem"})
@@ -579,12 +584,102 @@ func registerBooks(api *gin.RouterGroup, app *App) {
 			c.JSON(400, gin.H{"error": "请先补全人物卡（三锚点 / 知识边界），再晋升 canon"})
 			return
 		}
+		if body.InitialIdentity == nil {
+			c.JSON(422, gin.H{"error": "晋升 canon 前请登记初始职务身份"})
+			return
+		}
+		snap, err := books.LoadBook(root, false)
+		if err != nil {
+			c.JSON(500, gin.H{"error": err.Error()})
+			return
+		}
+		if body.BaseRevision != "" && body.BaseRevision != snap.Revision {
+			c.JSON(409, gin.H{"error": "书籍已更新，请重新确认人物与身份"})
+			return
+		}
+		identity := *body.InitialIdentity
+		identity.Stem = stem
+		if identity.FromUnit == "" {
+			identity.FromUnit = "v01-U1"
+		}
+		segments, err := books.ApplyIdentityChange(snap.IdentitySegments, identity, snap.Units)
+		if err != nil {
+			c.JSON(422, gin.H{"error": err.Error()})
+			return
+		}
+		identityBody, err := books.MarshalIdentityTimeline(segments)
+		if err != nil {
+			c.JSON(422, gin.H{"error": err.Error()})
+			return
+		}
+		backup, err := os.ReadFile(filepath.Join(root, books.IdentityTimelinePath))
+		if err != nil && !os.IsNotExist(err) {
+			c.JSON(500, gin.H{"error": err.Error()})
+			return
+		}
+		if err := os.WriteFile(filepath.Join(root, books.IdentityTimelinePath), identityBody, 0o644); err != nil {
+			c.JSON(500, gin.H{"error": err.Error()})
+			return
+		}
 		text = strings.Replace(text, "`status`: candidate", "`status`: canon", 1)
 		if err := os.WriteFile(path, []byte(text), 0o644); err != nil {
+			if len(backup) > 0 {
+				_ = os.WriteFile(filepath.Join(root, books.IdentityTimelinePath), backup, 0o644)
+			}
 			c.JSON(500, gin.H{"error": err.Error()})
 			return
 		}
 		c.JSON(200, gin.H{"ok": true, "stem": stem, "status": "canon"})
+	})
+	api.POST("/books/:id/identity-segments", func(c *gin.Context) {
+		var body struct {
+			Action       string                 `json:"action"` // append | update | close
+			Index        int                    `json:"index"`
+			Segment      domain.IdentitySegment `json:"segment"`
+			BaseRevision string                 `json:"baseRevision"`
+		}
+		if err := c.BindJSON(&body); err != nil {
+			c.JSON(400, gin.H{"error": err.Error()})
+			return
+		}
+		root, readOnly, err := app.Store.GetBookRoot(c.Request.Context(), c.Param("id"))
+		if err != nil {
+			c.JSON(404, gin.H{"error": err.Error()})
+			return
+		}
+		if readOnly {
+			c.JSON(403, gin.H{"error": "read-only book"})
+			return
+		}
+		snap, err := books.LoadBook(root, false)
+		if err != nil {
+			c.JSON(500, gin.H{"error": err.Error()})
+			return
+		}
+		if body.BaseRevision == "" || body.BaseRevision != snap.Revision {
+			c.JSON(409, gin.H{"error": "人物身份已更新，请重新比较后再保存"})
+			return
+		}
+		var segments []domain.IdentitySegment
+		switch body.Action {
+		case "append":
+			segments, err = books.ApplyIdentityChange(snap.IdentitySegments, body.Segment, snap.Units)
+		case "update":
+			segments, err = books.UpdateIdentitySegment(snap.IdentitySegments, body.Index, body.Segment, snap.Units)
+		case "close":
+			segments, err = books.CloseIdentitySegment(snap.IdentitySegments, body.Index, body.Segment.ToUnit, snap.Units)
+		default:
+			err = fmt.Errorf("未知身份维护操作")
+		}
+		if err != nil {
+			c.JSON(422, gin.H{"error": err.Error()})
+			return
+		}
+		if err := books.SaveIdentityTimeline(root, segments); err != nil {
+			c.JSON(422, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(200, gin.H{"ok": true, "segments": segments})
 	})
 	api.GET("/books/:id/file", func(c *gin.Context) {
 		rel := c.Query("path")
@@ -670,6 +765,10 @@ func registerBooks(api *gin.RouterGroup, app *App) {
 		}
 		if body.Path == "" || strings.Contains(body.Path, "..") {
 			c.JSON(400, gin.H{"error": "invalid path"})
+			return
+		}
+		if body.Path == books.IdentityTimelinePath {
+			c.JSON(422, gin.H{"error": "身份时间线请通过人物卡的身份段维护或规划候选更新"})
 			return
 		}
 		root, readOnly, err := app.Store.GetBookRoot(c.Request.Context(), c.Param("id"))
