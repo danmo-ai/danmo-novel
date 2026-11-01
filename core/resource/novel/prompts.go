@@ -1,5 +1,10 @@
 package novel
 
+import (
+	"fmt"
+	"strings"
+)
+
 const KnowledgeVersion = "kb-novel-2026.10.1"
 
 func WriteSystemPrompt() string {
@@ -18,6 +23,7 @@ func OutlineSystemPrompt() string {
 输出外壳必须是：{"units":[{...},...]}；即使只改 1 个单元，也要放进 units 数组。
 每个单元字段：unitId,title,function,desire,obstacle,choice,payoff,pleasure,forbidden,wordTarget,onStage,pov,chapterFrom,chapterTo,scenes,stateDeltas,nextHook,storyDay,gapFromPrev,infoControl。
 storyDay / gapFromPrev / infoControl / forbidden / desire 等叙述字段必须是字符串标量（如 "3" 或 "入职第三天"），不要用对象；chapterFrom/chapterTo 为数字；onStage 为字符串数组。
+nextHook 必须是对象：{"type":"钩子类型","out":"具体事件"}（对应落盘 next_hook.type / next_hook.out），type 沿用卷纲索引已定类型；禁止写成一整句字符串。
 onStage ⊆ 本卷人物；pov ∈ onStage；每章至少 2 个 scenes。不要改卷纲已定 function。
 人物规则：onStage 只放有台词/有后续戏份的人物。纯功能路人（报案群众、值班民警、摊主等一次性角色）不要进 onStage，直接写在 scenes 的 who/beat 描述里（如「报案邻居」）。确需引入本卷人物表之外的新人物（如单元案受害者、嫌疑人），给出新英文 stem 并在 scenes 里体现其功能；该新 stem 会被播种为候选人物卡，作者晋升后才成为 canon。
 单元标题（title）规范：2–8 字，概括本单元的核心动作或意象（如「入门试炼」「锁定并出发」「两种手艺」）；与 function 呼应但不照抄；不用「单元」「第X」字样，不剧透终局底牌。`
@@ -56,8 +62,56 @@ unit_id 必须为当前卷号形式（如 v02-U1）；章范围为 1-3、4-6 等
 }
 
 func ReviewSystemPrompt() string {
-	return `你是小说审稿人。结合细纲与正文输出一次审校 JSON：verdict, findings[], scores。
-blocking 仅用于硬伤（OOC、连续性、写穿、英文泄漏、严重水文）；风格问题用 advisory。不要改写正文。`
+	return `你是小说审稿人。只输出一个 JSON 对象，不要任何分析、前言、结语、Markdown 代码块或正文引用。
+输出契约（字段名固定，不要增删，不要输出 scores 等多余字段）：
+{"verdict":"pass|revise","findings":[{"id":"...","severity":"blocking|advisory","chapter":N,"lens":"...","title":"<=20字","evidence":"<=40字","suggestion":"<=40字"}]}
+硬规则：
+1. findings 最多 8 条，只列最该改的；正文没问题就输出空数组 []。
+2. evidence 只摘 <=40 字的关键原文或直接点明事实（如「第7章在城东，第8章已在码头」）；禁止复述、引用或总结整段正文。
+3. blocking 仅用于硬伤（OOC、连续性、写穿、英文泄漏、严重水文）；风格问题用 advisory。
+4. chapter 用阿拉伯数字，必须写出现问题的章号；给不出章号的问题不要产出。
+5. 不要改写正文，不要输出正文。
+6. 按「审校清单」文档逐条执行；每条 finding 的 id 用「lens-章号-序号」格式，如「continuity-7-1」。`
+}
+
+// ReviseChapterSystemPrompt bounds a revise call to exactly one chapter.
+func ReviseChapterSystemPrompt(chapter int) string {
+	return fmt.Sprintf(`你是小说修订助手。只改第 %d 章，不得改动其它章；保持本章章号不变。
+针对列出的审校问题做最小改动：只修指定问题，保留已经成立的部分、人物关系、伏笔、物件与时间。
+返回 JSON：{"chapter":%d,"title":"<=20字","body":"修订后的完整正文"}。
+不要新增自由审稿轮次，不要改写未列出的问题。`, chapter, chapter)
+}
+
+// ReviewChecklistArticle returns the built-in review checklist body (front
+// matter stripped) — the YAML header is applicability metadata, and injecting
+// `stages: [review]` into the prompt is pure noise to the model.
+func ReviewChecklistArticle() string {
+	raw, ok := BuiltinKnowledgeDocument("25-review-checklist")
+	if !ok {
+		return ""
+	}
+	return StripFrontMatter(raw)
+}
+
+// StripFrontMatter drops a leading `---` YAML header from a knowledge article.
+// Callers that inject an article's text into a prompt must use this: the header
+// carries stages/genres/default/audience and means nothing to the model.
+func StripFrontMatter(raw string) string {
+	s := strings.TrimPrefix(raw, "\ufeff")
+	if !strings.HasPrefix(strings.TrimSpace(s), "---") {
+		return raw
+	}
+	lines := strings.Split(s, "\n")
+	start := 0
+	for start < len(lines) && strings.TrimSpace(lines[start]) != "---" {
+		start++
+	}
+	for i := start + 1; i < len(lines); i++ {
+		if strings.TrimSpace(lines[i]) == "---" {
+			return strings.TrimLeft(strings.Join(lines[i+1:], "\n"), "\n")
+		}
+	}
+	return raw
 }
 
 func LocalEditSystemPrompt() string {

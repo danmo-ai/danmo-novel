@@ -63,17 +63,17 @@ func (r *LLMModelRef) UnmarshalJSON(data []byte) error {
 }
 
 type LLMProviderConfig struct {
-	ID        string          `json:"id"`
-	Provider  LLMProviderType `json:"provider"`
-	Name      string          `json:"name"`
-	APIKey    string          `json:"apiKey,omitempty"`
-	BaseURL   string          `json:"baseUrl,omitempty"`
+	ID       string          `json:"id"`
+	Provider LLMProviderType `json:"provider"`
+	Name     string          `json:"name"`
+	APIKey   string          `json:"apiKey,omitempty"`
+	BaseURL  string          `json:"baseUrl,omitempty"`
 	// DefaultProtocolDialect is the Chat Completions protocol dialect for models
 	// that do not set ProtocolDialect. Ignored for Anthropic / Responses.
 	DefaultProtocolDialect string        `json:"defaultProtocolDialect,omitempty"`
-	Models         []LLMModelRef `json:"models,omitempty"`
-	CreatedAt      string        `json:"createdAt"`
-	UpdatedAt      string        `json:"updatedAt"`
+	Models                 []LLMModelRef `json:"models,omitempty"`
+	CreatedAt              string        `json:"createdAt"`
+	UpdatedAt              string        `json:"updatedAt"`
 }
 
 type UpsertLLMProviderConfigRequest struct {
@@ -141,7 +141,7 @@ type ModelConfig struct {
 	// Legacy YAML-only fields — migrated to provider DefaultProtocolDialect / model
 	// ProtocolDialect (and Anthropic client defaults). Stripped after migrate;
 	// never exposed on the JSON API.
-	LegacyProtocolDialect   string         `json:"-" mapstructure:"reasoning_dialect" yaml:"reasoning_dialect,omitempty"`
+	LegacyProtocolDialect    string         `json:"-" mapstructure:"reasoning_dialect" yaml:"reasoning_dialect,omitempty"`
 	LegacyThinkingMode       string         `json:"-" mapstructure:"thinking_mode" yaml:"thinking_mode,omitempty"`
 	LegacyEffortBudgetTokens map[string]int `json:"-" mapstructure:"effort_budget_tokens" yaml:"effort_budget_tokens,omitempty"`
 }
@@ -169,11 +169,11 @@ type ModelConfigsResponse struct {
 // It ships via config.yaml or built-in defaults and is exposed to the frontend
 // so users can pick a preset instead of filling every field manually.
 type LLMProviderPreset struct {
-	ID             string          `json:"id" mapstructure:"id" yaml:"id"`
-	Name           string          `json:"name" mapstructure:"name" yaml:"name"`
-	Provider       LLMProviderType `json:"provider" mapstructure:"provider" yaml:"provider"` // protocol type
-	BaseURL        string          `json:"baseUrl" mapstructure:"base_url" yaml:"base_url"`
+	ID                     string          `json:"id" mapstructure:"id" yaml:"id"`
+	Name                   string          `json:"name" mapstructure:"name" yaml:"name"`
+	Provider               LLMProviderType `json:"provider" mapstructure:"provider" yaml:"provider"` // protocol type
+	BaseURL                string          `json:"baseUrl" mapstructure:"base_url" yaml:"base_url"`
 	DefaultProtocolDialect string          `json:"defaultProtocolDialect,omitempty" mapstructure:"default_protocol_dialect" yaml:"default_protocol_dialect,omitempty"`
-	Icon           string          `json:"icon" mapstructure:"icon" yaml:"icon"`
-	Description    string          `json:"description" mapstructure:"description" yaml:"description"`
+	Icon                   string          `json:"icon" mapstructure:"icon" yaml:"icon"`
+	Description            string          `json:"description" mapstructure:"description" yaml:"description"`
 }

@@ -11,15 +11,15 @@ func basisSnap() domain.BookSnapshot {
 	return domain.BookSnapshot{
 		Summary: domain.BookSummary{ID: "demo", Genre: "刑侦"},
 		Files: map[string]string{
-			"outline/book_outline.md":   "# 总纲\n分卷走向 v1-v8\n",
-			"book-bible.md":             "# bible\n读者承诺\n",
-			"outline/volumes/v02.md":    "# 第二卷\n## 本卷人物\n- lin\n",
-			"canon/reveal-schedule.md":  "# reveal\n| 信息 | 最早卷 |\n| 刀柄 | v03 |\n",
-			"canon/world.md":            "# world\n",
-			"canon/writing-rules.md":    "# rules\n",
+			"outline/book_outline.md":    "# 总纲\n分卷走向 v1-v8\n",
+			"book-bible.md":              "# bible\n读者承诺\n",
+			"outline/volumes/v02.md":     "# 第二卷\n## 本卷人物\n- lin\n",
+			"canon/reveal-schedule.md":   "# reveal\n| 信息 | 最早卷 |\n| 刀柄 | v03 |\n",
+			"canon/world.md":             "# world\n",
+			"canon/writing-rules.md":     "# rules\n",
 			"canon/style-fingerprint.md": "# style\n",
-			"continuity/facts.md":       "### Cursor\n- last_committed_ch: 3\n",
-			"canon/author-lore.md":      "# secret\n真相\n",
+			"continuity/facts.md":        "### Cursor\n- last_committed_ch: 3\n",
+			"canon/author-lore.md":       "# secret\n真相\n",
 		},
 		Volumes: []domain.VolumeInfo{{Volume: 2, Raw: "# 第二卷\n## 本卷人物\n- lin\n", Cast: []string{"lin"}}},
 		Cast: []domain.CastCard{

@@ -1,4 +1,6 @@
-/** Human labels for run / candidate task kinds (plan uses spec.mode). */
+/**
+ * Human labels for run / candidate task kinds (plan uses spec.mode).
+ */
 export const KIND_LABELS: Record<string, string> = {
   plan: '立项',
   outline: '细纲',
@@ -14,8 +16,18 @@ export const KIND_LABELS: Record<string, string> = {
   rewrite_selection: '选区改写',
 }
 
-const PLAN_MODE_LABELS: Record<string, string> = {
-  init: '立项',
+/** Human labels for run / candidate lifecycle states. */
+export const STATUS_LABELS: Record<string, string> = {
+  pending: '排队',
+  running: '运行中',
+  waiting_accept: '待接受',
+  succeeded: '成功',
+  failed: '失败',
+  cancelled: '已取消',
+  rejected: '已拒绝',
+}
+
+const PLAN_MODE_LABELS: Record<string, string> = {  init: '立项',
   reinit: '重新立项',
   volume: '卷纲',
 }

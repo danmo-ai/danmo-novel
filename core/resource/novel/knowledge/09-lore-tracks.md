@@ -1,5 +1,5 @@
 ---
-stages: [plan, outline, review]
+audience: author
 ---
 
 # 连载轨（作者 / 读者账本）
@@ -11,18 +11,18 @@ stages: [plan, outline, review]
 | 轨 | 路径 | 谁可读 | 来源 |
 |----|------|--------|------|
 | **author-lore** | `canon/author-lore.md` | 作者 / 规划 / 改纲 | 立项时写入；含终局细节、隐藏规则、角色私密 |
-| **facts（读者账）** | `continuity/facts.md` | 写正文、审稿、续写 | 从**已接受章节**维护：公开事实 + 进度游标 / 人物状态 + 未关闭伏笔 + 每卷 summaries 索引。**不存章摘要** |
-| **summaries（章摘要）** | `continuity/summaries/vNN.md` | 接受定稿写入；续写只看必要的上一章块 | 每章一个 `## chNNN` 块；卷收束在末尾追加卷总结。按卷拆存只为缩小文件，不增加注入 |
-| **commits（执行日志）** | `continuity/commits/vNN-U#.md` | 作者 / 回溯 | 每单元一个：本地检查结果 / 四计数 / 锁词核对 / 字数实测 / 扩写技术 / 偏离登记。**不进 facts**，避免日志污染事实层 |
+| **state（状态账）** | `continuity/state.yaml` | 写正文、审稿、细纲（应用自动读取） | 每个已定稿单元一段：该单元结束时的位置/伤势/资源/目标/知情范围 + 未回收伏笔。读取取「目标单元之前最近的一段」，续写与重写因此同源 |
+| **summaries（章摘要）** | `continuity/summaries/vNN.md` | 接受定稿写入；只有单元第一章带卷摘要尾 | 每章一个 `## chNNN` 块。按卷拆存只为缩小文件，不增加注入 |
+| **commits（执行日志）** | `continuity/commits/vNN-U#.md` | 作者 / 回溯 | 每单元一个：本地检查结果 / 锁词核对 / 字数实测 / 扩写技术 / 偏离登记。**不进 facts**，避免日志污染事实层 |
 | **locked-terms** | `canon/locked-terms.yaml` | 上下文约束 / 定稿核对 | 本卷之前不得出现的真名/真相词；`locked_until` 按卷解锁 + `compliance` 永久红线 |
 
 `candidate` vs `canon` 管人物卡能不能进正文。三轨管 **信息对读者是否已公开** + **锁词是否提前泄漏**。
 
 ## 账本体积治理
 
-章摘要在接受定稿时写入 `continuity/summaries/vNN.md`；facts 只留公开事实、cursor、人物状态、未关闭伏笔、每卷一行索引（`vNN → continuity/summaries/vNN.md`）。facts 体积应约随事实、人物和伏笔增长，而不是复制所有章摘要。人物状态与伏笔只保留一份，不按卷重复。迁移旧书时，把 facts 中的 `## chNNN` 块拆到 summaries，并先备份原文件。
+账本分三层，各管一件事，不重复：`continuity/state.yaml` 存按单元段的状态（机器读写）；`continuity/summaries/vNN.md` 存章摘要（只有第一章带卷摘要尾）；`continuity/commits/` 存执行日志（永不进上下文）。连载位置只由 `novel-state.yaml` 顶层标量表达，不在别处再记一遍。
 
-**执行日志不进 facts。** gate 结果、四计数、锁词扫描、字数实测、扩写技术、偏离登记 → 全部写 `continuity/commits/vNN-U#.md`。facts 只回答"读者现在知道什么"，commits 回答"我们这一轮做了什么"。
+**执行日志不进 state。** gate 结果、锁词扫描、字数实测、扩写技术、偏离登记 → 全部写 `continuity/commits/vNN-U#.md`。state 只回答"进这一单元时世界是什么样"，commits 回答"我们这一轮做了什么"。
 
 ## 写正文加载
 
@@ -40,12 +40,12 @@ stages: [plan, outline, review]
 
 ## Legacy
 
-旧书可能仍有 `continuity/ledger.md` / `public-lore.md` / `tracking.md` / `chapter_summaries.md` / `foreshadow-tracker.md`。迁移前先备份，再人工合并进 `facts.md`（事实）与 `commits/`（执行日志）；不要假设旧路径会自动兼容。
+旧书可能仍有 `continuity/ledger.md` / `public-lore.md` / `tracking.md` / `chapter_summaries.md` / `foreshadow-tracker.md`。这些都不再读取；迁移只保留两类东西：状态并进 `state.yaml`，执行日志并进 `commits/`。
 
 ## 接受定稿
 
 每单元定稿接受时：
-1. `## chNNN` 摘要块写入 `continuity/summaries/vNN.md`；刷新 `facts.md` 的公开事实、人物状态与伏笔；关系质态变了时更新相关人物卡。
+1. `## chNNN` 摘要块写入 `continuity/summaries/vNN.md`；应用按细纲的 `state_deltas` 自动追加 `state.yaml` 段；关系质态变了时更新相关人物卡。
 2. 应用记录运行与候选；如需长期保存人工审校、锁词与字数核对，可另写 `continuity/commits/vNN-U#.md`，不要混进公开事实。
 3. 接受后抽查时间线、人物状态、身份与章范围；候选未接受前不得提前当作已发生事实。
 

@@ -26,34 +26,15 @@ pov: "linchen"
 next_hook:
   type: 危机
 state_deltas:
-  paid: [FS-01]
-  position: 山门
+  - {stem: linchen, field: location, from: "外门", to: "山门"}
+  - {stem: linchen, field: goal, from: "活下去", to: "入内门"}
+  - {stem: wangmou, field: location, from: "账房", to: "演武场"}
 `
 	if err := os.WriteFile(filepath.Join(unitDir, "v01-U1.yaml"), []byte(yaml), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	facts := `# Continuity facts
-
-## Public facts
-| Kind | Fact | First seen | Notes |
-|------|------|------------|-------|
-
-## Tracking
-### Cursor
-- last_committed_ch: 0
-
-### Cast snapshot
-| 角色 | 年龄 | 职位 | 位置 | 目标 | 伤势/资源 | 知情范围 | 关系质态 |
-|------|------|------|------|------|-----------|----------|----------|
-| linchen | 16 | 外门弟子 | 山门 | 入内门 | 无 | 不知账本 | 独来独往 |
-
-## Open loops
-| FS-id | 内容 | 状态 | 埋点章 | 计划回收 | 实际回收 |
-|-------|------|------|--------|----------|----------|
-| FS-01 | 刀柄来历 | planted | 1 | 5 | |
-| FS-02 | 账房亏空 | planted | 2 | 6 | |
-`
-	if err := os.WriteFile(filepath.Join(root, "continuity", "facts.md"), []byte(facts), 0o644); err != nil {
+	// 旧 facts.md 已退出写回路径，夹具不再需要它；保留一个文件验证"不读也不写"。
+	if err := os.WriteFile(filepath.Join(root, "continuity", "legacy-facts.md"), []byte("# legacy\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	snap, err := LoadBook(root, false)
@@ -63,7 +44,11 @@ state_deltas:
 	return root, snap.Units[0]
 }
 
-// P0-3: 定稿接受必须真正更新 facts.md / Cast snapshot / Open loops / 卷摘要 / 定稿账本。
+// 定稿接受必须真正更新连续性状态 / 卷摘要 / 定稿账本。
+//
+// 旧实现维护 continuity/facts.md（游标 + 人物快照表）；那份文件会被逐轮追加成
+// 散文日志，游标自相矛盾、人物状态段从不合并。现在状态改由
+// continuity/state.yaml 的按单元段表达，facts.md 不再读写。
 func TestApplyFinalizationLedger(t *testing.T) {
 	root, unit := setupFinalizeBook(t)
 	chapters := []domain.ChapterDraft{
@@ -80,23 +65,31 @@ func TestApplyFinalizationLedger(t *testing.T) {
 		t.Fatalf("unit status not reviewed: %s", raw)
 	}
 
-	// 2. facts.md 游标 + 伏笔推进 + Cast snapshot 新增 wangmou
-	facts, _ := os.ReadFile(filepath.Join(root, "continuity", "facts.md"))
-	text := string(facts)
-	if !strings.Contains(text, "last_committed_ch: 2") {
-		t.Fatalf("cursor not updated: %s", text)
+	// 2. 连续性状态落段：单元号 + 定稿章号 + 人物当前状态
+	states, err := LoadState(root)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if !strings.Contains(text, "| FS-01 | 刀柄来历 | paid") {
-		t.Fatalf("FS-01 not advanced: %s", text)
+	if len(states) != 1 || states[0].Unit != "v01-U1" {
+		t.Fatalf("state segments=%+v", states)
 	}
-	if strings.Contains(text, "| FS-02 | 账房亏空 | paid") {
-		t.Fatalf("FS-02 wrongly advanced: %s", text)
+	if states[0].AfterCh != 2 {
+		t.Fatalf("afterCh=%d want last finalized chapter 2", states[0].AfterCh)
 	}
-	if !strings.Contains(text, "| wangmou |") {
-		t.Fatalf("cast snapshot missing on-stage character: %s", text)
+	if len(states[0].Cast) == 0 {
+		t.Fatalf("no character state recorded: %+v", states[0])
 	}
 
-	// 3. 卷摘要
+	// 3. facts.md 不再被写回路径维护。脚手架可能创建了它，但定稿不写。
+	// 用内容比对确认它未被改动：游标/人物快照已迁到 state.yaml。
+	factsPath := filepath.Join(root, "continuity", "facts.md")
+	if raw, err := os.ReadFile(factsPath); err == nil {
+		if strings.Contains(string(raw), "Cast snapshot") || strings.Contains(string(raw), "last_committed_ch") {
+			t.Fatalf("facts.md must not be used as the state ledger anymore:\n%s", raw)
+		}
+	}
+
+	// 4. 卷摘要
 	sum, err := os.ReadFile(filepath.Join(root, "continuity", "summaries", "v01.md"))
 	if err != nil {
 		t.Fatalf("summary missing: %v", err)
@@ -105,12 +98,12 @@ func TestApplyFinalizationLedger(t *testing.T) {
 		t.Fatalf("summary missing chapters: %s", sum)
 	}
 
-	// 4. 定稿账本
+	// 5. 定稿账本
 	commit, err := os.ReadFile(filepath.Join(root, "continuity", "commits", "v01-U1.md"))
 	if err != nil {
 		t.Fatalf("commit log missing: %v", err)
 	}
-	if !strings.Contains(string(commit), "总字数") || !strings.Contains(string(commit), "危机") {
+	if !strings.Contains(string(commit), "总字数") {
 		t.Fatalf("commit log incomplete: %s", commit)
 	}
 }

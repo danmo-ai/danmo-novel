@@ -30,10 +30,8 @@
 | 作者底牌 | `canon/author-lore.md` | 真相、秘密、反转、最早解锁卷 | 立项、优化设定 | 立项/重新立项；**正文/审校禁读** |
 | 揭示计划 | `canon/reveal-schedule.md` | 信息、可暗示内容、最早确认卷、状态 | 立项、细纲、写作、审校 | 立项/重新立项；揭示推进后 |
 | 锁词 | `canon/locked-terms.yaml` | `locked_until / compliance / aliases` | 写作约束、定稿扫描 | 解锁时先移除再写正文 |
-| 读者事实 | `continuity/facts.md` `## Public facts` | `shown_fact/inference/rumor/misdirection、first_seen` | 写作、审校 | 定稿接受 |
-| 人物当前状态 | `continuity/facts.md` `### Cast snapshot` | 职位、位置、伤势、资源、知情范围、当前关系 | 写作、审校 | 定稿通过 `state_deltas` 更新 |
-| 伏笔 Open loops | `continuity/facts.md` `## Open loops` | `FS-id / status( planted·advanced·paid·dropped ) / plant_ch / expect·actual payoff` | 写作、审校 | 定稿接受 |
-| 连载游标 | `continuity/facts.md` `### Cursor` | `last_committed_ch / current volume·unit / next action` | 写作、审校 | 定稿接受 |
+| 连续性状态 | `continuity/state.yaml` | 按单元段：位置、伤势、资源、目标、知情范围、伏笔状态 | 写作、审校、细纲 | 定稿接受（从 `state_deltas` 落段） |
+| 连载游标 | `novel-state.yaml` 顶层 | `last_committed_ch / active_unit / next_action` | 流程控制 | 定稿接受 |
 | 故事时钟 | 单元合同 `story_day / gap_from_prev / flashback / time_label` | 单元剧情时钟 | 细纲、写作（时间规范注入）、审校、定稿校验 | 细纲与定稿 |
 | 章节摘要 | `continuity/summaries/vNN.md` | 事件、状态变化、伏笔、钩子、下章指向 | 续写只读上一章摘要 | 定稿接受 |
 | 定稿执行日志 | `continuity/commits/<unit>.md` | 门禁、字数、锁词、修订、偏离 | 回溯排查；**不默认给模型** | 定稿接受 |
@@ -146,7 +144,7 @@ proposed → accepted → drafted → reviewed
 
 ## 写作上下文（字段级抽取）
 
-`BuildWritePacket` 按以下字段组装，**不塞整份 facts.md、整份人物卡或完整细纲**：
+`BuildWritePacket` 按以下字段组装，**不塞整份账本、整份人物卡或完整细纲**：
 
 1. **单元合同**：`NormalizeUnitContract`（时钟字段显式化）+ `ChapterBeats`（scenes 优先于整份 YAML）
 2. **on_stage 人物**：`ExtractCastForWrite` → 名称+规范 role、三锚点、POV「不知」、一句台词、与主角关系（≤ 整卡压缩）
@@ -167,7 +165,7 @@ proposed → accepted → drafted → reviewed
 `ApplyFinalizationLedger(root, unit, chapters, findings)` 一次性更新：
 
 1. 单元状态 → `reviewed`
-2. `continuity/facts.md`
+2. `continuity/state.yaml`
    - `### Cursor`：`last_committed_ch` / 当前卷单元 / next action
    - `## Open loops`：`state_deltas` 中标记 `paid`/`payoff` 的 FS-id → `paid`，回填实际回收章
    - `### Cast snapshot`：on_stage 人物缺失行按 `state_deltas` 的 position/status 补入，已有行保持
@@ -203,18 +201,60 @@ proposed → accepted → drafted → reviewed
 |---|---|---|
 | 写正文 | **按章修复**：单章硬门不过（字数/破折号/英文泄漏），只重生成该章，其他章不动；回注 evidence+suggestion+原文 | 每章最多 1 次修复（`repair-ch{N}`） |
 | 细纲 | 一次定向修复：回注具体哪个单元哪个字段缺失/越界，要求只补该字段 | generate + 1 repair |
-| 立项/重新立项/重写卷纲 | 一次：回注结构错误（缺设定/缺单元索引表/缺 protagonist） | generate + 1 repair |
-| 实体重写 | 一次：输出为空或 JSON 解析失败 | generate + 1 repair |
-| 审校 | **不 retry**：审校是评估不是生成，失败报作者 | MaxCalls=1 |
+| 立项/重新立项/重写卷纲 | 一次：回注结构错误（缺设定/缺单元索引表/缺 protagonist/人物卡字段不全） | generate + 1 repair |
+| 实体重写 | 一次：输出为空 | MaxCalls=2 |
+| 审校 | 一次定向修复：回注 `verdict`/`severity`/`id`/`title`/`evidence` 违规项；截断则翻倍预算重试 | generate + 1 repair |
+| 分章写正文 | 每章 1 次调用，结构不合规即中断该单元 | 不 retry |
+| 定向修订 | 每章 1 次调用；章号/正文不合规即中断 | MaxCalls=1 |
 | 局部编辑/定稿 | **不 retry**：局部编辑失败直接报；定稿不走 LLM | MaxCalls=1 |
 
 修复证据写入 user JSON 的 `repair` 字段（`MergeRepairIntoUserPayload` + `detailedFindings`）：保留已通过部分原样、只修指出的问题、返回完整合规 JSON。错误信息带 evidence（差多少）+ suggestion（怎么改），不是只有标题。
+
+## 结构化输出校验
+
+契约写在 system prompt 里，但"说过"不等于"做到"。`core/service/pipeline/validate.go` 把每个任务的必填字段变成可执行检查：**违规 → 聚合成一条错误文本 → 写进 `repair` → 重试一次**。缺字段不再被零值静默吸收（`severity=""` 被当 advisory、`chapter=0` 排序错位、漏章让摘要与账本游标错位）。
+
+| 任务 | 必填 / 必须满足 | 违反后果 |
+|---|---|---|
+| 正文 | `chapters[].chapter > 0` 唯一、`body` 非空、章号集合完整覆盖单元章范围 | 重试；再失败则该单元中断 |
+| 细纲 | `scenes[].chapter` 落在本单元范围内、每章至少 1 个 scene（prompt 要求 2 个，硬性底线是 1） | 重试 |
+| 立项 | `cast[].stem/name/role/cardMarkdown` 齐全、`stem` 为英文小写连字符、至少 1 个 `protagonist` | 重试 |
+| 审校 | `verdict ∈ {pass,revise}`；每条 finding 的 `id/title/evidence` 非空、`severity ∈ {blocking,advisory}`、分章审校时 `chapter` 等于被审章 | 重试 |
+| 定向修订 | `chapter` 等于请求章、`body` 非空 | 中断（单次调用） |
+| 局部编辑 / 实体重写 | `replacement` / `content` 非空 | 中断（单次调用） |
+
+两个刻意的例外：
+
+- **`severity` 不做别名归一**。`fatal`/`high` 这类值若被静默当 advisory，一条真硬伤就被藏起来了；宁可让模型按枚举重写。
+- **截断抢救路径只做安全规范化**。输出被预算截断时，抢救出的 finding 补 id、`severity` 一律降为 advisory（截断产物判不了等级），并追加一条 budget advisory。重试由预算翻倍负责，不靠丢弃结论。
+- **可推导字段安全补齐**：立项 `status` 空 → `candidate`（prompt 已规定立项一律 candidate）；审校 `chapter` 为 0 → 补本次审校章号；修订 `title` 空 → 沿用原标题。这些是"没说"而非"说错"，补值不会引入虚构数据。
+
+## 重试与 KV cache 复用
+
+修复重试天然适合前缀缓存：system prompt 是静态的，`repair` 只做**追加**。前提是它必须真的追加在**末尾**——所以 `UserPayload.Repair` 在结构体里是最后一个字段（`Extra` 之后）。插在中间会让它后面的一切整体后移，因果链是：字段顺序 → 序列化顺序 → 字节前缀 → 缓存命中。
+
+| Provider | 机制 | 重试时的实际命中 |
+|---|---|---|
+| OpenAI / DeepSeek / Kimi / GLM / Qwen | 自动前缀缓存（DeepSeek 64 token、OpenAI 128 token 块对齐） | system + 全部 payload 前缀命中，只 miss `repair` 段 |
+| Anthropic | 显式 `cache_control` 断点 | system 命中；user 在 `,"repair":` 前切一刀打点（`splitPromptCachePrefix`），正文随之命中 |
+
+Anthropic 的切分只做一次纯字符串切割：两个 block 被无缝拼接，所以 `stable+tail` 与原文逐字节相等，模型看到的 JSON 完全不变。首轮没有 `repair` 就不切分。
+
+命中量记在 `CallRecord.cacheReadTokens`（写入量在 `cacheCreationTokens`），两处展示：
+
+- **模型日志**（`RunsView`）：每条记录下方显示整体命中率，展开后可看每次调用的「缓存命中 / 缓存写入」两列，重试那一行会单独标出。
+- **Token 统计**：汇总卡片新增「缓存命中」，按当前筛选范围汇总命中量与占比；口径与输入 Token 一致（各家的 prompt token 都包含缓存部分）。
+
+**缓存命中是缓存是否真的生效的唯一可信证据**：重试那一行的命中率应接近 100%，若接近 0 说明有东西字节级改了前缀（字段顺序、时间戳、排序抖动）。无缓存字段的历史记录显示 `—` 而不是 `0%`，避免把"没数据"误读成"完全未命中"。
+
+`EncodeUserPayload` 的确定性由 `encoding/json` 的 map key 排序保证，并有测试钉住——map 迭代顺序随机，一旦编码抖动，缓存就永久失效。
 
 ## 关键代码位置
 
 | 职责 | 位置 |
 |---|---|
 | 字段级抽取 | `core/service/context/extract.go` |
+| 结构化输出校验 + 修复反馈 | `core/service/pipeline/validate.go` |
 | 上下文组装 + 禁读校验 | `core/service/context/builder.go` |
 | 定稿账本回写 | `core/service/books/accept_finalize.go` |
 | 立项/卷纲接受（写盘白名单：立项=总纲+设定+人物；卷纲=当前卷+缺失单元） | `core/service/books/accept_plan.go` |

@@ -86,7 +86,6 @@ export interface Chain {
 }
 
 export interface ChapterDraft { chapter: number; title: string; body: string }
-
 export interface ContextBlock {
   id: string
   label: string
@@ -134,6 +133,8 @@ export interface Candidate {
   unitId?: string
   volumeId?: string
   chapters?: ChapterDraft[]
+  /** 修订候选的修订前正文；用于 diff 后再确认落盘。 */
+  baseChapters?: ChapterDraft[]
   unitOutlines?: UnitOutline[]
   mode?: string
   planMarkdown?: Record<string, string>
@@ -142,6 +143,8 @@ export interface Candidate {
   findings?: ReviewFinding[]
   canonChanges?: any[]
   createdAt: string
+  acceptedAt?: string
+  followUpRunId?: string
 }
 export interface CallRecord {
   index: number
@@ -150,6 +153,9 @@ export interface CallRecord {
   step: string
   promptTokens: number
   completionTokens: number
+  /** 命中 provider 前缀缓存的 prompt token 数（重试的修复调用应接近全量）。 */
+  cacheReadTokens?: number
+  cacheCreationTokens?: number
   durationMs: number
   error?: string
   startedAt: string
@@ -165,6 +171,7 @@ export interface Run {
   callsUsed: number
   calls: CallRecord[]
   candidateId?: string
+  reviewCursor?: number
   contextSummary?: string[]
   error?: string
   createdAt: string

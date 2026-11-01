@@ -28,9 +28,7 @@ const definitions: Doc[] = [
   { path: 'canon/style-fingerprint.md', label: '风格指纹', group: '生产约束', description: 'POV、句段、对话、感官与反模式', usage: '正文 · 局部编辑 · 审校 · 可独立优化' },
   { path: 'canon/locked-terms.yaml', label: '锁词与合规红线', group: '作者底牌', description: '按卷解锁的真名/真相词与永久禁词', usage: '正文约束 · 定稿扫描 · 仅手工' },
   { path: 'canon/author-lore.md', label: '作者底牌与终局真相', group: '作者底牌', description: '未来反转、真实规则、角色秘密；写正文禁止加载', secret: true, usage: '立项 · 重写带总纲（正文/审校禁读）' },
-  { path: 'continuity/facts.md', label: '读者事实与连载游标', group: '连续性账本', description: '公开事实、Cast snapshot、连载游标', usage: '正文 · 审校 · 定稿回写' },
-  { path: 'continuity/facts.md#relations', label: '人物当前状态', group: '连续性账本', description: 'Cast snapshot：职位、位置、伤势、资源、知情范围；由定稿接受回写', usage: '正文 · 审校 · 定稿回写' },
-  { path: 'continuity/facts.md#open-loops', label: '伏笔与开放债务', group: '连续性账本', description: 'FS-id 的 planted / advanced / paid / dropped 状态', usage: '正文 · 审校 · 定稿回写' },
+  { path: 'continuity/state.yaml', label: '连续性状态账本', group: '连续性账本', description: '按单元段：位置、伤势、资源、目标、知情范围与伏笔状态；定稿时自动追加', usage: '正文 · 审校 · 细纲（应用自动读取）' },
   { path: 'novel-state.yaml', label: '书籍运行状态', group: '连续性账本', description: '当前阶段、题材、时间系统与已提交章节游标', usage: '流程控制 · 定稿回写' },
 ]
 const docs = computed(() => definitions.map((d) => ({
@@ -260,9 +258,7 @@ async function promoteCast() {
 }
 
 const OPTIMIZE_BLOCKLIST = new Set([
-  'continuity/facts.md',
-  'continuity/facts.md#relations',
-  'continuity/facts.md#open-loops',
+  'continuity/state.yaml',
   'novel-state.yaml',
   'canon/locked-terms.yaml',
 ])
@@ -298,12 +294,6 @@ function requestRewrite() {
   emit('rewrite', { targetPath: path, entityKind: kind, title: currentLabel.value || path })
 }
 function save() {
-  if (currentDoc.value?.path.includes('#')) {
-    store.note('伏笔请通过完整 facts.md 编辑，避免覆盖其他事实')
-    selectedPath.value = 'continuity/facts.md'
-    editing.value = false
-    return
-  }
   if (currentFilePath.value) emit('save', currentFilePath.value, draft.value)
   editing.value = false
 }

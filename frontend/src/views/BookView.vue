@@ -3,16 +3,18 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { useAppStore } from '@/stores/app'
 import { api } from '@/api/client'
-import type { Candidate, UnitInfo } from '@/types'
+import type { Candidate, CallRecord, UnitInfo } from '@/types'
 import OutlineWorkspace from '@/components/book/OutlineWorkspace.vue'
 import BibleWorkspace from '@/components/book/BibleWorkspace.vue'
 import ReviewWorkspace from '@/components/book/ReviewWorkspace.vue'
+import ChapterDiff from '@/components/book/ChapterDiff.vue'
 import UnitProse from '@/components/book/UnitProse.vue'
 import UnitContract from '@/components/book/UnitContract.vue'
 import UnitFlowActions from '@/components/book/UnitFlowActions.vue'
 import RunConfirmDialog from '@/components/book/RunConfirmDialog.vue'
 import ChainPanel from '@/components/book/ChainPanel.vue'
 import { planModeLabel as sharedPlanModeLabel, runKindLabel } from '@/utils/runLabels'
+import { cacheStat, callCacheText, hitRateText } from '@/utils/tokenStats'
 import type { Chain, ChainSpec } from '@/types'
 
 const route = useRoute()
@@ -26,6 +28,8 @@ const saving = ref(false)
 const busy = ref(false)
 const modelId = ref('')
 const runDrawer = ref(false)
+/** 实时日志的缓存汇总：重试（step=repair）命中率应接近 100%。 */
+function runCacheOf(run: { calls?: CallRecord[] } | null | undefined) { return cacheStat(run?.calls) }
 const pollTimer = ref<number | null>(null)
 const customInstruction = ref('')
 const editingProse = ref(false)
@@ -376,15 +380,164 @@ function runFlowStep(key: string) {
 
 async function accept(c: Candidate) {
   try {
-    await store.acceptCandidate(c.id, c.baseRevision)
+    // 修订候选被接受时请求服务端归档旧清单并自动复审：闭环一的最后一步。
+    const accepted = await store.acceptCandidate(c.id, c.baseRevision, {
+      followUpReview: c.kind === 'revise',
+    })
     if (c.kind === 'review') view.value = 'review'
+    if (c.kind === 'revise' && c.unitId) focusUnit(c.unitId)
     await reload()
-    await store.loadRuns(bookId.value)
+    // 归档后清单从「待审候选」消失，必须在历史里还能回看。
+    await Promise.all([store.loadRuns(bookId.value), store.loadCandidateHistory(bookId.value)])
+    if (accepted?.followUpRunId) startRunPoll(accepted.followUpRunId)
   } catch (e) { store.fail(e) }
 }
+
+/** 轮询一个已在服务端跑起来的 run（接受后的自动复审）。 */
+function startRunPoll(runId: string) {
+  if (pollTimer.value) clearInterval(pollTimer.value)
+  runDrawer.value = true
+  pollTimer.value = window.setInterval(async () => {
+    try {
+      const r = await store.pollRun(runId)
+      if (r.status !== 'running' && r.status !== 'pending') {
+        if (pollTimer.value) clearInterval(pollTimer.value)
+        pollTimer.value = null
+        await store.loadCandidates(bookId.value)
+        await store.loadRuns(bookId.value)
+      }
+    } catch (e) { store.fail(e) }
+  }, 1200)
+}
+
+/** 按勾选的审校结论做一次定向修订；产物仍是候选，接受后才覆盖正文。 */
+async function reviseFindings(unitId: string, issueIds: string[]) {
+  const book = store.currentBook
+  if (!book || busy.value || !issueIds.length || !unitId) return
+  // 让页面停在被修订的单元，后续操作不会"跳"到别的单元。
+  focusUnit(unitId)
+  busy.value = true
+  try {
+    const run = await store.startRun({
+      kind: 'revise', bookId: book.summary.id, baseRevision: book.revision,
+      unitId, issueIds,
+    })
+    runDrawer.value = true
+    if (pollTimer.value) clearInterval(pollTimer.value)
+    pollTimer.value = window.setInterval(async () => {
+      try {
+        const r = await store.pollRun(run.id)
+        if (r.status !== 'running' && r.status !== 'pending') {
+          if (pollTimer.value) clearInterval(pollTimer.value)
+          pollTimer.value = null
+          await store.loadCandidates(bookId.value)
+          await store.loadRuns(bookId.value)
+          if (r.status === 'waiting_accept') store.note('修订候选已生成：去「待审候选」看 diff 后确认落盘')
+          else if (r.status === 'failed') store.fail(r.error || '自动修复失败，正文未改变')
+        }
+      } catch (e) { store.fail(e) }
+    }, 1200)
+  } catch (e) {
+    store.fail(e)
+  } finally {
+    busy.value = false
+  }
+}
+
+/** 把选中单元切到指定单元（审校页点单元 ID 或在候选卡片点「去修订」）。 */
+function focusUnit(unitId: string) {
+  const u = store.currentBook?.units.find((x) => x.unitId === unitId)
+  if (u) selectedUnit.value = u
+}
+
+/** 审校页「拒绝清单」：丢弃该单元的全部待处理审校结论，之后由作者自己重审。 */
+async function rejectUnitFindings(unitId: string, candidateIds: string[]) {
+  if (busy.value || !candidateIds.length) return
+  const ok = window.confirm(
+    `丢弃 ${unitId} 的审校清单？\n\n${candidateIds.length} 份清单会被作废，正文不受影响。\n之后需要自己重新点「审校」才能再拿到结论。`,
+  )
+  if (!ok) return
+  const reason = window.prompt('拒绝原因（可选，用于回看为什么要重审）', '') ?? ''
+  busy.value = true
+  try {
+    for (const id of candidateIds) await store.rejectCandidate(id, reason)
+    await Promise.all([
+      store.loadCandidates(bookId.value),
+      store.loadCandidateHistory(bookId.value),
+      store.loadRuns(bookId.value),
+    ])
+    store.note('已丢弃审校清单；去写作页重新点「审校」才会生成新结论')
+  } catch (e) {
+    store.fail(e)
+  } finally {
+    busy.value = false
+  }
+}
+
+/** 截断后重试：改用按章审校，每章一次调用，不会撞输出预算。 */
+async function retrySplitReview(unitId?: string) {
+  const book = store.currentBook
+  const unit = selectedUnit.value
+  const targetId = unitId || unit?.unitId
+  if (!book || !targetId || busy.value) return
+  busy.value = true
+  try {
+    const run = await store.startRun({
+      kind: 'review', bookId: book.summary.id, baseRevision: book.revision,
+      unitId: targetId, splitByChapter: true,
+    })
+    runDrawer.value = true
+    if (pollTimer.value) clearInterval(pollTimer.value)
+    pollTimer.value = window.setInterval(async () => {
+      try {
+        const r = await store.pollRun(run.id)
+        if (r.status !== 'running' && r.status !== 'pending') {
+          if (pollTimer.value) clearInterval(pollTimer.value)
+          pollTimer.value = null
+          await store.loadCandidates(bookId.value)
+          await store.loadRuns(bookId.value)
+        }
+      } catch (e) { store.fail(e) }
+    }, 1200)
+  } catch (e) {
+    store.fail(e)
+  } finally {
+    busy.value = false
+  }
+}
+
 async function reject(c: Candidate) {
-  await store.rejectCandidate(c.id)
-  await store.loadCandidates(bookId.value)
+  // 拒绝修订候选 = 丢弃这一次修复，正文不变。它是一次真实返工，必须让作者知道后果。
+  if (c.kind === 'revise') {
+    const ok = window.confirm(
+      '丢弃这次修复？\n\n正文不会被改动。问题清单仍在审校页，可以调整勾选后重新自动修复。',
+    )
+    if (!ok) return
+  }
+  // 拒绝审校清单是它唯一的正常出口（没有"归档"了）：提醒作者之后要自己重审。
+  if (c.kind === 'review') {
+    const ok = window.confirm(
+      '丢弃这份审校清单？\n\n问题清单会被作废，之后需要自己重新点「审校」才能再拿到结论。',
+    )
+    if (!ok) return
+  }
+  const reason = c.kind === 'review' || c.kind === 'revise'
+    ? (window.prompt('拒绝原因（可选，用于回看为什么要重做）', '') ?? '')
+    : ''
+  try {
+    await store.rejectCandidate(c.id, reason)
+    await Promise.all([store.loadCandidates(bookId.value), store.loadCandidateHistory(bookId.value)])
+    if (c.kind === 'revise') {
+      // 唯一的下一步入口在审校页：直接带作者过去，别让他自己找。
+      if (c.unitId) focusUnit(c.unitId)
+      view.value = 'review'
+      await store.loadRuns(bookId.value)
+      store.note('已丢弃这次修复，正文未改变；可在审校页调整勾选后重新自动修复')
+    } else if (c.kind === 'review') {
+      await store.loadRuns(bookId.value)
+      store.note('已丢弃这份审校清单；去写作页重新点「审校」才会生成新结论')
+    }
+  } catch (e) { store.fail(e) }
 }
 
 async function enableWrite() {
@@ -527,6 +680,12 @@ function roleLabel(role?: string) {
       <ReviewWorkspace
         v-else-if="view === 'review'"
         :selected-unit="selectedUnit"
+        :busy="busy"
+        :read-only="store.currentBook.summary.readOnly"
+        @revise="reviseFindings"
+        @retry-split="retrySplitReview"
+        @focus-unit="focusUnit"
+        @reject-unit="rejectUnitFindings"
       />
       <section v-else class="editor-panel panel">
         <template v-if="isProseUnit && selectedUnit">
@@ -661,11 +820,19 @@ function roleLabel(role?: string) {
             <span class="muted"> · {{ new Date(c.createdAt).toLocaleString() }}</span>
           </div>
           <div>
+            <button v-if="c.kind === 'review' && c.unitId" class="primary" @click="focusUnit(c.unitId); view = 'review'">去修订</button>
             <button @click="reject(c)">拒绝</button>
-            <button class="primary" @click="accept(c)">接受</button>
+            <button v-if="c.kind !== 'review'" class="primary" @click="accept(c)">{{ c.kind === 'revise' ? '确认落盘' : '接受' }}</button>
           </div>
         </header>
-        <pre v-if="c.chapters" class="candidate-prose">{{ chapterText(c) }}</pre>
+        <!-- 审校候选没有"归档"：清单只有两条路——去修订，或拒绝后自己重新审校。 -->
+        <p v-if="c.kind === 'review'" class="muted">审校结论只能二选一：点「去修订」勾选问题让系统改写；或「拒绝」丢弃这份清单，之后自己重新审校。</p>
+        <!-- 修订候选：先看 diff 再落盘，接受不能是盲签。 -->
+        <template v-else-if="c.kind === 'revise'">
+          <p class="muted">下面是相对现有正文的改动。确认无误后点「确认落盘」覆盖正文；接受后会自动复审。</p>
+          <ChapterDiff :base="c.baseChapters" :revised="c.chapters || []" />
+        </template>
+        <pre v-else-if="c.chapters" class="candidate-prose">{{ chapterText(c) }}</pre>
         <pre v-else-if="c.unitOutlines" class="candidate-prose">{{ JSON.stringify(c.unitOutlines, null, 2) }}</pre>
         <pre v-else-if="c.replacement" class="candidate-prose">{{ c.replacement }}</pre>
         <div v-else-if="c.planMarkdown || c.planSettings" class="plan-candidate">
@@ -702,8 +869,13 @@ function roleLabel(role?: string) {
       <div v-if="store.activeRun">
         <p>{{ runKindLabel(store.activeRun.kind, store.activeRun.spec?.mode) }} · {{ store.activeRun.status }}</p>
         <p class="muted">模型 {{ store.activeRun.modelId }} · 调用 {{ store.activeRun.callsUsed }}/{{ store.activeRun.policy?.maxCalls || '计算中' }}</p>
+        <p v-if="runCacheOf(store.activeRun).hasData" class="muted">
+          缓存命中 {{ runCacheOf(store.activeRun).read.toLocaleString() }} token（{{ hitRateText(runCacheOf(store.activeRun)) }}）
+          <template v-if="runCacheOf(store.activeRun).creation">· 写入 {{ runCacheOf(store.activeRun).creation.toLocaleString() }}</template>
+        </p>
         <div v-for="c in store.activeRun.calls" :key="c.index" class="call-row">
           #{{ c.index }} {{ c.step }} · in {{ c.promptTokens }} / out {{ c.completionTokens }} · {{ c.durationMs }}ms
+          <template v-if="c.cacheReadTokens"> · 缓存 {{ callCacheText(c) }}</template>
         </div>
         <p v-if="store.activeRun.error" class="error-text">{{ store.activeRun.error }}</p>
       </div>

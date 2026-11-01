@@ -1,10 +1,13 @@
 package contextsvc
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/danmo-ai/danmo-novel/core/domain"
+	"github.com/danmo-ai/danmo-novel/core/service/books"
 )
 
 func TestExtractVolumeHandoffKeepsBridgeOnly(t *testing.T) {
@@ -52,30 +55,39 @@ func TestExtractVolumeHandoffKeepsBridgeOnly(t *testing.T) {
 	}
 }
 
-func TestExtractFactsForVolumePlanCapsLedger(t *testing.T) {
-	raw := `# Continuity facts
-
-### Cursor
-- last_committed_ch: 18
-
-### Cast snapshot
-| 角色 | 年龄 | 职位 | 位置 | 目标 | 伤势/资源 | 知情范围 | 关系质态 |
-|------|------|------|------|------|-----------|----------|----------|
-| linchen | 16 | 外门 | 山门外 | 查账 | 轻伤 | 不知生父 | 独行 |
-
-## Open loops
-| FS-id | 内容 | 状态 | 埋点章 | 计划回收 | 实际回收 |
-|-------|------|------|--------|----------|----------|
-| FS-01 | 刀柄来历 | planted | 1 | 5 | |
-| FS-02 | 账房亏空 | advanced | 2 | 20 | |
-| FS-03 | 旧债 | paid | 3 | 4 | 4 |
-`
-	got := ExtractFactsForVolumePlan(raw)
-	if !strings.Contains(got, "last_committed_ch") || !strings.Contains(got, "linchen") {
-		t.Fatalf("missing ledger: %s", got)
+// 卷纲要的"已揭/未揭"来自状态账，而不是旧的散文账本：
+// 已回收的伏笔不再注入（它们是历史，不是约束）。
+func TestContinuityLatestSkipsPaidLoops(t *testing.T) {
+	root := t.TempDir() + "/book"
+	src := filepath.Join("..", "..", "..", "tests", "fixtures", "books", "sample-xuanhuan")
+	if err := copyTree(src, root); err != nil {
+		t.Fatal(err)
 	}
-	if !strings.Contains(got, "FS-01") || strings.Contains(got, "FS-03") {
-		t.Fatalf("should skip paid loops: %s", got)
+	state := `version: 1
+units:
+  - unit: v01-U1
+    volume: 1
+    after_ch: 3
+    cast:
+      linchen: {location: 山门外, goal: 查账}
+    loops:
+      - {id: FS-01, status: planted, detail: 刀柄来历}
+      - {id: FS-02, status: advanced, detail: 账房亏空}
+      - {id: FS-03, status: paid, detail: 旧债}
+`
+	if err := os.WriteFile(filepath.Join(root, books.StatePath), []byte(state), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	snap, err := books.LoadBook(root, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := ExtractContinuityLatest(snap, nil, ContinuityForReview)
+	if !strings.Contains(got, "linchen") || !strings.Contains(got, "FS-01") {
+		t.Fatalf("missing state: %s", got)
+	}
+	if strings.Contains(got, "FS-03") {
+		t.Fatalf("paid loops must be skipped: %s", got)
 	}
 }
 
@@ -135,7 +147,9 @@ func TestBuildPlanPacketVolumeIncludesPrevHandoff(t *testing.T) {
 			t.Fatal("prev volume should be excerpt, not prose dump")
 		}
 	}
-	for _, id := range []string{"prev-volume", "facts", "prev-summary", "prev-unit-bridge", "book-outline"} {
+	// facts 块已退役：卷纲的"已揭/未揭"改由 continuity 块提供（需要 state.yaml，
+	// 本夹具没有，所以不在断言里）。
+	for _, id := range []string{"prev-volume", "prev-summary", "prev-unit-bridge", "book-outline"} {
 		if !ids[id] {
 			t.Fatalf("missing block %s in %+v", id, ids)
 		}

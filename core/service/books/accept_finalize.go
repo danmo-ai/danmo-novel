@@ -14,31 +14,23 @@ import (
 )
 
 // ApplyFinalizationLedger is the唯一写回路径 for定稿接受. It updates, in one
-// commit: 单元状态 → reviewed、facts.md（游标/伏笔）、Cast snapshot、卷摘要、
+// commit: 单元状态 → reviewed、连续性状态段（continuity/state.yaml）、卷摘要、
 // 定稿执行日志。只有 Accept 能调用它；生成阶段永不触碰这些文件。
+//
+// 不再写 facts.md：那份文件被逐轮追加成 571 KB 的散文日志，游标自相矛盾、
+// 人物快照 30 多段从不合并，读写双方还因标题后缀静默失效。状态改由
+// state.yaml 按单元段表达。
 func ApplyFinalizationLedger(root string, unit domain.UnitInfo, chapters []domain.ChapterDraft, findings []domain.ReviewFinding) error {
 	if len(chapters) == 0 {
 		return fmt.Errorf("finalize: no chapters")
 	}
-	last := chapters[len(chapters)-1].Chapter
 
 	if err := SetUnitStatus(root, unit.UnitID, domain.UnitReviewed); err != nil {
 		return err
 	}
 
-	factsPath := filepath.Join(root, "continuity", "facts.md")
-	facts, _ := os.ReadFile(factsPath)
-	factsText := string(facts)
-	if factsText == "" {
-		factsText = "# Continuity facts\n\n## Public facts\n| Kind | Fact | First seen | Notes |\n|------|------|------------|-------|\n\n## Tracking\n### Cursor\n- last_committed_ch: 0\n\n### Cast snapshot\n| 角色 | 年龄 | 职位 | 位置 | 目标 | 伤势/资源 | 知情范围 | 关系质态 |\n|------|------|------|------|------|-----------|----------|----------|\n\n## Open loops\n| FS-id | 内容 | 状态 | 埋点章 | 计划回收 | 实际回收 |\n|-------|------|------|--------|----------|----------|\n"
-	}
-	factsText = upsertCursor(factsText, last, unit)
-	factsText = advanceOpenLoops(factsText, unit.OutlineRaw, last)
-	factsText = upsertCastSnapshot(factsText, unit.OutlineRaw)
-	if err := os.MkdirAll(filepath.Dir(factsPath), 0o755); err != nil {
-		return err
-	}
-	if err := os.WriteFile(factsPath, []byte(factsText), 0o644); err != nil {
+	// 连续性状态：从细纲的 state_deltas 落一段，供后续单元与重写读取。
+	if err := AppendUnitState(root, StateFromOutline(unit, chapters)); err != nil {
 		return err
 	}
 
@@ -46,114 +38,6 @@ func ApplyFinalizationLedger(root string, unit domain.UnitInfo, chapters []domai
 		return err
 	}
 	return writeCommitLog(root, unit, chapters, findings)
-}
-
-func upsertCursor(facts string, lastCh int, unit domain.UnitInfo) string {
-	cursor := fmt.Sprintf("- last_committed_ch: %d\n- current volume / unit: v%02d / %s\n- next action: continue", lastCh, unit.Volume, unit.UnitID)
-	re := regexp.MustCompile(`(?ms)(### Cursor\n)(.*?)(\n### |\n## |$)`)
-	if loc := re.FindStringSubmatchIndex(facts); loc != nil {
-		return facts[:loc[4]] + cursor + facts[loc[5]:]
-	}
-	if i := strings.Index(facts, "## Tracking"); i >= 0 {
-		return facts[:i] + "## Tracking\n### Cursor\n" + cursor + "\n" + facts[i+len("## Tracking"):]
-	}
-	return facts + "\n## Tracking\n### Cursor\n" + cursor + "\n"
-}
-
-// advanceOpenLoops marks loops referenced by the unit's state_deltas as paid.
-// state_deltas 中 "paid"/"payoff" 命中的 FS-id 会被推进；其余保持原状。
-func advanceOpenLoops(facts, outlineRaw string, lastCh int) string {
-	deltas := mdYAMLSection(outlineRaw, "state_deltas")
-	if deltas == "" {
-		return facts
-	}
-	loops := mdSectionBody(facts, "## Open loops")
-	if loops == "" {
-		return facts
-	}
-	var out []string
-	for _, line := range strings.Split(loops, "\n") {
-		if !strings.HasPrefix(strings.TrimSpace(line), "|") || strings.Contains(line, "---") {
-			out = append(out, line)
-			continue
-		}
-		cells := strings.Split(strings.Trim(strings.TrimSpace(line), "|"), "|")
-		if len(cells) >= 3 {
-			id := strings.TrimSpace(cells[0])
-			paidMarker := strings.Contains(deltas, "paid") || strings.Contains(deltas, "payoff")
-			if id != "" && id != "FS-id" && strings.Contains(deltas, id) && paidMarker {
-				cells[2] = " paid "
-				if len(cells) >= 6 && strings.TrimSpace(cells[5]) == "" {
-					cells[5] = fmt.Sprintf(" %d ", lastCh)
-				}
-				line = "|" + strings.Join(cells, "|") + "|"
-			}
-		}
-		out = append(out, line)
-	}
-	return strings.Replace(facts, loops, strings.Join(out, "\n"), 1)
-}
-
-// upsertCastSnapshot refreshes rows for on-stage characters from the unit's
-// state_deltas position/status hints; untouched characters keep their rows.
-func upsertCastSnapshot(facts, outlineRaw string) string {
-	onStage := extractYAMLListInline(outlineRaw, "on_stage")
-	if len(onStage) == 0 {
-		return facts
-	}
-	deltas := mdYAMLSection(outlineRaw, "state_deltas")
-	if deltas == "" {
-		deltas = outlineRaw // fallback: scan whole outline for hints
-	}
-	lines := strings.Split(facts, "\n")
-	// locate the Cast snapshot table
-	headIdx, sepIdx := -1, -1
-	for i, line := range lines {
-		if strings.TrimSpace(line) == "### Cast snapshot" {
-			headIdx = i
-		}
-		if headIdx >= 0 && sepIdx < 0 && strings.Contains(line, "---") {
-			sepIdx = i
-			break
-		}
-	}
-	if sepIdx < 0 {
-		return facts
-	}
-	have := map[string]bool{}
-	for i := sepIdx + 1; i < len(lines); i++ {
-		line := lines[i]
-		if !strings.HasPrefix(strings.TrimSpace(line), "|") {
-			break
-		}
-		cells := strings.Split(strings.Trim(strings.TrimSpace(line), "|"), "|")
-		if len(cells) >= 1 {
-			have[strings.TrimSpace(cells[0])] = true
-		}
-	}
-	insertAt := sepIdx + 1
-	for insertAt < len(lines) && strings.HasPrefix(strings.TrimSpace(lines[insertAt]), "|") {
-		insertAt++
-	}
-	var added []string
-	for _, stem := range onStage {
-		if have[stem] {
-			continue
-		}
-		pos := scalarNear(deltas, stem, "position")
-		if pos == "" {
-			pos = scalarNear(deltas, stem, "location")
-		}
-		state := scalarNear(deltas, stem, "status")
-		added = append(added, fmt.Sprintf("| %s |  |  | %s |  | %s |  |  |", stem, pos, state))
-	}
-	if len(added) == 0 {
-		return facts
-	}
-	out := append([]string{}, lines[:insertAt]...)
-	out = append(out, added...)
-	out = append(out, lines[insertAt:]...)
-	return strings.Join(out, "\n")
 }
 
 // appendVolumeSummary upserts per-chapter 摘要 into continuity/summaries/vNN.md.
@@ -262,10 +146,16 @@ func committedChapterRange(root, unitID string) (int, int) {
 	return from, to
 }
 
+// mdYAMLSection returns the indented body of a top-level `key:` block.
+//
+// 必须用 [ \t]* 而不是 \s*：\s 会跨行匹配，把换行连同下一行的缩进一起吃掉，
+// 于是返回的首行顶格、后续行仍带缩进，YAML 解析随即失败（state_deltas 就踩过）。
 func mdYAMLSection(raw, key string) string {
-	re := regexp.MustCompile(`(?m)^` + regexp.QuoteMeta(key) + `:\s*\n((?:[ \t]+.*\n?)*)`)
+	re := regexp.MustCompile(`(?m)^` + regexp.QuoteMeta(key) + `:[ \t]*\n((?:[ \t]+.*\n?)*)`)
 	if m := re.FindStringSubmatch(raw); len(m) > 1 {
-		return strings.TrimSpace(m[1])
+		// 只去尾部空行：TrimSpace 会连首行缩进一起吃掉，导致 YAML 列表首项顶格、
+		// 与后续缩进项混排而解析失败。
+		return strings.TrimRight(m[1], " \t\r\n")
 	}
 	return ""
 }
@@ -284,29 +174,6 @@ func scalarFromYAML(raw, key string) string {
 		return strings.Trim(strings.TrimSpace(m[1]), `"'`)
 	}
 	return ""
-}
-
-func scalarNear(raw, stem, key string) string {
-	re := regexp.MustCompile(`(?m)` + regexp.QuoteMeta(stem) + `[^\n]*` + regexp.QuoteMeta(key) + `[：:]\s*([^\n,;，；]+)`)
-	if m := re.FindStringSubmatch(raw); len(m) > 1 {
-		return strings.Trim(strings.TrimSpace(m[1]), `"'`)
-	}
-	return ""
-}
-
-func extractYAMLListInline(raw, key string) []string {
-	re := regexp.MustCompile(`(?m)^` + regexp.QuoteMeta(key) + `:\s*\[([^\]]*)\]`)
-	if m := re.FindStringSubmatch(raw); len(m) > 1 {
-		var out []string
-		for _, p := range strings.Split(m[1], ",") {
-			p = strings.Trim(strings.TrimSpace(p), `"'`)
-			if p != "" {
-				out = append(out, p)
-			}
-		}
-		return out
-	}
-	return nil
 }
 
 func mdSectionBody(raw, heading string) string {

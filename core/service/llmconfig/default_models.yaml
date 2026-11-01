@@ -247,6 +247,15 @@
   - low
   - high
   - max
+- model: deepseek-v4.1-flash
+  vision: true
+  context_window: 1000000
+  max_output: 393216
+  available_efforts:
+  - 'off'
+  - low
+  - high
+  - max
 - model: deepseek-v4-flash
   vision: true
   context_window: 1000000

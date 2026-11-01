@@ -34,6 +34,7 @@ type unitSeed struct {
 // Mode controls write scope:
 //   - init/reinit: book outline + whitelist settings + cast in candidate only
 //   - volume: current volume outline + missing unit skeletons only
+//
 // Never deletes or overwrites: other volumes, existing unit contracts, prose,
 // continuity/, identity timeline, unlisted cast, or production cursors.
 func AcceptPlan(root string, cand domain.Candidate) error {

@@ -24,6 +24,11 @@ type UserRef struct {
 }
 
 // UserPayload is the only content of the user message for controlled LLM calls.
+//
+// 字段顺序即序列化顺序，而 provider 的前缀缓存按字节比对 prompt 前缀。
+// Repair 必须留在最后：重试时前面全部字节不变，只有尾部这块是新的，
+// 于是前缀缓存能命中几乎整份上下文（正文/文档动辄数万 token）。把它插在
+// 中间（例如 Extra 之前）会让它后面的一切整体后移，缓存全部失效。
 type UserPayload struct {
 	Task        string         `json:"task"`
 	Mode        string         `json:"mode,omitempty"`
@@ -31,8 +36,8 @@ type UserPayload struct {
 	Instruction string         `json:"instruction,omitempty"`
 	Documents   []UserDoc      `json:"documents,omitempty"`
 	References  []UserRef      `json:"references,omitempty"`
-	Repair      map[string]any `json:"repair,omitempty"`
 	Extra       map[string]any `json:"extra,omitempty"`
+	Repair      map[string]any `json:"repair,omitempty"`
 }
 
 // EncodeUserPayload marshals the structured user data packet.
@@ -96,6 +101,18 @@ func MergeRepairIntoUserPayload(userPrompt string, err error) string {
 	return EncodeUserPayload(p)
 }
 
+// RetaskUserPayload rewrites the payload's task tag when one packet is reused for
+// a different task (审校包 → 定向修订). 系统提示词与输出契约仍由调用方一起替换，
+// 这里只保证模型看到的 task 标签不会与实际任务相互矛盾。
+func RetaskUserPayload(userPrompt, task string) string {
+	p, err := DecodeUserPayload(userPrompt)
+	if err != nil {
+		return userPrompt
+	}
+	p.Task = task
+	return EncodeUserPayload(p)
+}
+
 // MergeExtraIntoUserPayload merges key/values into the payload Extra map.
 func MergeExtraIntoUserPayload(userPrompt string, extra map[string]any) string {
 	if len(extra) == 0 {
@@ -143,4 +160,44 @@ func BuildUserPrompt(task, mode string, book map[string]any, instruction string,
 		Documents:   DocumentsFromBlocks(blocks),
 		Extra:       extra,
 	})
+}
+
+// NarrowBeats returns a copy of a write packet whose 场面节拍 block only holds
+// one chapter's scenes. Everything else (contract, facts, cast, style) is
+// identical, so it is not rebuilt.
+//
+// 分章写作时这是最大的单项浪费：6 章单元每次调用都带全部 26 个场面，
+// 而模型这一次只需要写其中一章。过滤不放宽任何约束——合同、facts、人物照旧。
+func NarrowBeats(packet domain.ContextPacket, unit domain.UnitInfo, chapter int) domain.ContextPacket {
+	out := packet
+	out.Blocks = make([]domain.ContextBlock, 0, len(packet.Blocks))
+	changed := false
+	for _, b := range packet.Blocks {
+		if b.ID == "unit-beats" {
+			if trimmed := BeatsForChapter(unit.OutlineRaw, chapter); trimmed != "" && trimmed != b.Content {
+				b.Content = trimmed
+				b.Bytes = len(trimmed)
+				changed = true
+			}
+		}
+		out.Blocks = append(out.Blocks, b)
+	}
+	if !changed {
+		return packet
+	}
+	// 用户 payload 是从 blocks 序列化出来的，必须同步重建，否则过滤不生效。
+	out.UserPrompt = buildUserPromptFrom(packet, out.Blocks)
+	out.EstPromptTokens = (len([]rune(out.SystemPrompt)) + len([]rune(out.UserPrompt))) / 2
+	return out
+}
+
+// buildUserPromptFrom re-encodes the user payload with replacement blocks while
+// preserving the original task/mode/book/instruction/extra fields.
+func buildUserPromptFrom(packet domain.ContextPacket, blocks []domain.ContextBlock) string {
+	p, err := DecodeUserPayload(packet.UserPrompt)
+	if err != nil {
+		return packet.UserPrompt
+	}
+	p.Documents = DocumentsFromBlocks(blocks)
+	return EncodeUserPayload(p)
 }

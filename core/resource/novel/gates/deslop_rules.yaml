@@ -1,0 +1,170 @@
+# 去 AI 味本地检查规则（程序规则，不进提示词）
+#
+# 这是**代码执行**的规则表，不是给模型阅读的方法论：
+#   - 本文件 → 正则匹配，零成本，每次审校/写作必跑，命中即写 findings
+#   - knowledge/25-review-checklist.md → 给模型读的审校方法论（唯一一份）
+#
+# 本文件永远不进入任何 LLM 上下文。这就是它不在 knowledge/ 下的原因：
+# 知识文章会按 stages 被挑进 prompt，程序规则混进去只会污染模型输入。
+#
+# 覆盖顺序：本书 canon/deslop-rules.yaml > 作者机器 gates/deslop-rules.yaml > 内置。
+# 改阈值、加词、开关某条都不用改代码，也不需要重新发版。
+#
+# 阈值一律按「每千字命中数」判定：短章不会被小样本放大成误报，长章也不会漏报。
+# perMille: 0 表示「命中即报」（仅用于确定性极高的硬伤）。
+# minHits 是绝对下限兜底，两个条件同时满足才报。
+# severity: weak 的规则从不单独报警，只参与「成簇」计数。
+#
+# 注意：Go 的 RE2 不支持反向引用（\1）与 lookaround。写这类规则会解析失败，
+# 并让整次运行报错——这是故意的，静默丢规则比报错更糟。
+
+version: 1
+
+signals:
+  # ---- blocking：确定性硬伤，命中即拦 ----
+
+  - id: flip
+    lens: deslop
+    title: 翻案腔（不是 A 而是 B）
+    severity: blocking
+    perMille: 0
+    minHits: 1
+    pattern: '(?:不是|并非|不在于|与其说)[^，。！？；\n]{1,24}?，?\s*(?:而是|而在于|不如说)'
+    suggest: '直接写正面判断；「不是 X 而是 Y」是中文 AI 文最稳的指纹，出现一处就够刺眼'
+    source: 'lieflat-less-ai-tone（1169 篇 / 520 万字实测，最强纯写作信号 δ=0.88）'
+
+  - id: emdash
+    lens: deslop
+    title: 破折号过多
+    severity: blocking
+    perMille: 5
+    minHits: 9
+    pattern: '[—–]'
+    suggest: '破折号在中文是规范标点、不是禁区，但网文密度应 ≤5 个/千字；能用句逗就换'
+    source: 'chinese-webnovel-skills/deslop（只拦滥用，不照搬英文 em dash 零容忍）'
+
+  - id: enleak
+    lens: deslop
+    title: 英文泄漏
+    severity: blocking
+    perMille: 1.5
+    minHits: 4
+    pattern: '\b[A-Za-z]{5,}\b'
+    suggest: '中文行文混入英文单词；专名/品牌/缩写（OK/APP）可保留'
+    source: '05-style-deslop 既有规则'
+
+  # ---- advisory：风格信号，作者判断 ----
+
+  - id: degree
+    lens: deslop
+    title: 程度词堆砌
+    severity: advisory
+    perMille: 4
+    minHits: 6
+    pattern: '(?:非常|极其|极大|极为|无比|十分|格外|异常地|难以置信地|不可思议地)'
+    suggest: '删掉九成程度副词，程度用具体画面或动作给（「手抖得点不着烟」而不是「非常紧张」）'
+    source: 'chinese-webnovel-skills/deslop（极端词滥用）'
+
+  - id: template
+    lens: deslop
+    title: 模板化情绪/动作套话
+    severity: advisory
+    perMille: 2.5
+    minHits: 4
+    pattern: '(?:嘴角(?:微微)?(?:上扬|勾起)|勾起(?:了)?一抹|眼中闪过|目光(?:深邃|锐利|微沉)|心中(?:一动|涌起|一紧|暗道)|涌上心头|指节泛白|瞳孔(?:微缩|一缩)|深吸一口气|不由得|不由自主|不禁|空气仿佛凝固|仿佛时间静止|气氛一时之间|声音(?:沙哑|低沉)|不容置疑|前所未有|话锋一转)'
+    suggest: '换成这个人物此刻具体的生理反应或动作；套话会让所有角色变成同一个人'
+    source: '05-style-deslop 一级词表 + humanizer-chinese 模式库'
+
+  - id: vagueattr
+    lens: deslop
+    title: 模糊归因
+    severity: advisory
+    perMille: 0
+    minHits: 1
+    pattern: '(?:有专家(?:指出|认为|表示)|研究(?:表明|显示|发现)|数据(?:显示|表明)|众所周知|据说|有资料显示)'
+    suggest: '给出具体出处，或改成人物的直接观察；旁白式伪引用会立刻出戏'
+    source: 'nabokov NB316 + humanizer-chinese §5'
+
+  - id: lecture
+    lens: deslop
+    title: 讲义腔路标词
+    severity: advisory
+    perMille: 2
+    minHits: 4
+    pattern: '(?:^|[。！？\n])\s*(?:首先|其次|再次|最后|综上所述|总而言之|值得注意的是|与此同时|此外|因此|然而)'
+    suggest: '叙事靠因果和场景承接，不靠路标词；删掉后读起来通常更快'
+    source: 'humanizer-chinese §10（CCL 2023：AI 连词密度为人类 3 倍）'
+
+  - id: sublime
+    lens: deslop
+    title: 句尾升华小句
+    severity: advisory
+    perMille: 0
+    minHits: 1
+    pattern: '[，,](?:这|它|其中)?(?:体现|彰显|反映|诠释|见证|昭示)了'
+    suggest: '删掉升华从句；让事件自己说话，不用旁白替读者总结意义'
+    source: 'humanizer-chinese §3（英文 -ing 伪分析的中文对应）'
+
+  - id: nounverb
+    lens: deslop
+    title: 万能动词公文腔
+    severity: advisory
+    perMille: 0
+    minHits: 1
+    pattern: '(?:对[^，。！？\n]{1,10}(?:进行|作出|加以)(?:了)?[^，。！？\n]{0,6}[一-龥]|实现了[^，。！？\n]{1,8}的提升|完成了对[^，。！？\n]{1,10}的)'
+    suggest: '把「对……进行分析」还原成「分析了」；公文腔与小说语域不兼容'
+    source: 'humanizer-chinese §17（余光中「万能动词」）'
+
+  - id: translation
+    lens: deslop
+    title: 翻译腔句式
+    severity: advisory
+    perMille: 1.5
+    minHits: 2
+    pattern: '(?:这是一个(?:如此|非常|多么)[^，。！？\n]{0,8}的|作为一个[^，。！？\n]{1,12}[，,]|(?:在|从)某种(?:意义|程度)上|(?:对于|对)[^，。！？\n]{1,10}(?:来说|而言)|就[^，。！？\n]{1,8}而言)'
+    suggest: '拆成短句、去掉话题壳；「对于 X 来说」这类结构在中文叙述里几乎总是多余的'
+    source: 'chinese-webnovel-skills/deslop（翻译腔）+ humanizer-chinese §16'
+
+  - id: simile
+    lens: deslop
+    title: 比喻词偏多
+    severity: advisory
+    perMille: 4
+    minHits: 9
+    pattern: '(?:如同|宛如|宛若|仿佛|好似|犹如)'
+    suggest: '减少比喻密度，保留最贴切的一两个；人类不比 AI 少用比喻，问题在密度与贴切度'
+    source: '05-style-deslop 既有规则'
+
+  # ---- weak：只参与「成簇」计数，从不单独报 ----
+  # 单个特征定不了罪（真人也会用破折号和排比），多项同时密集才是 AI 腔。
+
+  - id: colon
+    lens: deslop
+    title: 结论提示冒号
+    severity: weak
+    minHits: 1
+    pattern: '(?:核心是|关键是|真相是|问题在于|残酷的现实是|可怕的是|可怕之处在于|更重要的是)\s*[：:]'
+    source: 'lieflat-less-ai-tone（AI 2.1 倍）'
+
+  - id: listing
+    lens: deslop
+    title: 空转句引列表
+    severity: weak
+    minHits: 1
+    pattern: '(?:以下几种|以下三个|主要有|分为以下|这几件事|几点值得|三件事|两个方面|三个层面)[^。！？\n]{0,8}[：:]'
+    source: 'chinese-de-ai-writing（Claude 稿 85% 命中）'
+
+  - id: deco
+    lens: deslop
+    title: 装饰符号癖
+    severity: weak
+    minHits: 2
+    pattern: '[✦✨◆●★☆♦※→⇒]|[\x{1F300}-\x{1FAFF}]'
+    source: 'humanizer-chinese §30'
+
+  # 注：同义反复（「他非常生气，他怒了」）需要反向引用，而 Go 的 RE2 不支持 \1，
+  # 所以这一项只留给 AI 审校判断，不做本地正则。要加此类规则请确认 RE2 语法。
+
+# 成簇提示：同时命中的「类别」达到 clusterAt 个，补一条整体性提示。
+# 逐词替换治不了整体腔调，这条提示的意义是把作者引向叙述层。
+clusterAt: 3

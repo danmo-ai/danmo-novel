@@ -80,59 +80,6 @@ func ExtractVolumeHandoff(raw string) string {
 	return strings.Join(parts, "\n\n")
 }
 
-// ExtractFactsForVolumePlan pulls continuity ledger excerpts for volume planning:
-// cursor + cast snapshot (capped) + open loops (capped). Not the whole facts.md.
-func ExtractFactsForVolumePlan(raw string) string {
-	if strings.TrimSpace(raw) == "" {
-		return ""
-	}
-	var out []string
-	if cursor := mdSection(raw, "### Cursor"); cursor != "" {
-		out = append(out, "### 连载游标\n"+clip(cursor, 600))
-	}
-	if snapshot := mdSection(raw, "### Cast snapshot"); snapshot != "" {
-		rows := tableRows(snapshot)
-		if len(rows) > 12 {
-			rows = rows[len(rows)-12:]
-		}
-		if len(rows) > 0 {
-			lines := make([]string, 0, len(rows))
-			for _, row := range rows {
-				lines = append(lines, strings.Join(row, " | "))
-			}
-			out = append(out, "### 当前人物状态\n"+strings.Join(lines, "\n"))
-		}
-	}
-	if loops := mdSection(raw, "## Open loops"); loops != "" {
-		rows := tableRows(loops)
-		openish := make([][]string, 0, len(rows))
-		for _, row := range rows {
-			joined := strings.ToLower(strings.Join(row, "|"))
-			if strings.Contains(joined, "paid") || strings.Contains(joined, "dropped") || strings.Contains(joined, "已回收") {
-				continue
-			}
-			openish = append(openish, row)
-		}
-		if len(openish) == 0 {
-			openish = rows
-		}
-		if len(openish) > 8 {
-			openish = openish[:8]
-		}
-		if len(openish) > 0 {
-			lines := make([]string, 0, len(openish))
-			for _, row := range openish {
-				lines = append(lines, strings.Join(row, " | "))
-			}
-			out = append(out, "### 未回收公开伏笔（最多8条）\n"+strings.Join(lines, "\n"))
-		}
-	}
-	if len(out) == 0 {
-		return ""
-	}
-	return strings.Join(out, "\n\n")
-}
-
 func firstHeading(raw string) string {
 	for _, line := range strings.Split(raw, "\n") {
 		if strings.HasPrefix(strings.TrimSpace(line), "# ") {
@@ -250,68 +197,6 @@ func revealRowVolume(s string) int {
 	return 0
 }
 
-// ExtractFactsForWrite pulls only reader-known facts relevant to the on-stage
-// cast: 连载游标 + on-stage Cast snapshot rows + open loops mentioning the
-// on-stage stems (fallback: first rows). Never returns the whole facts.md.
-func ExtractFactsForWrite(raw string, onStage []string, unitID string) string {
-	if strings.TrimSpace(raw) == "" {
-		return ""
-	}
-	var out []string
-	if cursor := mdSection(raw, "### Cursor"); cursor != "" {
-		out = append(out, "### 连载游标\n"+clip(cursor, 900))
-	}
-	snapshot := mdSection(raw, "### Cast snapshot")
-	rows := tableRows(snapshot)
-	var people []string
-	for _, row := range rows {
-		for _, stem := range onStage {
-			if strings.Contains(row[0], stem) || (displayName(stem) != "" && strings.Contains(row[0], displayName(stem))) {
-				people = append(people, strings.Join(row, " | "))
-				break
-			}
-		}
-	}
-	if len(people) > 0 {
-		out = append(out, "### 当前人物状态\n"+strings.Join(people, "\n"))
-	}
-	loops := mdSection(raw, "## Open loops")
-	var relevant, rest []string
-	for _, row := range tableRows(loops) {
-		joined := strings.Join(row, "|")
-		hit := false
-		for _, stem := range onStage {
-			if stem != "" && strings.Contains(joined, stem) {
-				hit = true
-				break
-			}
-			if name := displayName(stem); name != "" && strings.Contains(joined, name) {
-				hit = true
-				break
-			}
-		}
-		if hit {
-			relevant = append(relevant, joined)
-		} else {
-			rest = append(rest, joined)
-		}
-	}
-	loopRows := relevant
-	if len(loopRows) == 0 {
-		loopRows = rest
-	}
-	if len(loopRows) > 6 {
-		loopRows = loopRows[:6]
-	}
-	if len(loopRows) > 0 {
-		out = append(out, "### 相关公开伏笔（最多6条）\n"+strings.Join(loopRows, "\n"))
-	}
-	if len(out) == 0 {
-		return "尚无已提交公开事实。"
-	}
-	return strings.Join(out, "\n\n")
-}
-
 // ExtractCastForWrite compresses a cast card to the fields a writer needs:
 // name+role, 本单元职务身份, 三锚点, POV 知识边界, one voice sample, 关系.
 // Never the whole card. identity 为该单元有效的职务身份（来自 identity-timeline）。
@@ -394,7 +279,7 @@ func ExtractStyle(raw string) string {
 	if strings.TrimSpace(raw) == "" {
 		return ""
 	}
-	return clip(raw, 480)
+	return clip(raw, 340)
 }
 
 // ExtractLockedTerms surfaces only the current volume's locked-term guidance
@@ -517,6 +402,70 @@ func chapterBeats(raw string) string {
 		return chapters
 	}
 	return raw
+}
+
+// dropYAMLList removes a top-level `key:` block (its indented body) from a
+// unit outline. Used to keep scenes/chapters from being injected twice: the
+// writer packet carries them in a dedicated 场面节拍 block, so repeating them
+// inside the full contract only burns prompt budget.
+func dropYAMLList(raw, key string) string {
+	re := regexp.MustCompile(`(?m)^` + key + `:[ \t]*\n((?:[ \t]+.*\n?)*)`)
+	return strings.TrimRight(re.ReplaceAllString(raw, ""), "\n")
+}
+
+// ContractWithoutBeats returns the unit contract with scenes/chapters removed,
+// because ChapterBeats() already supplies them as a separate block.
+// It falls back to the raw contract when the block is the only content, so a
+// malformed outline never produces an empty contract.
+func ContractWithoutBeats(raw string) string {
+	out := raw
+	for _, key := range []string{"scenes", "chapters"} {
+		if mdYAMLList(out, key) == "" {
+			continue
+		}
+		if trimmed := dropYAMLList(out, key); strings.TrimSpace(trimmed) != "" {
+			out = trimmed
+		}
+	}
+	return strings.TrimSpace(out)
+}
+
+var sceneStartRe = regexp.MustCompile(`(?m)^[ \t]*(?:- )?id:[ \t]*\S`)
+var sceneChapterRe = regexp.MustCompile(`(?m)^[ \t]*chapter:[ \t]*(\d+)`)
+
+// BeatsForChapter narrows the 场面节拍 block to one chapter's scenes.
+//
+// 分章写作时每章只需自己的 4–6 个场面，但 packet 是整单元构建的：6 章单元每次
+// 调用都带全部 26 个场面，重复 6 遍。按 `chapter:` 过滤后单次提示词能省下大半。
+// 没有 `chapter` 字段的场面一律保留——宁可多带，也不要把作者的节拍丢掉。
+func BeatsForChapter(raw string, chapter int) string {
+	block := ChapterBeats(raw)
+	if chapter <= 0 || strings.TrimSpace(block) == "" {
+		return block
+	}
+	locs := sceneStartRe.FindAllStringIndex(block, -1)
+	if len(locs) < 2 {
+		return block // 只有一段（或格式无法切分）时原样返回
+	}
+	var kept []string
+	for i, loc := range locs {
+		end := len(block)
+		if i+1 < len(locs) {
+			end = locs[i+1][0]
+		}
+		entry := strings.TrimRight(block[loc[0]:end], "\n")
+		if m := sceneChapterRe.FindStringSubmatch(entry); len(m) == 2 {
+			n, err := strconv.Atoi(m[1])
+			if err == nil && n != chapter {
+				continue
+			}
+		}
+		kept = append(kept, entry)
+	}
+	if len(kept) == 0 {
+		return block // 过滤后为空说明 chapter 标记不可信，退回全量
+	}
+	return strings.Join(kept, "\n")
 }
 
 func mdYAMLList(raw, key string) string {

@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -70,6 +71,8 @@ func NewRouter(app *App) *gin.Engine {
 			c.JSON(200, gin.H{
 				"id": c.Param("id"), "content": raw,
 				"stages": nonNil(tags.Stages), "genres": nonNil(tags.Genres), "subgenres": nonNil(tags.Subgenres),
+				"default":  tags.Default,
+				"audience": tags.Audience,
 			})
 		})
 		api.PUT("/knowledge/:id", func(c *gin.Context) {
@@ -92,7 +95,12 @@ func NewRouter(app *App) *gin.Engine {
 			var keep *knowledge.Tags
 			switch {
 			case body.Tags != nil:
-				keep = &knowledge.Tags{Stages: body.Tags.Stages, Genres: body.Tags.Genres, Subgenres: body.Tags.Subgenres}
+				// 默认注入是结构属性，不接受客户端覆盖：从当前生效标签继承。
+				cur, _ := knowledge.TagsOf(app.Settings.Get().LibraryRoot, c.Param("id"))
+				keep = &knowledge.Tags{
+					Stages: body.Tags.Stages, Genres: body.Tags.Genres, Subgenres: body.Tags.Subgenres,
+					Default: cur.Default,
+				}
 			case body.Stages != nil || body.Genres != nil || body.Subgenres != nil:
 				// Partial update: absent fields keep their current tags.
 				tags, _ := knowledge.TagsOf(app.Settings.Get().LibraryRoot, c.Param("id"))
@@ -124,6 +132,8 @@ func NewRouter(app *App) *gin.Engine {
 			c.JSON(200, gin.H{
 				"id": c.Param("id"), "content": raw,
 				"stages": nonNil(tags.Stages), "genres": nonNil(tags.Genres), "subgenres": nonNil(tags.Subgenres),
+				"default":  tags.Default,
+				"audience": tags.Audience,
 			})
 		})
 		api.PUT("/settings/model-assignments", func(c *gin.Context) {
@@ -410,6 +420,10 @@ func registerBooks(api *gin.RouterGroup, app *App) {
 		}
 		kind, unit, vol := books.SelectPrimaryAction(snap)
 		out := gin.H{"book": snap, "primary": gin.H{"kind": kind, "unitId": unit, "volume": vol}}
+		// 连续性状态摘要：作者一眼能看出"状态账建到哪了"，缺失时提示先定稿一个单元。
+		if states, serr := books.LoadState(root); serr == nil {
+			out["continuity"] = books.SummarizeState(states)
+		}
 		if app.Chains != nil {
 			if ch, ok := app.Chains.Latest(c.Request.Context(), snap.Summary.ID); ok {
 				out["chain"] = ch
@@ -437,6 +451,21 @@ func registerBooks(api *gin.RouterGroup, app *App) {
 			return
 		}
 		c.JSON(200, gin.H{"ok": true})
+	})
+	// 一次性迁移：按已定稿单元的 state_deltas 重建 continuity/state.yaml，
+	// 退役 facts.md，把 novel-state 的自由日志搬到 commits/book-notes.md。
+	api.POST("/books/:id/migrate-continuity", func(c *gin.Context) {
+		root, _, err := app.Store.GetBookRoot(c.Request.Context(), c.Param("id"))
+		if err != nil {
+			c.JSON(404, gin.H{"error": err.Error()})
+			return
+		}
+		rep, err := books.MigrateContinuity(root)
+		if err != nil {
+			c.JSON(500, gin.H{"error": err.Error(), "report": rep})
+			return
+		}
+		c.JSON(200, rep)
 	})
 	api.POST("/books/:id/enable-write", func(c *gin.Context) {
 		root, _, err := app.Store.GetBookRoot(c.Request.Context(), c.Param("id"))
@@ -653,6 +682,23 @@ func registerRuns(api *gin.RouterGroup, app *App) {
 		if err != nil {
 			c.JSON(500, gin.H{"error": err.Error()})
 			return
+		}
+		c.JSON(200, list)
+	})
+	// 已终结候选（含「接受归档」的审校清单）：只读回看，不参与任何流程判断。
+	api.GET("/books/:id/candidates/history", func(c *gin.Context) {
+		limit, _ := strconv.Atoi(c.Query("limit"))
+		list, err := app.Store.ListClosedCandidates(c.Request.Context(), c.Param("id"), limit)
+		if err != nil {
+			c.JSON(500, gin.H{"error": err.Error()})
+			return
+		}
+		// 审校候选把被审正文复制进了 chapters；历史列表只回看结论，顺手剥掉以免响应过大。
+		for i := range list {
+			list[i].Chapters = nil
+			list[i].PlanSettings = nil
+			list[i].PlanMarkdown = nil
+			list[i].Replacement = ""
 		}
 		c.JSON(200, list)
 	})

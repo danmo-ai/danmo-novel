@@ -2,8 +2,9 @@
 import { computed, onMounted, ref } from 'vue'
 import { api } from '@/api/client'
 import { useAppStore } from '@/stores/app'
-import type { Run } from '@/types'
-import { KIND_LABELS, runKindLabel } from '@/utils/runLabels'
+import type { CallRecord, Run } from '@/types'
+import { KIND_LABELS, STATUS_LABELS, runKindLabel } from '@/utils/runLabels'
+import { cacheStat, callCacheText, hitRateText } from '@/utils/tokenStats'
 
 const store = useAppStore()
 const runs = ref<Run[]>([])
@@ -16,9 +17,7 @@ const query = ref('')
 const expanded = ref('')
 
 const kindLabels = KIND_LABELS
-const statusLabels: Record<string, string> = {
-  pending: '排队', running: '运行中', waiting_accept: '待接受', succeeded: '成功', failed: '失败', cancelled: '已取消',
-}
+const statusLabels: Record<string, string> = { ...STATUS_LABELS }
 const models = computed(() => [...new Set(runs.value.map((r) => r.modelId).filter(Boolean))].sort())
 const filtered = computed(() => runs.value.filter((r) => {
   if (bookFilter.value && r.bookId !== bookFilter.value) return false
@@ -28,17 +27,25 @@ const filtered = computed(() => runs.value.filter((r) => {
   if (query.value && !`${r.bookId} ${r.modelId} ${r.spec.unitId || ''} ${r.error || ''}`.toLowerCase().includes(query.value.toLowerCase())) return false
   return true
 }))
-const totals = computed(() => filtered.value.reduce((acc, r) => {
-  acc.calls += r.callsUsed || 0
-  acc.input += (r.calls || []).reduce((n, c) => n + (c.promptTokens || 0), 0)
-  acc.output += (r.calls || []).reduce((n, c) => n + (c.completionTokens || 0), 0)
-  acc.duration += (r.calls || []).reduce((n, c) => n + (c.durationMs || 0), 0)
-  return acc
-}, { calls: 0, input: 0, output: 0, duration: 0 }))
+const totals = computed(() => {
+  const acc = filtered.value.reduce((a, r) => {
+    a.calls += r.callsUsed || 0
+    a.input += (r.calls || []).reduce((n, c) => n + (c.promptTokens || 0), 0)
+    a.output += (r.calls || []).reduce((n, c) => n + (c.completionTokens || 0), 0)
+    a.duration += (r.calls || []).reduce((n, c) => n + (c.durationMs || 0), 0)
+    return a
+  }, { calls: 0, input: 0, output: 0, duration: 0 })
+  // 缓存命中是"重试成本"的直接指标：命中率接近 100% 说明修复重试几乎只付
+  // repair 那几十 token 的钱。按当前筛选范围汇总，口径与输入 Token 一致。
+  const cache = cacheStat(filtered.value.flatMap((r) => r.calls || []))
+  return { ...acc, cache }
+})
 function bookTitle(id: string) { return store.books.find((b) => b.id === id)?.title || id }
 function date(iso: string) { return new Date(iso).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' }) }
 function duration(run: Run) { const ms = (run.calls || []).reduce((n, c) => n + (c.durationMs || 0), 0); return ms ? `${(ms / 1000).toFixed(1)}s` : '—' }
 function tokens(run: Run, key: 'promptTokens' | 'completionTokens') { return (run.calls || []).reduce((n, c) => n + (c[key] || 0), 0) }
+function runCache(run: Run) { return cacheStat(run.calls) }
+function cacheHit(c: CallRecord) { return callCacheText(c) }
 function target(run: Run) {
   const spec = run.spec || {}
   // plan 任务目标是全书或卷，忽略误带的 unitId（历史记录里常被写成 U1）。
@@ -71,6 +78,7 @@ onMounted(load)
       <div class="summary panel"><small>任务</small><strong>{{ filtered.length }}</strong><span>当前筛选</span></div>
       <div class="summary panel"><small>LLM 调用</small><strong>{{ totals.calls }}</strong><span>实际调用次数</span></div>
       <div class="summary panel"><small>输入 / 输出</small><strong>{{ totals.input.toLocaleString() }} <i>/</i> {{ totals.output.toLocaleString() }}</strong><span>Token</span></div>
+      <div class="summary panel cache"><small>缓存命中</small><strong>{{ totals.cache.read.toLocaleString() }} <i>/</i> {{ hitRateText(totals.cache) }}</strong><span>{{ totals.cache.hasData ? `占输入 Token ${Math.round(totals.cache.ratio * 100)}%` : '该模型未返回缓存数据' }}</span></div>
       <div class="summary panel"><small>累计耗时</small><strong>{{ (totals.duration / 1000).toFixed(1) }}s</strong><span>模型请求</span></div>
     </div>
     <div class="filters panel">
@@ -90,7 +98,10 @@ onMounted(load)
           <span class="time-book"><strong>{{ bookTitle(r.bookId) }}</strong><small>{{ date(r.createdAt) }}</small></span>
           <span class="kind-target"><strong>{{ runKindLabel(r.kind, r.spec?.mode) }}</strong><small>{{ target(r) }}</small></span>
           <span class="model" :title="r.modelId">{{ r.modelId }}</span>
-          <span class="tokens"><strong>{{ tokens(r, 'promptTokens').toLocaleString() }}</strong><small>/ {{ tokens(r, 'completionTokens').toLocaleString() }}</small></span>
+          <span class="tokens">
+            <strong>{{ tokens(r, 'promptTokens').toLocaleString() }}</strong><small>/ {{ tokens(r, 'completionTokens').toLocaleString() }}</small>
+            <em v-if="runCache(r).hasData" title="缓存命中占输入 Token 的比例">缓存 {{ hitRateText(runCache(r)) }}</em>
+          </span>
           <span class="calls"><strong>{{ r.callsUsed }}/{{ r.policy?.maxCalls || '—' }}</strong><small>{{ duration(r) }}</small></span>
           <span class="status" :data-status="r.status">{{ statusLabels[r.status] || r.status }}</span>
           <span class="expand">{{ expanded === r.id ? '−' : '+' }}</span>
@@ -99,9 +110,15 @@ onMounted(load)
           <div v-if="r.error" class="error-detail"><strong>错误</strong><p>{{ r.error }}</p></div>
           <div class="detail-meta"><span>任务 ID：{{ r.id }}</span><span>基础版本：{{ r.spec.baseRevision || '未指定' }}</span><span v-if="r.candidateId">候选：{{ r.candidateId }}</span></div>
           <div v-if="r.contextSummary?.length" class="context-detail"><strong>上下文</strong><span v-for="item in r.contextSummary" :key="item">{{ item }}</span></div>
+          <div v-if="runCache(r).hasData" class="cache-detail">
+            <strong>缓存</strong>
+            <span>命中 {{ runCache(r).read.toLocaleString() }} token（{{ hitRateText(runCache(r)) }}）</span>
+            <span v-if="runCache(r).creation">写入 {{ runCache(r).creation.toLocaleString() }} token</span>
+            <span class="hint">重试调用（step=repair）的命中率应接近 100%：repair 只追加在 payload 尾部，前缀不动。</span>
+          </div>
           <table>
-            <thead><tr><th>#</th><th>调用用途</th><th>模型</th><th>输入 Token</th><th>输出 Token</th><th>耗时</th><th>开始时间</th></tr></thead>
-            <tbody><tr v-for="c in r.calls" :key="c.index"><td>{{ c.index }}</td><td>{{ c.step }}</td><td>{{ c.modelId }}</td><td>{{ c.promptTokens }}</td><td>{{ c.completionTokens }}</td><td>{{ (c.durationMs / 1000).toFixed(1) }}s</td><td>{{ date(c.startedAt) }}</td></tr></tbody>
+            <thead><tr><th>#</th><th>调用用途</th><th>模型</th><th>输入 Token</th><th>缓存命中</th><th>缓存写入</th><th>输出 Token</th><th>耗时</th><th>开始时间</th></tr></thead>
+            <tbody><tr v-for="c in r.calls" :key="c.index"><td>{{ c.index }}</td><td>{{ c.step }}</td><td>{{ c.modelId }}</td><td>{{ c.promptTokens }}</td><td>{{ cacheHit(c) }}</td><td>{{ c.cacheCreationTokens ? c.cacheCreationTokens.toLocaleString() : '—' }}</td><td>{{ c.completionTokens }}</td><td>{{ (c.durationMs / 1000).toFixed(1) }}s</td><td>{{ date(c.startedAt) }}</td></tr></tbody>
           </table>
           <p v-if="!r.calls?.length" class="muted">尚无模型调用记录。</p>
         </div>
@@ -116,11 +133,12 @@ onMounted(load)
 .eyebrow { margin: 0; color: var(--accent); font-size: 12px; letter-spacing: 0.16em; text-transform: uppercase; }
 h1 { margin: 8px 0 8px; font-family: var(--font-prose); font-size: clamp(28px, 3.5vw, 44px); line-height: 1.05; }
 .page-head p:not(.eyebrow) { margin: 0; color: var(--ink-soft); font-size: 13px; }
-.summary-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+.summary-grid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 12px; }
 .summary { padding: 20px; display: grid; gap: 6px; }
 .summary small, .summary span { color: var(--ink-soft); font-size: 12px; }
 .summary strong { font-family: var(--font-prose); font-size: 24px; }
 .summary i { color: var(--ink-soft); font-style: normal; font-size: 16px; }
+.summary.cache strong { color: var(--accent); }
 .filters { display: flex; flex-wrap: wrap; gap: 8px; padding: 12px; }
 .filters select, .filters input { padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: white; font-size: 12px; }
 .filters input { flex: 1; min-width: 180px; }
@@ -134,6 +152,7 @@ h1 { margin: 8px 0 8px; font-family: var(--font-prose); font-size: clamp(28px, 3
 .model { font-size: 11px; word-break: break-all; color: var(--ink-soft); }
 .tokens strong, .tokens small { display: inline; }
 .tokens small { margin-left: 3px; }
+.tokens em { display: block; margin-top: 4px; color: var(--accent); font-size: 10px; font-style: normal; }
 .status { font-size: 11px; color: var(--accent); }
 .status[data-status="failed"] { color: var(--bad); }
 .status[data-status="waiting_accept"] { color: var(--warn); }
@@ -144,6 +163,10 @@ h1 { margin: 8px 0 8px; font-family: var(--font-prose); font-size: clamp(28px, 3
 .context-detail { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 14px; font-size: 11px; }
 .context-detail strong { margin-right: 4px; }
 .context-detail span { padding: 3px 7px; background: rgba(15,107,92,.07); color: var(--accent); border-radius: 6px; }
+.cache-detail { display: flex; flex-wrap: wrap; gap: 10px; align-items: baseline; margin-bottom: 14px; font-size: 11px; }
+.cache-detail strong { color: var(--ink-soft); }
+.cache-detail span { padding: 3px 7px; background: rgba(15,107,92,.07); color: var(--accent); border-radius: 6px; }
+.cache-detail span.hint { background: none; color: var(--ink-soft); padding: 0; font-size: 10px; }
 .run-details table { width: 100%; border-collapse: collapse; font-size: 12px; }
 .run-details th, .run-details td { text-align: left; padding: 8px; border-top: 1px solid var(--line); white-space: nowrap; }
 .run-details th { color: var(--ink-soft); font-weight: 500; }

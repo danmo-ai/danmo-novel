@@ -342,6 +342,8 @@ func (s *Service) runStage(ctx context.Context, ch *domain.Chain, unitID string,
 		ModelID:      ch.Spec.ModelID,
 		Instruction:  cfg.Instruction,
 		KnowledgeIDs: cfg.KnowledgeIDs,
+		// 审校与手工路径一致走分章：单章 prompt 小、注意力集中，也不会撞输出预算。
+		SplitByChapter: stage == domain.ChainStageReview,
 	}
 	run, err := s.Runs.Start(ctx, spec)
 	if err != nil {
@@ -379,19 +381,36 @@ func (s *Service) runStage(ctx context.Context, ch *domain.Chain, unitID string,
 	if err != nil {
 		return s.interrupt(ch, stage, run.ID, err.Error())
 	}
+	lastRunID := run.ID
+	// 审校阻断先自动定向修订一轮再复审；预算固定（+1 revise、+1 review），不循环。
+	if stage == domain.ChainStageReview && len(blockingOf(cand.Findings)) > 0 {
+		revised, freshSnap, reviewRunID, rerr := s.autoReviseReview(ctx, ch, unitID, cand)
+		if rerr != nil {
+			if ctx.Err() != nil {
+				return s.cancelChain(ch.ID)
+			}
+			if reviewRunID != "" {
+				lastRunID = reviewRunID
+			}
+			return s.interrupt(ch, stage, lastRunID, rerr.Error())
+		}
+		cand, snap, lastRunID = revised, freshSnap, reviewRunID
+		ch.Units[idx].CandidateID = cand.ID
+		ch.Units[idx].RunID = lastRunID
+	}
 	if blocking := blockingFindings(cand.Findings); len(blocking) > 0 {
-		return s.interrupt(ch, stage, run.ID, "门禁未通过："+strings.Join(blocking, "；"))
+		return s.interrupt(ch, stage, lastRunID, "门禁未通过："+strings.Join(blocking, "；"))
 	}
 	// 覆盖已有正文前先备份旧稿（新写单元无文件，静默跳过）。
 	if stage == domain.ChainStageWrite {
 		if u, ok := findUnit(snap, unitID); ok && u.HasProse {
 			if _, err := books.ArchiveUnitProse(root, unitID); err != nil {
-				return s.interrupt(ch, stage, run.ID, "备份旧正文失败："+err.Error())
+				return s.interrupt(ch, stage, lastRunID, "备份旧正文失败："+err.Error())
 			}
 		}
 	}
 	if _, err := s.Runs.Accept(ctx, domain.AcceptCommand{CandidateID: cand.ID, BaseRevision: snap.Revision}); err != nil {
-		return s.interrupt(ch, stage, run.ID, "接受候选失败："+err.Error())
+		return s.interrupt(ch, stage, lastRunID, "接受候选失败："+err.Error())
 	}
 
 	if next := domain.NextChainStage(stage); next != "" {
@@ -426,6 +445,119 @@ func (s *Service) interrupt(ch *domain.Chain, stage domain.ChainStage, runID, ms
 	ch.UpdatedAt = time.Now().UTC()
 	_ = s.Store.SaveChain(context.Background(), *ch)
 	return errStop
+}
+
+// autoReviseReview turns a blocked review into one bounded 定向修订 + 复审.
+//
+// 预算固定：一次阻断最多换来 +1 次 revise 调用和 +1 次 review 调用，不做第二轮；
+// 复审仍不过就交回人工。必须等修订跑完再归档旧清单——修订任务是从 open 审校候选
+// 里按 issueId 取 findings 的，提前归档会让它拿不到要修的问题。
+func (s *Service) autoReviseReview(ctx context.Context, ch *domain.Chain, unitID string, review domain.Candidate) (domain.Candidate, domain.BookSnapshot, string, error) {
+	var zero domain.BookSnapshot
+	var ids []string
+	seen := map[string]bool{}
+	for _, f := range blockingOf(review.Findings) {
+		if f.ID == "" || seen[f.ID] {
+			continue
+		}
+		seen[f.ID] = true
+		ids = append(ids, f.ID)
+	}
+	if len(ids) == 0 {
+		return domain.Candidate{}, zero, "", fmt.Errorf("审校阻断项缺少 id，无法定向修订")
+	}
+
+	reviseRun, err := s.Runs.Start(ctx, domain.TaskSpec{
+		Kind: domain.TaskRevise, BookID: ch.BookID, UnitID: unitID,
+		ModelID: ch.Spec.ModelID, IssueIDs: ids,
+	})
+	if err != nil {
+		return domain.Candidate{}, zero, "", fmt.Errorf("自动修订未能启动：%w", err)
+	}
+	s.trackRun(ch.ID, reviseRun.ID)
+	done, err := s.Runs.WaitRun(ctx, reviseRun.ID)
+	if err != nil {
+		return domain.Candidate{}, zero, reviseRun.ID, fmt.Errorf("自动修订中断：%w", err)
+	}
+	if done.Status != domain.RunWaiting || done.CandidateID == "" {
+		return domain.Candidate{}, zero, reviseRun.ID, fmt.Errorf("自动修订失败：%s", runFailure(done))
+	}
+	revCand, err := s.Store.GetCandidate(ctx, done.CandidateID)
+	if err != nil {
+		return domain.Candidate{}, zero, reviseRun.ID, err
+	}
+
+	root, _, err := s.Store.GetBookRoot(ctx, ch.BookID)
+	if err != nil {
+		return domain.Candidate{}, zero, reviseRun.ID, err
+	}
+	snap, err := books.LoadBook(root, false)
+	if err != nil {
+		return domain.Candidate{}, zero, reviseRun.ID, err
+	}
+	// 修订会覆盖正文：先按写入阶段的同一规则备份旧稿。
+	if u, ok := findUnit(snap, unitID); ok && u.HasProse {
+		if _, err := books.ArchiveUnitProse(root, unitID); err != nil {
+			return domain.Candidate{}, zero, reviseRun.ID, fmt.Errorf("备份旧正文失败：%w", err)
+		}
+	}
+	if _, err := s.Runs.Accept(ctx, domain.AcceptCommand{CandidateID: revCand.ID, BaseRevision: snap.Revision}); err != nil {
+		return domain.Candidate{}, zero, reviseRun.ID, fmt.Errorf("接受修订候选失败：%w", err)
+	}
+	// 阻断项已按清单修过：归档这份清单，免得它继续挡住 Resume 或被当成待办。
+	if _, err := s.Runs.Accept(ctx, domain.AcceptCommand{CandidateID: review.ID, BaseRevision: snap.Revision}); err != nil {
+		return domain.Candidate{}, zero, reviseRun.ID, fmt.Errorf("归档审校清单失败：%w", err)
+	}
+
+	// 正文已变，重新取快照再分章复审一次；复审通过的候选由调用方正常接受。
+	snap, err = books.LoadBook(root, false)
+	if err != nil {
+		return domain.Candidate{}, zero, reviseRun.ID, err
+	}
+	reviewRun, err := s.Runs.Start(ctx, domain.TaskSpec{
+		Kind: domain.TaskReview, BookID: ch.BookID, UnitID: unitID,
+		ModelID: ch.Spec.ModelID, SplitByChapter: true,
+	})
+	if err != nil {
+		return domain.Candidate{}, zero, reviseRun.ID, fmt.Errorf("自动复审未能启动：%w", err)
+	}
+	s.trackRun(ch.ID, reviewRun.ID)
+	done, err = s.Runs.WaitRun(ctx, reviewRun.ID)
+	if err != nil {
+		return domain.Candidate{}, zero, reviewRun.ID, fmt.Errorf("自动复审中断：%w", err)
+	}
+	if done.Status != domain.RunWaiting || done.CandidateID == "" {
+		return domain.Candidate{}, zero, reviewRun.ID, fmt.Errorf("自动复审失败：%s", runFailure(done))
+	}
+	final, err := s.Store.GetCandidate(ctx, done.CandidateID)
+	if err != nil {
+		return domain.Candidate{}, zero, reviewRun.ID, err
+	}
+	return final, snap, reviewRun.ID, nil
+}
+
+// trackRun points the chain's cancel handle at the run currently in flight.
+func (s *Service) trackRun(chainID, runID string) {
+	s.mu.Lock()
+	s.subRuns[chainID] = runID
+	s.mu.Unlock()
+}
+
+func runFailure(run domain.Run) string {
+	if strings.TrimSpace(run.Error) != "" {
+		return run.Error
+	}
+	return fmt.Sprintf("运行状态 %s，未产出候选", run.Status)
+}
+
+func blockingOf(fs []domain.ReviewFinding) []domain.ReviewFinding {
+	var out []domain.ReviewFinding
+	for _, f := range fs {
+		if f.Severity == "blocking" {
+			out = append(out, f)
+		}
+	}
+	return out
 }
 
 func (s *Service) cancelChain(chainID string) error {

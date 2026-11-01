@@ -38,6 +38,20 @@ func TestBuildPlanPacketInitOutputBudget(t *testing.T) {
 	}
 }
 
+func TestBuildOutlinePacketOutputBudget(t *testing.T) {
+	snap := domain.BookSnapshot{Summary: domain.BookSummary{ID: "demo"}}
+	// 未知模型容量时用 outline 的固定预算（需容纳与细纲头同量级的输出）。
+	p := BuildOutlinePacket(snap, 1, nil, "", 0)
+	if p.Policy.MaxOutputTokens != 32768 {
+		t.Fatalf("outline budget=%d want 32768", p.Policy.MaxOutputTokens)
+	}
+	// 仍受模型 max_output 约束。
+	small := BuildOutlinePacket(snap, 1, nil, "", 8192)
+	if small.Policy.MaxOutputTokens != 8192 {
+		t.Fatalf("outline clamped=%d want 8192", small.Policy.MaxOutputTokens)
+	}
+}
+
 func TestBuildPlanPacketUserIsJSONWithoutSystemTemplate(t *testing.T) {
 	snap := domain.BookSnapshot{
 		Summary: domain.BookSummary{ID: "demo", Genre: "悬疑"},

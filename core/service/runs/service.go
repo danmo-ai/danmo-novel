@@ -2,7 +2,6 @@ package runs
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -15,8 +14,10 @@ import (
 	"github.com/danmo-ai/danmo-novel/core/config"
 	"github.com/danmo-ai/danmo-novel/core/domain"
 	"github.com/danmo-ai/danmo-novel/core/port"
+	"github.com/danmo-ai/danmo-novel/core/runtimepaths"
 	"github.com/danmo-ai/danmo-novel/core/service/books"
 	contextsvc "github.com/danmo-ai/danmo-novel/core/service/context"
+	"github.com/danmo-ai/danmo-novel/core/service/gates"
 	"github.com/danmo-ai/danmo-novel/core/service/knowledge"
 	"github.com/danmo-ai/danmo-novel/core/service/llmconfig"
 	"github.com/danmo-ai/danmo-novel/core/service/pipeline"
@@ -134,6 +135,20 @@ func (s *Service) execute(ctx context.Context, run domain.Run, snap domain.BookS
 	// 作者勾选的参考知识文章（独立于 unit 的 ExtraContextIDs 语义）。
 	s.Pipeline.KnowledgeDocs = s.loadKnowledge(run.Spec.KnowledgeIDs)
 	defer func() { s.Pipeline.KnowledgeDocs = nil }()
+	// 审校清单按作者在知识库里的编辑生效；未编辑时回退内置文章。
+	s.Pipeline.ReviewChecklist = s.loadReviewChecklist()
+	defer func() { s.Pipeline.ReviewChecklist = "" }()
+	// 本地硬门规则同样允许作者覆盖（本书 > 知识库 > 内置）。
+	// 正则写错时必须让作者看到，而不是静默退回内置继续"正常"跑——
+	// 所以这里先记下错误，switch 跑完后覆盖，而不是被 case 里的赋值冲掉。
+	var rulesErr error
+	if rules, rerr := s.loadDeslopRules(snap.Summary.RootPath); rerr != nil {
+		rulesErr = fmt.Errorf("去 AI 味规则无法解析：%w", rerr)
+		s.Pipeline.DeslopRules = gates.BuiltinRules()
+	} else {
+		s.Pipeline.DeslopRules = rules
+	}
+	defer func() { s.Pipeline.DeslopRules = nil }()
 	switch run.Kind {
 	case domain.TaskWrite:
 		unit, ok := findUnit(snap, run.Spec.UnitID)
@@ -193,6 +208,12 @@ func (s *Service) execute(ctx context.Context, run domain.Run, snap domain.BookS
 		unit, ok := findUnit(snap, run.Spec.UnitID)
 		if !ok {
 			err = fmt.Errorf("unit not found")
+		} else if run.Spec.SplitByChapter || s.Settings.Get().Review.SplitByChapter {
+			res, err = s.Pipeline.RunReviewByChapter(ctx, snap, unit, modelID, pipeline.ReviewOptions{
+				SplitByChapter: true,
+				Concurrency:    s.Settings.Get().Review.Concurrency,
+				ReviewCursor:   run.ReviewCursor,
+			})
 		} else {
 			res, err = s.Pipeline.RunReview(ctx, snap, unit, modelID)
 		}
@@ -239,6 +260,10 @@ func (s *Service) execute(ctx context.Context, run domain.Run, snap domain.BookS
 	default:
 		err = fmt.Errorf("unsupported task kind: %s", run.Kind)
 	}
+	// 规则解析失败优先于任务结果：跑出来的结论用的是错规则，不可信。
+	if rulesErr != nil {
+		err = rulesErr
+	}
 
 	run.UpdatedAt = time.Now().UTC()
 	run.Calls = res.Calls
@@ -247,6 +272,8 @@ func (s *Service) execute(ctx context.Context, run domain.Run, snap domain.BookS
 	for _, b := range res.Packet.Blocks {
 		run.ContextSummary = append(run.ContextSummary, b.Label)
 	}
+	// 分章审校失败时保留已通过章的进度，重跑从失败章继续。
+	run.ReviewCursor = res.NextReviewCursor
 	if ctx.Err() != nil {
 		run.Status = domain.RunCancelled
 		run.Error = "cancelled"
@@ -257,6 +284,13 @@ func (s *Service) execute(ctx context.Context, run domain.Run, snap domain.BookS
 		run.Status = domain.RunFailed
 		run.Error = err.Error()
 		_ = s.Store.SaveRun(context.Background(), run)
+		// 部分完成：仍把已审出的结论落成候选，作者不必从头再跑。
+		if res.Candidate.Kind != "" && len(res.Candidate.Findings) > 0 {
+			res.Candidate.RunID = run.ID
+			_ = s.Store.SaveCandidate(context.Background(), res.Candidate)
+			run.CandidateID = res.Candidate.ID
+			_ = s.Store.SaveRun(context.Background(), run)
+		}
 		return
 	}
 	res.Candidate.RunID = run.ID
@@ -323,7 +357,7 @@ func (s *Service) PreviewPacket(_ context.Context, spec domain.TaskSpec) (domain
 		if !ok {
 			return domain.ContextPacket{}, fmt.Errorf("unit not found")
 		}
-		return contextsvc.BuildReviewPacket(snap, unit, nil, s.modelMaxOut(s.resolveModel(spec))), nil
+		return contextsvc.BuildReviewPacket(snap, unit, nil, s.modelMaxOut(s.resolveModel(spec)), s.loadReviewChecklist()), nil
 	case domain.TaskFinalize:
 		unit, ok := findUnit(snap, spec.UnitID)
 		if !ok {
@@ -433,15 +467,20 @@ func (s *Service) Accept(ctx context.Context, cmd domain.AcceptCommand) (domain.
 	if err != nil {
 		return domain.Candidate{}, err
 	}
-	if cmd.BaseRevision != "" && cmd.BaseRevision != snap.Revision {
-		cand.Status = domain.CandidateExpired
-		_ = s.Store.SaveCandidate(ctx, cand)
-		return domain.Candidate{}, fmt.Errorf("baseRevision expired; re-compare and regenerate if needed")
-	}
-	if cand.BaseRevision != snap.Revision {
-		cand.Status = domain.CandidateExpired
-		_ = s.Store.SaveCandidate(ctx, cand)
-		return domain.Candidate{}, fmt.Errorf("book changed since generation")
+	// 审校候选只是问题清单，接受=归档确认（不写盘）。正文被修订后旧结论仍然可归档，
+	// 所以不校验 baseRevision；否则「定向修订→接受」之后旧审校候选会报过期错误、
+	// 只能靠拒绝清掉，等于分不清「已复核」和「被丢弃」。
+	if cand.Kind != domain.TaskReview {
+		if cmd.BaseRevision != "" && cmd.BaseRevision != snap.Revision {
+			cand.Status = domain.CandidateExpired
+			_ = s.Store.SaveCandidate(ctx, cand)
+			return domain.Candidate{}, fmt.Errorf("baseRevision expired; re-compare and regenerate if needed")
+		}
+		if cand.BaseRevision != snap.Revision {
+			cand.Status = domain.CandidateExpired
+			_ = s.Store.SaveCandidate(ctx, cand)
+			return domain.Candidate{}, fmt.Errorf("book changed since generation")
+		}
 	}
 
 	switch cand.Kind {
@@ -552,7 +591,8 @@ func (s *Service) Accept(ctx context.Context, cmd domain.AcceptCommand) (domain.
 			return domain.Candidate{}, err
 		}
 	case domain.TaskReview:
-		// accepting review findings alone never finalizes
+		// 接受审校候选只做归档：问题清单不外写、不推进单元状态（drafted 不变）。
+		// 真正改正文的是 review → revise → 接受 revise 候选。
 	case domain.TaskFinalize:
 		// 定稿前再校验剧情时钟（防止接受了带时钟冲突的细纲一路写到定稿）。
 		if !cmd.ForceRiskAccept {
@@ -609,8 +649,51 @@ func (s *Service) Accept(ctx context.Context, cmd domain.AcceptCommand) (domain.
 		run.UpdatedAt = now
 		_ = s.Store.SaveRun(ctx, run)
 	}
+
+	// 闭环一：接受修订候选后归档该单元已处理的审校清单，并自动分章复审一次。
+	// 先 SaveCandidate 再赋值，保证 FollowUpRunID 只出现在响应里，不写进 SQLite。
+	if cmd.FollowUpReview && cand.Kind == domain.TaskRevise {
+		cand.FollowUpRunID = s.startFollowUpReview(ctx, cand, root)
+	}
 	_ = root
 	return cand, nil
+}
+
+// startFollowUpReview closes the manual review loop after a revision is accepted:
+// the handled findings are archived and one automatic split review is started so
+// the author sees what is still open instead of a stale list.
+// 任何一步失败都只是跳过：接受本身已经成功，不能让复审把已写盘的修订退回。
+func (s *Service) startFollowUpReview(ctx context.Context, revised domain.Candidate, root string) string {
+	// 1. 归档该单元所有 open 的审校清单：这一轮已处理。
+	// 必须走 Accept 而不是直接改状态：Accept 会顺带把对应 run 收尾，
+	// 否则那条 run 一直停在 waiting_accept，会挡住下面的复审启动。
+	open, err := s.Store.ListOpenCandidates(ctx, revised.BookID)
+	if err != nil {
+		return ""
+	}
+	var handled []domain.Candidate
+	for _, c := range open {
+		if c.Kind == domain.TaskReview && c.UnitID == revised.UnitID {
+			handled = append(handled, c)
+		}
+	}
+	for _, c := range handled {
+		_, _ = s.Accept(ctx, domain.AcceptCommand{CandidateID: c.ID})
+	}
+
+	// 2. 正文已变，用新 revision 起一次分章复审。
+	snap, err := books.LoadBook(root, false)
+	if err != nil {
+		return ""
+	}
+	run, err := s.Start(ctx, domain.TaskSpec{
+		Kind: domain.TaskReview, BookID: revised.BookID, UnitID: revised.UnitID,
+		BaseRevision: snap.Revision, SplitByChapter: true,
+	})
+	if err != nil {
+		return "" // 已有复审在跑：不覆盖，也不影响本次接受
+	}
+	return run.ID
 }
 
 func (s *Service) Reject(ctx context.Context, candidateID, reason string) error {
@@ -622,15 +705,59 @@ func (s *Service) Reject(ctx context.Context, candidateID, reason string) error 
 	if err := s.Store.SaveCandidate(ctx, cand); err != nil {
 		return err
 	}
+	// 只有已经产出候选的 run 才需要收尾；被拒绝的候选不能记成"成功"，
+	// 否则运行记录会显示一切正常，掩盖这一次返工。
 	if run, err := s.Store.GetRun(ctx, cand.RunID); err == nil {
-		run.Status = domain.RunSucceeded
-		run.Error = "rejected: " + reason
+		reason = strings.TrimSpace(reason)
+		if reason == "" {
+			reason = "候选被拒绝"
+		}
+		run.Status = domain.RunRejected
+		run.Error = reason
 		run.UpdatedAt = time.Now().UTC()
 		_ = s.Store.SaveRun(ctx, run)
 	}
 	return nil
 }
 
+// loadDeslopRules resolves the local-gate rule table: 本书 > 作者机器 > 内置。
+// Both overrides are plain files, never knowledge articles, so the table can
+// never be picked into a prompt.
+// A broken override surfaces as an error rather than silently falling back:
+// the author must know the checks they think are running are not.
+func (s *Service) loadDeslopRules(root string) (*gates.Ruleset, error) {
+	bookRaw := ""
+	if b, err := os.ReadFile(filepath.Join(root, "canon", "deslop-rules.yaml")); err == nil {
+		bookRaw = string(b)
+	}
+	authorRaw := ""
+	authorPath := filepath.Join(runtimepaths.Home(), "gates", "deslop-rules.yaml")
+	if b, err := os.ReadFile(authorPath); err == nil {
+		authorRaw = string(b)
+	}
+	return gates.ResolveRules(bookRaw, authorRaw)
+}
+
+// loadReviewChecklist returns the author's edited 25-review-checklist body, so
+// edits made on the Knowledge page reach the next review. Empty means "not
+// customized" and the built-in article is used.
+func (s *Service) loadReviewChecklist() string {
+	root := s.Settings.Get().LibraryRoot
+	if !knowledge.IsCustomized(root, "25-review-checklist") {
+		return ""
+	}
+	raw, err := knowledge.Read(root, "25-review-checklist")
+	if err != nil {
+		return ""
+	}
+	return raw
+}
+
+// loadKnowledge reads the author-selected reference articles for one call.
+// author-only documents are skipped: they are operating notes for the human
+// (平台运营、应用流程、出处索引), and letting one into a prompt wastes tokens and
+// invites the model to treat bookkeeping as rules. The picker already hides
+// them; this is the enforcement half.
 func (s *Service) loadKnowledge(ids []string) []string {
 	if len(ids) == 0 {
 		return nil
@@ -638,6 +765,10 @@ func (s *Service) loadKnowledge(ids []string) []string {
 	root := s.Settings.Get().LibraryRoot
 	var docs []string
 	for _, id := range ids {
+		tags, err := knowledge.TagsOf(root, id)
+		if err != nil || tags.Audience == knowledge.AudienceAuthor {
+			continue
+		}
 		raw, err := knowledge.Read(root, id)
 		if err == nil && strings.TrimSpace(raw) != "" {
 			docs = append(docs, raw)
@@ -695,11 +826,62 @@ func serializeUnitYAML(u domain.UnitOutlineDraft) string {
 	if u.InfoControl != "" {
 		fmt.Fprintf(&b, "info_control: %q\n", u.InfoControl)
 	}
+	// 结构化 YAML 列表，与读方一致。旧实现写 state_deltas_json 字符串，
+	// 而读取方找 state_deltas，导致 state_deltas 从未真正进入账本
+	// （fallback 扫全文只能碰运气）。
 	if u.StateDeltas != nil {
-		encoded, _ := json.Marshal(u.StateDeltas)
-		fmt.Fprintf(&b, "state_deltas_json: %q\n", string(encoded))
+		if rows, ok := stateDeltaRows(u.StateDeltas); ok {
+			b.WriteString("state_deltas:\n")
+			for _, row := range rows {
+				b.WriteString("  - ")
+				b.WriteString(row)
+				b.WriteString("\n")
+			}
+		}
 	}
 	return b.String()
+}
+
+// stateDeltaRows flattens the model's stateDeltas into inline YAML mappings.
+// Anything the model returned in an unexpected shape is dropped rather than
+// serialized blindly: a malformed ledger is worse than a short one.
+func stateDeltaRows(v any) ([]string, bool) {
+	list, ok := v.([]any)
+	if !ok || len(list) == 0 {
+		return nil, false
+	}
+	var out []string
+	for _, item := range list {
+		m, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		var parts []string
+		for _, key := range []string{"stem", "field", "from", "to"} {
+			raw, ok := m[key]
+			if !ok || raw == nil {
+				continue
+			}
+			text := strings.TrimSpace(fmt.Sprintf("%v", raw))
+			if text == "" {
+				continue
+			}
+			parts = append(parts, fmt.Sprintf("%s: %s", key, yamlQuote(text)))
+		}
+		if len(parts) == 0 {
+			continue
+		}
+		out = append(out, "{"+strings.Join(parts, ", ")+"}")
+	}
+	return out, len(out) > 0
+}
+
+// yamlQuote emits a double-quoted scalar safe for inline flow mappings.
+func yamlQuote(s string) string {
+	s = strings.ReplaceAll(s, `\`, `\\`)
+	s = strings.ReplaceAll(s, `"`, `\"`)
+	s = strings.ReplaceAll(s, "\n", " ")
+	return `"` + s + `"`
 }
 
 func writeYAMLMap(b *strings.Builder, m map[string]any, indent string) {

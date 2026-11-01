@@ -1,6 +1,7 @@
 package contextsvc
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -19,6 +20,43 @@ func loadFixture(t *testing.T) domain.BookSnapshot {
 	return snap
 }
 
+// loadFixtureCopy copies the fixture book into a temp dir so a test can write
+// continuity/state.yaml without touching the repository fixtures.
+func loadFixtureCopy(t *testing.T) domain.BookSnapshot {
+	t.Helper()
+	src := filepath.Join("..", "..", "..", "tests", "fixtures", "books", "sample-xuanhuan")
+	dst := filepath.Join(t.TempDir(), "book")
+	if err := copyTree(src, dst); err != nil {
+		t.Fatal(err)
+	}
+	snap, err := books.LoadBook(dst, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return snap
+}
+
+func copyTree(src, dst string) error {
+	return filepath.WalkDir(src, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(src, path)
+		if err != nil {
+			return err
+		}
+		target := filepath.Join(dst, rel)
+		if d.IsDir() {
+			return os.MkdirAll(target, 0o755)
+		}
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		return os.WriteFile(target, raw, 0o644)
+	})
+}
+
 func findUnit(t *testing.T, snap domain.BookSnapshot, id string) domain.UnitInfo {
 	t.Helper()
 	for _, u := range snap.Units {
@@ -32,33 +70,33 @@ func findUnit(t *testing.T, snap domain.BookSnapshot, id string) domain.UnitInfo
 
 // P0-1: 写作包不再塞整份 facts.md / 整份人物卡 / 完整细纲。
 func TestWritePacketFieldLevel(t *testing.T) {
-	snap := loadFixture(t)
+	snap := loadFixtureCopy(t)
 	unit := findUnit(t, snap, "v01-U1")
 
-	// 给 fixture 注入可检测的整份 facts 与底牌内容。
-	snap.Files["continuity/facts.md"] = `# Continuity facts
-
-## Public facts
-| Kind | Fact | First seen | Notes |
-|------|------|------------|-------|
-| shown_fact | 林尘通过试炼 | ch1 | |
-
-## Tracking
-### Cursor
-- last_committed_ch: 3
-
-### Cast snapshot
-| 角色 | 年龄 | 职位 | 位置 | 目标 | 伤势/资源 | 知情范围 | 关系质态 |
-|------|------|------|------|------|-----------|----------|----------|
-| linchen | 16 | 外门弟子 | 山门 | 入内门 | 无 | 不知账本 | 独来独往 |
-| wangmou | 40 | 执事 | 账房 | 掩盖亏空 | 无 | 全知 | 敌对 |
-
-## Open loops
-| FS-id | 内容 | 状态 | 埋点章 | 计划回收 | 实际回收 |
-|-------|------|------|--------|----------|----------|
-| FS-01 | 林尘的刀柄来历 | planted | 1 | 5 | |
-| FS-02 | 账房亏空 | planted | 2 | 6 | |
+	// 连续性状态来自 continuity/state.yaml：只含 on_stage 人物与未回收伏笔。
+	state := `version: 1
+units:
+  - unit: v01-U0
+    volume: 1
+    after_ch: 0
+    cast:
+      linchen:
+        location: 山门
+        goal: 入内门
+        injury: 无
+        knows: [不知账本]
+      wangmou:
+        location: 账房
+        goal: 掩盖亏空
+    loops:
+      - {id: FS-01, status: planted, detail: 林尘的刀柄来历}
 `
+	if err := os.MkdirAll(filepath.Join(snap.Summary.RootPath, "continuity"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(snap.Summary.RootPath, books.StatePath), []byte(state), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	snap.Files["canon/author-lore.md"] = "# Author lore\n\n## 终局真相\n头号宿敌是林尘生父。\n"
 
 	packet := BuildWritePacket(snap, unit, "", 0)
@@ -76,20 +114,24 @@ func TestWritePacketFieldLevel(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// 2) facts 是字段级抽取：有游标，有 on_stage 人物状态，没有无关人物行。
-	facts := findBlock(packet, "facts")
-	if facts == nil {
-		t.Fatal("missing facts block")
+	// 2) 连续性状态来自 continuity/state.yaml：只含 on_stage 人物，不含无关人物。
+	continuity := findBlock(packet, "continuity")
+	if continuity == nil {
+		t.Fatal("missing continuity block")
 	}
-	if strings.Contains(facts.Content, "wangmou") {
-		t.Fatalf("facts block leaked off-stage character: %s", facts.Content)
+	if strings.Contains(continuity.Content, "wangmou") {
+		t.Fatalf("continuity block leaked off-stage character: %s", continuity.Content)
 	}
-	if !strings.Contains(facts.Content, "linchen") {
-		t.Fatalf("facts block missing on-stage character: %s", facts.Content)
+	if !strings.Contains(continuity.Content, "linchen") {
+		t.Fatalf("continuity block missing on-stage character: %s", continuity.Content)
 	}
-	// 整份 facts.md 的原始章节标题（如 ## Public facts 表头）不应原样出现。
-	if strings.Contains(facts.Content, "## Public facts") {
-		t.Fatalf("facts block looks like whole-file dump: %s", facts.Content)
+	// 写作不给知情范围：那会诱导模型提前揭示 POV 不知道的事。
+	if strings.Contains(continuity.Content, "知情范围") {
+		t.Fatalf("write packet must not expose knowledge scope: %s", continuity.Content)
+	}
+	// 不能是整份账本的转储。
+	if strings.Contains(continuity.Content, "Continuous facts") || strings.Contains(continuity.Content, "Cast snapshot") {
+		t.Fatalf("continuity block looks like whole-file dump: %s", continuity.Content)
 	}
 
 	// 3) 人物卡是压缩快照，不是整份卡。

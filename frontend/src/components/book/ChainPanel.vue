@@ -171,7 +171,7 @@ function start() {
 
 <template>
   <section class="side-card panel chain-panel">
-    <h4>连续重写 <span class="kb-hint" title="总纲 / 卷纲 / 设定视为已固定；逐单元自动跑细纲→正文→审校→定稿">?</span></h4>
+    <h4>连续重写 <span class="kb-hint" title="总纲 / 卷纲 / 设定视为已固定；逐单元自动跑细纲→正文→审校→定稿，审校阻断先自动修订一次">?</span></h4>
 
     <template v-if="chain && (running || blocked)">
       <div class="chain-head">
@@ -283,7 +283,7 @@ function start() {
       <button class="primary chain-start" :disabled="busy || readOnly || !scopeUnits.length" @click="start">
         {{ busy ? '正在启动…' : '连续重写' }}
       </button>
-      <p class="chain-hint">四个阶段候选自动接受；任一门禁 blocking 或调用失败即中断，修复后可继续。</p>
+      <p class="chain-hint">四个阶段候选自动接受；审校出 blocking 时先自动定向修订一次并复审，仍不通过才中断，修复后可继续。</p>
     </template>
   </section>
 </template>

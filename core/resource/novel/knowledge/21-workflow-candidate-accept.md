@@ -1,5 +1,5 @@
 ---
-stages: [plan, volume, outline, write, review, entity]
+audience: author
 ---
 
 # 创作工作流与候选接受

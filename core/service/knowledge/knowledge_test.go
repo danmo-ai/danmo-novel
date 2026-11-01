@@ -15,8 +15,8 @@ func TestBuiltinKnowledgeAvailableWithoutLibrary(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(docs) != len(novel.BuiltinKnowledge()) || len(docs) != 25 {
-		t.Fatalf("got %d built-in documents, want 25", len(docs))
+	if len(docs) != len(novel.BuiltinKnowledge()) || len(docs) != 26 {
+		t.Fatalf("got %d built-in documents, want 26", len(docs))
 	}
 	seen := map[string]bool{}
 	for _, doc := range docs {
@@ -32,7 +32,7 @@ func TestBuiltinKnowledgeAvailableWithoutLibrary(t *testing.T) {
 			t.Errorf("Read(%s) = %q, %v", doc.ID, raw, err)
 		}
 	}
-	for _, id := range []string{"01-pacing-structure", "21-workflow-candidate-accept", "25-block-diagnosis-scene-rescue"} {
+	for _, id := range []string{"01-pacing-structure", "21-workflow-candidate-accept", "25-review-checklist", "90-sources"} {
 		if !seen[id] {
 			t.Errorf("missing built-in article %s", id)
 		}
@@ -190,6 +190,11 @@ func TestBuiltinArticlesAreTagged(t *testing.T) {
 		if !doc.Builtin {
 			continue
 		}
+		// 作者文档（audience: author）不参与任何阶段，也不进提示词；
+		// 它们没有 stages 是设计，不是遗漏。
+		if doc.Audience == AudienceAuthor {
+			continue
+		}
 		if len(doc.Stages) == 0 {
 			t.Errorf("built-in article %s has no stage tags", doc.ID)
 		}
@@ -265,7 +270,7 @@ func TestGenreTagsSplitCommonFromGenreSpecific(t *testing.T) {
 		}
 	}
 	// Method articles stay 公共 so they are offered to every book.
-	for _, id := range []string{"01-pacing-structure", "05-style-deslop", "07-genre-platform", "21-workflow-candidate-accept"} {
+	for _, id := range []string{"01-pacing-structure", "05-style-deslop", "08-strong-constraints", "21-workflow-candidate-accept"} {
 		if doc := findDoc(t, root, id); !doc.IsCommon() {
 			t.Errorf("%s should be 公共, got genres=%v subgenres=%v", id, doc.Genres, doc.Subgenres)
 		}
@@ -384,4 +389,168 @@ func mustRead(t *testing.T, root, id string) string {
 		t.Fatal(err)
 	}
 	return raw
+}
+
+// 默认注入是结构属性：会被 pipeline 自动带上，因此不能作为可选项出现在选择器里。
+// 它必须能从 front matter 读出、在作者只改正文时继承、并在保存时写回。
+func TestDefaultInjectionFlagSurvivesRoundTrip(t *testing.T) {
+	root := t.TempDir()
+
+	docs, err := List(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var checklist *Doc
+	for i := range docs {
+		if docs[i].ID == "25-review-checklist" {
+			checklist = &docs[i]
+		}
+	}
+	if checklist == nil {
+		t.Fatal("25-review-checklist missing")
+	}
+	if !checklist.Default {
+		t.Fatal("review checklist must be marked default-injected")
+	}
+	if len(checklist.Stages) != 1 || checklist.Stages[0] != "review" {
+		t.Fatalf("stages=%v, want [review]", checklist.Stages)
+	}
+
+	// 作者只改正文、不带 front matter：Default 必须从内置继承，
+	// 否则保存一次它就变成"可勾选"，同一份文本被注入两次。
+	edited := "# 审校规则\n\n我改过的正文。\n"
+	if err := Write(root, "25-review-checklist", edited, nil); err != nil {
+		t.Fatal(err)
+	}
+	tags, err := TagsOf(root, "25-review-checklist")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !tags.Default {
+		t.Fatal("Default must be inherited when the overlay drops front matter")
+	}
+
+	// 保存回写：显式传 Tags 时 Default 也要保留。
+	tags.Stages = []string{"review"}
+	if err := Write(root, "25-review-checklist", edited, &tags); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := readRaw(root, "25-review-checklist")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(raw, "default: true") {
+		t.Fatalf("compose must write default back:\n%s", raw)
+	}
+
+	// 还原后回到内置版本，Default 仍在。
+	if _, err := Restore(root, "25-review-checklist"); err != nil {
+		t.Fatal(err)
+	}
+	tags, _ = TagsOf(root, "25-review-checklist")
+	if !tags.Default {
+		t.Fatal("builtin checklist lost its default flag after restore")
+	}
+}
+
+// 普通文章不能被误标成默认注入（否则会悄悄进提示词）。
+func TestOnlyChecklistIsDefaultInjected(t *testing.T) {
+	docs, err := List(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range docs {
+		if d.Default && d.ID != "25-review-checklist" {
+			t.Fatalf("%s must not be default-injected", d.ID)
+		}
+	}
+}
+
+// 作者文档（audience: author）永不进提示词：平台运营、应用流程、出处索引
+// 是给作者看的操作说明，塞进上下文既浪费 token 又会让模型把记账当规则。
+func TestAuthorAudienceDocsAreMarked(t *testing.T) {
+	docs, err := List(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantAuthor := map[string]bool{
+		"09-lore-tracks":               true,
+		"20-tomato-launch":             true,
+		"21-workflow-candidate-accept": true,
+		"90-sources":                   true,
+		"95-genre-routing":             true,
+	}
+	for _, d := range docs {
+		if wantAuthor[d.ID] {
+			if d.Audience != AudienceAuthor {
+				t.Errorf("%s must be audience=author, got %q", d.ID, d.Audience)
+			}
+			if d.ForModel() {
+				t.Errorf("%s must not be injectable", d.ID)
+			}
+			delete(wantAuthor, d.ID)
+			continue
+		}
+		// 其余文章都是给模型的：默认 model，且可注入。
+		if d.Audience != AudienceModel && d.Audience != "" {
+			t.Errorf("%s should be model audience, got %q", d.ID, d.Audience)
+		}
+		if !d.ForModel() {
+			t.Errorf("%s should be injectable", d.ID)
+		}
+	}
+	for id := range wantAuthor {
+		t.Errorf("missing author doc %s", id)
+	}
+}
+
+// audience 必须像 default 一样能继承与写回，否则作者保存一次就把它变成可注入。
+func TestAudienceSurvivesOverlayAndCompose(t *testing.T) {
+	root := t.TempDir()
+	tags, err := TagsOf(root, "90-sources")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tags.Audience != AudienceAuthor {
+		t.Fatalf("builtin audience=%q", tags.Audience)
+	}
+
+	// 只改正文（丢 front matter）：audience 从内置继承。
+	if err := Write(root, "90-sources", "# 出处\n\n改过的正文。\n", nil); err != nil {
+		t.Fatal(err)
+	}
+	tags, err = TagsOf(root, "90-sources")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tags.Audience != AudienceAuthor {
+		t.Fatal("audience must be inherited from the built-in when the overlay drops it")
+	}
+
+	// 显式保存：compose 要把 audience 写回文件。
+	if err := Write(root, "90-sources", "# 出处\n\n改过的正文。\n", &tags); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := readRaw(root, "90-sources")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(raw, "audience: author") {
+		t.Fatalf("compose must write audience back:\n%s", raw)
+	}
+}
+
+// 未知 audience 值一律收敛到 model：宁可可用，也不要因为拼错而静默消失。
+func TestUnknownAudienceFallsBackToModel(t *testing.T) {
+	root := t.TempDir()
+	if err := Write(root, "my-note", "---\naudience: 作者\n---\n\n正文\n", nil); err != nil {
+		t.Fatal(err)
+	}
+	tags, err := TagsOf(root, "my-note")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tags.Audience != AudienceModel {
+		t.Fatalf("audience=%q want model", tags.Audience)
+	}
 }

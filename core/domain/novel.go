@@ -6,13 +6,13 @@ import "time"
 type TaskKind string
 
 const (
-	TaskInit       TaskKind = "init"
-	TaskPlan       TaskKind = "plan"
-	TaskOutline    TaskKind = "outline"
-	TaskWrite      TaskKind = "write"
-	TaskReview     TaskKind = "review"
-	TaskRevise     TaskKind = "revise"
-	TaskFinalize   TaskKind = "finalize"
+	TaskInit          TaskKind = "init"
+	TaskPlan          TaskKind = "plan"
+	TaskOutline       TaskKind = "outline"
+	TaskWrite         TaskKind = "write"
+	TaskReview        TaskKind = "review"
+	TaskRevise        TaskKind = "revise"
+	TaskFinalize      TaskKind = "finalize"
 	TaskRewriteEntity TaskKind = "rewrite_entity" // 单实体优化：bible/人物卡/世界规则等
 	TaskLocalEdit     TaskKind = "local_edit"
 	TaskContinue      TaskKind = "continue"
@@ -53,6 +53,9 @@ const (
 	RunSucceeded RunStatus = "succeeded"
 	RunFailed    RunStatus = "failed"
 	RunCancelled RunStatus = "cancelled"
+	// RunRejected means the run produced a candidate and the author discarded it.
+	// 与 succeeded 区分开：运行记录里"成功"但候选被拒会掩盖一次返工。
+	RunRejected RunStatus = "rejected"
 )
 
 type CandidateStatus string
@@ -67,51 +70,52 @@ const (
 type StageModelRole string
 
 const (
-	StagePlan     StageModelRole = "plan"
-	StageOutline  StageModelRole = "outline"
-	StageWrite    StageModelRole = "write"
-	StageReview   StageModelRole = "review"
+	StagePlan      StageModelRole = "plan"
+	StageOutline   StageModelRole = "outline"
+	StageWrite     StageModelRole = "write"
+	StageReview    StageModelRole = "review"
 	StageLocalEdit StageModelRole = "local_edit"
 )
 
 // CallPolicy is fixed before a run starts. Tools are always empty.
 type CallPolicy struct {
-	MaxCalls         int           `json:"maxCalls"`
-	MaxOutputTokens  int           `json:"maxOutputTokens"`
-	TimeoutSec       int           `json:"timeoutSec"`
-	AllowOneRepair   bool          `json:"allowOneRepair"`
-	SplitByChapter   bool          `json:"splitByChapter,omitempty"`
+	MaxCalls        int  `json:"maxCalls"`
+	MaxOutputTokens int  `json:"maxOutputTokens"`
+	TimeoutSec      int  `json:"timeoutSec"`
+	AllowOneRepair  bool `json:"allowOneRepair"`
+	SplitByChapter  bool `json:"splitByChapter,omitempty"`
 }
 
 // TaskSpec starts a controlled generation run.
 type TaskSpec struct {
-	Kind            TaskKind          `json:"kind"`
-	BookID          string            `json:"bookId"`
-	VolumeID        string            `json:"volumeId,omitempty"`
-	UnitID          string            `json:"unitId,omitempty"`
-	Chapter         int               `json:"chapter,omitempty"`
-	BaseRevision    string            `json:"baseRevision"`
-	ModelID         string            `json:"modelId,omitempty"`
-	IdempotencyKey  string            `json:"idempotencyKey,omitempty"`
-	ExtraContextIDs []string          `json:"extraContextIds,omitempty"`
-	KnowledgeIDs    []string          `json:"knowledgeIds,omitempty"` // 作者勾选的参考知识文章
-	Selection       *TextSelection    `json:"selection,omitempty"`
-	Instruction     string            `json:"instruction,omitempty"`
-	IssueIDs        []string          `json:"issueIds,omitempty"`
-	TargetPath      string            `json:"targetPath,omitempty"` // rewrite_entity 目标文件
-	EntityKind      string            `json:"entityKind,omitempty"` // bible|cast|volume|world|style|rules|facts
-	Mode            string            `json:"mode,omitempty"`       // plan: init|reinit|volume
-	PreservePaths   []string          `json:"preservePaths,omitempty"` // reinit 接受时保留的既有设定/人物路径
-	ForceRiskAccept bool              `json:"forceRiskAccept,omitempty"`
+	Kind            TaskKind       `json:"kind"`
+	BookID          string         `json:"bookId"`
+	VolumeID        string         `json:"volumeId,omitempty"`
+	UnitID          string         `json:"unitId,omitempty"`
+	Chapter         int            `json:"chapter,omitempty"`
+	BaseRevision    string         `json:"baseRevision"`
+	ModelID         string         `json:"modelId,omitempty"`
+	IdempotencyKey  string         `json:"idempotencyKey,omitempty"`
+	ExtraContextIDs []string       `json:"extraContextIds,omitempty"`
+	KnowledgeIDs    []string       `json:"knowledgeIds,omitempty"` // 作者勾选的参考知识文章
+	Selection       *TextSelection `json:"selection,omitempty"`
+	Instruction     string         `json:"instruction,omitempty"`
+	IssueIDs        []string       `json:"issueIds,omitempty"`
+	TargetPath      string         `json:"targetPath,omitempty"` // rewrite_entity 目标文件
+	EntityKind      string         `json:"entityKind,omitempty"` // bible|cast|volume|world|style|rules|facts
+	Mode            string         `json:"mode,omitempty"`       // plan: init|reinit|volume
+	SplitByChapter  bool           `json:"splitByChapter,omitempty"`
+	PreservePaths   []string       `json:"preservePaths,omitempty"` // reinit 接受时保留的既有设定/人物路径
+	ForceRiskAccept bool           `json:"forceRiskAccept,omitempty"`
 }
 
 type TextSelection struct {
-	Path      string `json:"path"`
-	Start     int    `json:"start"`
-	End       int    `json:"end"`
-	Text      string `json:"text"`
-	Before    string `json:"before,omitempty"`
-	After     string `json:"after,omitempty"`
+	Path   string `json:"path"`
+	Start  int    `json:"start"`
+	End    int    `json:"end"`
+	Text   string `json:"text"`
+	Before string `json:"before,omitempty"`
+	After  string `json:"after,omitempty"`
 }
 
 type ContextBlock struct {
@@ -126,18 +130,18 @@ type ContextBlock struct {
 }
 
 type ContextPacket struct {
-	ContractVersion  string         `json:"contractVersion"`
-	TaskKind         TaskKind       `json:"taskKind"`
-	BookID           string         `json:"bookId"`
-	UnitID           string         `json:"unitId,omitempty"`
-	VolumeID         string         `json:"volumeId,omitempty"`
+	ContractVersion  string            `json:"contractVersion"`
+	TaskKind         TaskKind          `json:"taskKind"`
+	BookID           string            `json:"bookId"`
+	UnitID           string            `json:"unitId,omitempty"`
+	VolumeID         string            `json:"volumeId,omitempty"`
 	InputHashes      map[string]string `json:"inputHashes"`
-	Blocks           []ContextBlock `json:"blocks"`
-	KnowledgeVersion string         `json:"knowledgeVersion"`
-	EstPromptTokens  int            `json:"estPromptTokens"`
-	Policy           CallPolicy     `json:"policy"`
-	SystemPrompt     string         `json:"systemPrompt"`
-	UserPrompt       string         `json:"userPrompt"`
+	Blocks           []ContextBlock    `json:"blocks"`
+	KnowledgeVersion string            `json:"knowledgeVersion"`
+	EstPromptTokens  int               `json:"estPromptTokens"`
+	Policy           CallPolicy        `json:"policy"`
+	SystemPrompt     string            `json:"systemPrompt"`
+	UserPrompt       string            `json:"userPrompt"`
 }
 
 type ChapterDraft struct {
@@ -147,29 +151,29 @@ type ChapterDraft struct {
 }
 
 type UnitOutlineDraft struct {
-	UnitID        string         `json:"unitId"`
-	Status        UnitStatus     `json:"status"`
-	Title         string         `json:"title"`
-	Function      string         `json:"function"`
-	Desire        string         `json:"desire"`
-	Obstacle      string         `json:"obstacle"`
-	Choice        string         `json:"choice"`
-	Payoff        string         `json:"payoff"`
-	Pleasure      string         `json:"pleasure"`
-	Forbidden     string         `json:"forbidden"`
-	WordTarget    string         `json:"wordTarget"`
-	OnStage       []string       `json:"onStage"`
-	POV           string         `json:"pov"`
-	ChapterFrom   int            `json:"chapterFrom"`
-	ChapterTo     int            `json:"chapterTo"`
-	Scenes        []map[string]any `json:"scenes,omitempty"`
-	NextHook      map[string]any  `json:"nextHook,omitempty"`
-	StoryDay      string          `json:"storyDay,omitempty"`
-	GapFromPrev   string          `json:"gapFromPrev,omitempty"`
-	Flashback     bool            `json:"flashback,omitempty"`
-	InfoControl   string          `json:"infoControl,omitempty"`
-	StateDeltas   any             `json:"stateDeltas,omitempty"`
-	RawYAML       string          `json:"rawYaml,omitempty"`
+	UnitID      string           `json:"unitId"`
+	Status      UnitStatus       `json:"status"`
+	Title       string           `json:"title"`
+	Function    string           `json:"function"`
+	Desire      string           `json:"desire"`
+	Obstacle    string           `json:"obstacle"`
+	Choice      string           `json:"choice"`
+	Payoff      string           `json:"payoff"`
+	Pleasure    string           `json:"pleasure"`
+	Forbidden   string           `json:"forbidden"`
+	WordTarget  string           `json:"wordTarget"`
+	OnStage     []string         `json:"onStage"`
+	POV         string           `json:"pov"`
+	ChapterFrom int              `json:"chapterFrom"`
+	ChapterTo   int              `json:"chapterTo"`
+	Scenes      []map[string]any `json:"scenes,omitempty"`
+	NextHook    map[string]any   `json:"nextHook,omitempty"`
+	StoryDay    string           `json:"storyDay,omitempty"`
+	GapFromPrev string           `json:"gapFromPrev,omitempty"`
+	Flashback   bool             `json:"flashback,omitempty"`
+	InfoControl string           `json:"infoControl,omitempty"`
+	StateDeltas any              `json:"stateDeltas,omitempty"`
+	RawYAML     string           `json:"rawYaml,omitempty"`
 }
 
 type ReviewFinding struct {
@@ -192,45 +196,60 @@ type CanonChange struct {
 }
 
 type Candidate struct {
-	ID            string          `json:"id"`
-	RunID         string          `json:"runId"`
-	BookID        string          `json:"bookId"`
-	Kind          TaskKind        `json:"kind"`
-	Status        CandidateStatus `json:"status"`
-	BaseRevision  string          `json:"baseRevision"`
-	TargetPath    string          `json:"targetPath,omitempty"`
-	UnitID        string          `json:"unitId,omitempty"`
-	VolumeID      string          `json:"volumeId,omitempty"`
-	Chapters      []ChapterDraft  `json:"chapters,omitempty"`
+	ID           string          `json:"id"`
+	RunID        string          `json:"runId"`
+	BookID       string          `json:"bookId"`
+	Kind         TaskKind        `json:"kind"`
+	Status       CandidateStatus `json:"status"`
+	BaseRevision string          `json:"baseRevision"`
+	TargetPath   string          `json:"targetPath,omitempty"`
+	UnitID       string          `json:"unitId,omitempty"`
+	VolumeID     string          `json:"volumeId,omitempty"`
+	Chapters     []ChapterDraft  `json:"chapters,omitempty"`
+	// BaseChapters is the pre-revision prose for a revise candidate, kept so the
+	// author can diff before accepting ("确认落盘" must not be a blind signature).
+	BaseChapters  []ChapterDraft     `json:"baseChapters,omitempty"`
 	UnitOutlines  []UnitOutlineDraft `json:"unitOutlines,omitempty"`
-	Mode          string             `json:"mode,omitempty"` // plan: init|reinit|volume
+	Mode          string             `json:"mode,omitempty"`          // plan: init|reinit|volume
 	PreservePaths []string           `json:"preservePaths,omitempty"` // reinit 接受时保留的既有路径
 	PlanMarkdown  map[string]string  `json:"planMarkdown,omitempty"`
 	PlanSettings  map[string]string  `json:"planSettings,omitempty"` // relative path → content (init/reinit)
-	Replacement   string          `json:"replacement,omitempty"`
-	Findings      []ReviewFinding `json:"findings,omitempty"`
-	CanonChanges  []CanonChange   `json:"canonChanges,omitempty"`
-	CreatedAt     time.Time       `json:"createdAt"`
-	AcceptedAt    *time.Time      `json:"acceptedAt,omitempty"`
+	Replacement   string             `json:"replacement,omitempty"`
+	Findings      []ReviewFinding    `json:"findings,omitempty"`
+	CanonChanges  []CanonChange      `json:"canonChanges,omitempty"`
+	CreatedAt     time.Time          `json:"createdAt"`
+	AcceptedAt    *time.Time         `json:"acceptedAt,omitempty"`
+	// FollowUpRunID is transient: it only appears in the Accept response so the
+	// UI can poll the automatic re-review. Never persisted.
+	FollowUpRunID string `json:"followUpRunId,omitempty"`
 }
 
 type AcceptCommand struct {
-	CandidateID     string   `json:"candidateId"`
-	BaseRevision    string   `json:"baseRevision"`
+	CandidateID      string   `json:"candidateId"`
+	BaseRevision     string   `json:"baseRevision"`
 	AcceptFindingIDs []string `json:"acceptFindingIds,omitempty"`
-	ForceRiskAccept bool     `json:"forceRiskAccept,omitempty"`
+	ForceRiskAccept  bool     `json:"forceRiskAccept,omitempty"`
+	// FollowUpReview asks the server to archive the handled review findings and
+	// start one automatic re-review of the revised unit. Used by the manual loop;
+	// the chain drives its own re-review and must leave this false.
+	FollowUpReview bool `json:"followUpReview,omitempty"`
 }
 
 type CallRecord struct {
-	Index            int       `json:"index"`
-	ModelID          string    `json:"modelId"`
-	Provider         string    `json:"provider"`
-	Step             string    `json:"step"`
-	PromptTokens     int       `json:"promptTokens"`
-	CompletionTokens int       `json:"completionTokens"`
-	DurationMs       int64     `json:"durationMs"`
-	Error            string    `json:"error,omitempty"`
-	StartedAt        time.Time `json:"startedAt"`
+	Index            int    `json:"index"`
+	ModelID          string `json:"modelId"`
+	Provider         string `json:"provider"`
+	Step             string `json:"step"`
+	PromptTokens     int    `json:"promptTokens"`
+	CompletionTokens int    `json:"completionTokens"`
+	// CacheReadTokens 是这次调用命中 provider 前缀缓存的 prompt token 数。
+	// 重试把 repair 追加在 payload 末尾，所以它应接近首轮的 prompt 量——
+	// 这个数字就是"重试几乎免费"的证据，也是缓存被破坏时的告警。
+	CacheReadTokens     int       `json:"cacheReadTokens,omitempty"`
+	CacheCreationTokens int       `json:"cacheCreationTokens,omitempty"`
+	DurationMs          int64     `json:"durationMs"`
+	Error               string    `json:"error,omitempty"`
+	StartedAt           time.Time `json:"startedAt"`
 }
 
 type Run struct {
@@ -244,6 +263,7 @@ type Run struct {
 	CallsUsed      int          `json:"callsUsed"`
 	Calls          []CallRecord `json:"calls"`
 	CandidateID    string       `json:"candidateId,omitempty"`
+	ReviewCursor   int          `json:"reviewCursor,omitempty"`
 	ContextSummary []string     `json:"contextSummary,omitempty"`
 	Error          string       `json:"error,omitempty"`
 	CreatedAt      time.Time    `json:"createdAt"`
@@ -296,7 +316,7 @@ type UnitInfo struct {
 
 type CastCard struct {
 	Stem    string     `json:"stem"`
-	Name    string     `json:"name"`    // 纯姓名，唯一来源；不含括号说明
+	Name    string     `json:"name"`              // 纯姓名，唯一来源；不含括号说明
 	Tagline string     `json:"tagline,omitempty"` // 一句话身份说明，与姓名分离
 	Status  CastStatus `json:"status"`
 	Role    string     `json:"role"`
@@ -305,14 +325,14 @@ type CastCard struct {
 
 // BookSnapshot is the parsed on-disk book used by pipelines and the UI.
 type BookSnapshot struct {
-	Summary    BookSummary          `json:"summary"`
-	StateRaw   string               `json:"stateRaw,omitempty"`
-	Volumes    []VolumeInfo         `json:"volumes"`
-	Units      []UnitInfo           `json:"units"`
-	Cast       []CastCard           `json:"cast"`
-	Files      map[string]string    `json:"files,omitempty"` // relative path → content
-	Revision   string               `json:"revision"`
-	ImportedAt time.Time            `json:"importedAt"`
+	Summary    BookSummary       `json:"summary"`
+	StateRaw   string            `json:"stateRaw,omitempty"`
+	Volumes    []VolumeInfo      `json:"volumes"`
+	Units      []UnitInfo        `json:"units"`
+	Cast       []CastCard        `json:"cast"`
+	Files      map[string]string `json:"files,omitempty"` // relative path → content
+	Revision   string            `json:"revision"`
+	ImportedAt time.Time         `json:"importedAt"`
 	// IdentitySegments 人物职务身份时间线（canon/identity-timeline.yaml）。
 	// 按 stem + from_unit 排序；单元内部身份恒定，转换只在单元边界。
 	IdentitySegments []IdentitySegment `json:"identitySegments,omitempty"`
@@ -330,15 +350,15 @@ type IdentitySegment struct {
 
 // ProviderPublic is the API DTO without API key plaintext.
 type ProviderPublic struct {
-	ID                     string        `json:"id"`
+	ID                     string          `json:"id"`
 	Provider               LLMProviderType `json:"provider"`
-	Name                   string        `json:"name"`
-	BaseURL                string        `json:"baseUrl,omitempty"`
-	DefaultProtocolDialect string        `json:"defaultProtocolDialect,omitempty"`
-	HasAPIKey              bool          `json:"hasApiKey"`
-	Models                 []LLMModelRef `json:"models,omitempty"`
-	CreatedAt              string        `json:"createdAt"`
-	UpdatedAt              string        `json:"updatedAt"`
+	Name                   string          `json:"name"`
+	BaseURL                string          `json:"baseUrl,omitempty"`
+	DefaultProtocolDialect string          `json:"defaultProtocolDialect,omitempty"`
+	HasAPIKey              bool            `json:"hasApiKey"`
+	Models                 []LLMModelRef   `json:"models,omitempty"`
+	CreatedAt              string          `json:"createdAt"`
+	UpdatedAt              string          `json:"updatedAt"`
 }
 
 func (c LLMProviderConfig) Public() ProviderPublic {

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
+import { useRoute } from 'vue-router'
 import { useAppStore } from '@/stores/app'
 import { api } from '@/api/client'
 import {
@@ -12,8 +13,13 @@ import {
 type Doc = {
   id: string; title: string; summary: string; bytes: number; category: string
   builtin: boolean; customized: boolean; stages: string[]; genres: string[]; subgenres: string[]
+  /** 默认注入：pipeline 每次自动带上，不需要作者勾选。 */
+  default?: boolean
+  /** author = 作者操作说明，永不进提示词。 */
+  audience?: string
 }
 const store = useAppStore()
+const route = useRoute()
 const docs = ref<Doc[]>([])
 const selectedId = ref('')
 const content = ref('')
@@ -47,7 +53,13 @@ const current = computed(() => docs.value.find((d) => d.id === selectedId.value)
 
 onMounted(async () => {
   await load()
-  if (docs.value.length) select(docs.value[0].id)
+  // 支持 /knowledge?id=25-review-checklist：从审校页直达规则编辑。
+  const wanted = String(route.query.id || '')
+  if (wanted && docs.value.some((d) => d.id === wanted)) {
+    await select(wanted)
+  } else if (docs.value.length) {
+    select(docs.value[0].id)
+  }
 })
 
 async function load() {
@@ -174,7 +186,13 @@ function renderMarkdown(raw: string) {
       <div>
         <p class="eyebrow">Knowledge Base</p>
         <h1>知识库</h1>
-        <p class="sub">每篇标记适用写作步骤与题材；创作确认窗口只列出当前步骤、当前题材可用的公共与专属文章。</p>
+        <p class="sub">
+          四类内容：<strong>程序规则</strong>（代码执行，不在知识库）· <strong>默认注入</strong>（每次自动带上）·
+          <strong>用户选择</strong>（在创作确认窗口勾选）· <strong>作者文档</strong>（平台运营/应用流程/出处，永不进提示词）。
+        </p>
+        <p class="sub">
+          写作步骤与题材标签决定"什么时候可选"；带「作者文档」标记的只供阅读，不会出现在选择器里。
+        </p>
       </div>
       <span class="doc-count">{{ docs.length }} 篇</span>
     </header>
@@ -193,7 +211,11 @@ function renderMarkdown(raw: string) {
         <button v-for="d in filtered" :key="d.id" class="kb-item" :class="{ active: selectedId === d.id }" @click="select(d.id)">
           <strong>{{ d.title }}</strong>
           <small>{{ d.summary || d.id }}</small>
-          <span class="kb-meta">{{ d.category === 'genre' ? '题材' : d.category === 'general' ? '方法' : '自建' }} · {{ d.customized ? '已编辑' : d.builtin ? '内置' : '个人' }} · {{ (d.bytes / 1024).toFixed(1) }}KB</span>
+          <span class="kb-meta">
+            <span v-if="d.default" class="kb-auto-badge">默认注入</span>
+            <span v-else-if="d.audience === 'author'" class="kb-author-badge">作者文档</span>
+            {{ d.category === 'genre' ? '题材' : d.category === 'general' ? '方法' : '自建' }} · {{ d.customized ? '已编辑' : d.builtin ? '内置' : '个人' }} · {{ (d.bytes / 1024).toFixed(1) }}KB
+          </span>
           <span class="kb-stages-inline" :class="{ untagged: !d.stages?.length }">{{ knowledgeStageSummary(d.stages) }}</span>
           <span class="kb-stages-inline" :class="{ untagged: !d.genres?.length && !d.subgenres?.length }">题材 · {{ knowledgeGenreSummary(d) }}</span>
         </button>
@@ -270,6 +292,8 @@ function renderMarkdown(raw: string) {
 .kb-item strong { font-size: 12px; }
 .kb-item small { color: var(--ink-soft); font-size: 11px; line-height: 1.5; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .kb-meta { font-size: 10px; color: var(--accent); }
+.kb-auto-badge { display: inline-block; margin-right: 6px; padding: 1px 6px; border-radius: 999px; background: rgba(163,59,50,.1); color: var(--bad); font-size: 9px; font-weight: 600; }
+.kb-author-badge { display: inline-block; margin-right: 6px; padding: 1px 6px; border-radius: 999px; background: rgba(0,0,0,.06); color: var(--ink-soft); font-size: 9px; font-weight: 600; }
 .kb-stages-inline { font-size: 10px; color: var(--ink-soft); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .kb-stages-inline.untagged { color: var(--bad); opacity: .75; }
 .kb-stage-bar { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; padding: 12px 24px; border-bottom: 1px solid var(--line); }

@@ -11,10 +11,18 @@ import (
 )
 
 type Settings struct {
-	LibraryRoot      string                   `json:"libraryRoot"`
-	ModelAssignments []domain.ModelAssignment `json:"modelAssignments"`
-	DefaultModels    []domain.ModelConfig     `json:"defaultModels"`
-	LLMHTTPTimeoutSec int                     `json:"llmHttpTimeoutSec"`
+	LibraryRoot       string                   `json:"libraryRoot"`
+	ModelAssignments  []domain.ModelAssignment `json:"modelAssignments"`
+	DefaultModels     []domain.ModelConfig     `json:"defaultModels"`
+	LLMHTTPTimeoutSec int                      `json:"llmHttpTimeoutSec"`
+	Review            ReviewSettings           `json:"review"`
+}
+
+// ReviewSettings controls how review calls are split and parallelised.
+type ReviewSettings struct {
+	SplitByChapter bool   `json:"splitByChapter"` // default false（保持现有书兼容）
+	Concurrency    int    `json:"concurrency"`    // default 3
+	Strictness     string `json:"strictness"`     // "loose" | "standard" | "strict"，default standard
 }
 
 type Manager struct {
@@ -38,6 +46,10 @@ func Load() (*Manager, error) {
 			{Role: domain.StageLocalEdit, ModelID: ""},
 		},
 		LLMHTTPTimeoutSec: 600,
+		Review: ReviewSettings{
+			Concurrency: 3,
+			Strictness:  "standard",
+		},
 	}
 	b, err := os.ReadFile(m.path)
 	if err == nil {

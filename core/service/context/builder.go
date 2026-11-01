@@ -45,10 +45,17 @@ func DefaultPolicy(kind domain.TaskKind, chapterCount int) domain.CallPolicy {
 			p.AllowOneRepair = false
 		}
 	case domain.TaskReview:
-		// 长文审校常顶满输出预算导致 JSON 未闭合；给一次定向修复把失败原因喂回模型。
+		// 审校输出是结构化 JSON，但思考型模型（deepseek/kimi/glm 等）的 reasoning
+		// token 与答案共用 max_tokens：正文越长、强度越高，思维链吃得越多。答案本身
+		// 已由 ReviewSystemPrompt 的硬上限（findings<=8、每个字段<=40字）压到 O(1)，
+		// 这里留出的余量全部给思维链；仍不够时 runJSON 会在重试时翻倍预算。
 		p.MaxCalls = 2
 		p.AllowOneRepair = true
-		p.MaxOutputTokens = 16384
+		p.MaxOutputTokens = 32768
+	case domain.TaskOutline:
+		// 重写长单元时输出与既有细纲头同量级（数万字 YAML 的 JSON 镜像），
+		// 8192 会在 JSON 中途截断；与立项同级给 32768，仍受模型 max_output clamp。
+		p.MaxOutputTokens = 32768
 	case domain.TaskRevise, domain.TaskFinalize:
 		p.MaxCalls = 1
 		p.AllowOneRepair = false
@@ -96,7 +103,9 @@ func BuildWritePacket(snap domain.BookSnapshot, unit domain.UnitInfo, instructio
 	pov := extractPOV(unit.OutlineRaw)
 
 	// 1. 当前单元合同：结构化 scenes/beats 优先，时钟字段显式化。
-	add("unit-contract", "单元合同", unit.OutlinePath, NormalizeUnitContract(unit.OutlineRaw))
+	// scenes/chapters 由下面的「场面节拍」专块提供，这里必须剥掉，否则同一份
+	// 节拍会被注入两遍（实测可占写作提示词 17%）。
+	add("unit-contract", "单元合同", unit.OutlinePath, TrimContract(NormalizeUnitContract(ContractWithoutBeats(unit.OutlineRaw)), domain.TaskWrite))
 	add("unit-beats", "场面节拍", unit.OutlinePath, ChapterBeats(unit.OutlineRaw))
 
 	// 2. on_stage 人物：本单元身份 + 三锚点 + 一句台词 + POV「不知」。
@@ -112,22 +121,27 @@ func BuildWritePacket(snap domain.BookSnapshot, unit domain.UnitInfo, instructio
 	// 3. 在场关系（仅 on_stage 之间的正式关系表行）。
 	add("relations", "在场关系", "canon/cast", extractOnStageRelations(snap.Cast, onStage))
 
-	// 4. 公开事实：游标 + on_stage 人物状态 + 相关伏笔，不塞整份 facts.md。
-	add("facts", "公开连载事实", "continuity/facts.md", ExtractFactsForWrite(snap.Files["continuity/facts.md"], onStage, unit.UnitID))
+	// 4. 连续性状态：人物当前状态 + 未回收伏笔，来自 continuity/state.yaml。
+	// 写作不给知情范围（会诱导提前揭示），审校才给。
+	add("continuity", "连续性状态", books.StatePath, ExtractContinuity(snap, unit, onStage, ContinuityForWrite))
 
 	// 5. 上一章 / 上一单元钩子与文末。
+	// 卷摘要尾只在"本单元第一章"注入：其余章由上一章正文承担衔接，
+	// 两者同给等于把上一段的结尾读两遍。
+	// 800 字足够接住文末钩子与语感；再多就是让模型重读上一段结尾。
 	if prev := previousUnit(snap, unit); prev != nil {
-		if tail := clipTail(prev.ProseRaw, 1200); tail != "" {
+		if tail := clipTail(prev.ProseRaw, 800); tail != "" {
 			add("prev-tail", "上单元文末钩子", prev.ProsePath, tail)
 		}
 	}
-	if sum := latestSummaryTail(snap, unit.Volume); sum != "" {
-		add("prev-summary", "最近章摘要", "continuity/summaries", clipTail(sum, 1200))
+	if unit.ChapterFrom <= 1 || previousUnit(snap, unit) == nil {
+		if sum := latestSummaryTail(snap, unit.Volume); sum != "" {
+			add("prev-summary", "最近章摘要", "continuity/summaries", clipTail(sum, 1200))
+		}
 	}
 
-	// 6. 压缩风格指纹与写作规则。
-	add("style", "风格指纹", "canon/style-fingerprint.md", ExtractStyle(snap.Files["canon/style-fingerprint.md"]))
-	add("writing-rules", "写作规则", "canon/writing-rules.md", clip(snap.Files["canon/writing-rules.md"], 900))
+	// 6. 风格与写作规则合成一块：两者都是"怎么写"，分开注入等于让模型读两遍同一类约束。
+	add("style-rules", "风格与写作规则", "canon/style-fingerprint.md", mergeStyleRules(snap))
 
 	// 7. 当前卷锁词（不展开未来秘密）。
 	add("locked-terms", "锁词", "canon/locked-terms.yaml", ExtractLockedTerms(snap.Files["canon/locked-terms.yaml"], volumeID))
@@ -171,6 +185,104 @@ func BuildWritePacket(snap domain.BookSnapshot, unit domain.UnitInfo, instructio
 	return packet
 }
 
+// mergeStyleRules joins the style fingerprint and the writing rules into one
+// block. Both answer "how should this be written", so two blocks only make the
+// model read the same class of constraint twice.
+func mergeStyleRules(snap domain.BookSnapshot) string {
+	style := ExtractStyle(snap.Files["canon/style-fingerprint.md"])
+	rules := clip(snap.Files["canon/writing-rules.md"], 420)
+	switch {
+	case style == "" && rules == "":
+		return ""
+	case rules == "":
+		return style
+	case style == "":
+		return "### 写作规则\n" + rules
+	}
+	return style + "\n\n### 写作规则\n" + rules
+}
+
+var reviewContractDrop = []string{
+	"word_target",   // 字数配额由本地硬门判定，审校数不出来
+	"pleasure",      // 爽点设计意图，判正文时用不上
+	"function",      // 卷纲层的功能定位
+	"title_working", // 工作标题
+	"chapter_range", // 章号由正文标题给出
+	"state_deltas",  // 写作护栏；审校要判的是成果，不是意图
+	"gap_from_prev", // 时间锚已进「本单元故事时钟」
+	"status",
+	"chapters",         // 与场面节拍重复
+	"continuity_risks", // 作者登记的风险台账
+	"observations",     // 历轮执行观察
+	"endgame_boundary", // 卷末终局边界
+	"time_label",
+}
+
+// writeContractDrop are author-side planning fields. The writer needs the
+// contract's promise (desire/obstacle/choice/payoff), the hard limits
+// (forbidden + locked terms), the clock, and state_deltas — nothing else.
+// continuity_risks / observations / endgame_boundary were never written for the
+// model, and on a long unit they are the bulk of the contract.
+var writeContractDrop = []string{
+	"status",
+	"title_working",
+	"function",
+	"chapter_range",
+	"word_target",
+	"chapters",         // 与场面节拍重复
+	"continuity_risks", // 作者登记的风险台账
+	"observations",     // 历轮执行观察
+	"endgame_boundary", // 卷末终局边界，写作时由 reveal 约束表达
+	"time_label",
+}
+
+// TrimContract drops fields a stage cannot use.
+//
+// 审校读合同是为了核对"有没有兑现承诺、有没有跑偏"；写作读合同是为了知道
+// "这一单元要兑现什么、哪些碰不得"。两者无关字段不同，所以按阶段各有一张
+// 裁剪表，而不是一份全量 YAML 塞给两边。
+func TrimContract(raw string, stage domain.TaskKind) string {
+	var drop []string
+	switch stage {
+	case domain.TaskReview:
+		drop = reviewContractDrop
+	case domain.TaskWrite:
+		drop = writeContractDrop
+	default:
+		return raw
+	}
+	return dropTopLevelKeys(raw, drop)
+}
+
+// dropTopLevelKeys removes the given top-level keys and their indented bodies.
+func dropTopLevelKeys(raw string, keys []string) string {
+	drop := make(map[string]bool, len(keys))
+	for _, k := range keys {
+		drop[k] = true
+	}
+	lines := strings.Split(raw, "\n")
+	out := make([]string, 0, len(lines))
+	skipping := false
+	for _, line := range lines {
+		topLevel := line != "" && !strings.HasPrefix(line, " ") && !strings.HasPrefix(line, "\t")
+		if topLevel {
+			key := line
+			if i := strings.IndexByte(key, ':'); i > 0 {
+				key = key[:i]
+			}
+			skipping = drop[strings.TrimSpace(key)]
+			if skipping {
+				continue
+			}
+		}
+		if skipping {
+			continue
+		}
+		out = append(out, line)
+	}
+	return strings.TrimSpace(strings.Join(out, "\n"))
+}
+
 func BuildOutlinePacket(snap domain.BookSnapshot, volume int, unitIDs []string, instruction string, modelMaxOut int) domain.ContextPacket {
 	policy := DefaultPolicy(domain.TaskOutline, 0)
 	policy.MaxOutputTokens = CapMaxOutput(policy.MaxOutputTokens, modelMaxOut)
@@ -205,9 +317,9 @@ func BuildOutlinePacket(snap domain.BookSnapshot, volume int, unitIDs []string, 
 			}
 		}
 	}
-	// 细纲规划可用的公开伏笔与揭示节奏（非作者底牌细节）。
-	if facts := ExtractFactsForWrite(snap.Files["continuity/facts.md"], cast, ""); facts != "" && facts != "尚无已提交公开事实。" {
-		blocks = append(blocks, domain.ContextBlock{ID: "facts", Label: "公开连载事实", Source: "continuity/facts.md", Content: facts, Bytes: len(facts)})
+	// 细纲规划需要的连续性：重写已有单元时要知道人物当前处境，避免与已定稿前后矛盾。
+	if cont := ExtractContinuityForUnit(snap, unitIDs, cast, ContinuityForReview); cont != "" {
+		blocks = append(blocks, domain.ContextBlock{ID: "continuity", Label: "连续性状态", Source: books.StatePath, Content: cont, Bytes: len(cont)})
 	}
 	if reveal := clip(snap.Files["canon/reveal-schedule.md"], 900); strings.TrimSpace(reveal) != "" {
 		blocks = append(blocks, domain.ContextBlock{ID: "reveal", Label: "揭示计划", Source: "canon/reveal-schedule.md", Content: reveal, Bytes: len(reveal)})
@@ -331,9 +443,10 @@ func BuildPlanPacketWithMode(snap domain.BookSnapshot, volume int, mode, instruc
 				}
 			}
 		}
-		if facts := ExtractFactsForVolumePlan(snap.Files["continuity/facts.md"]); facts != "" {
-			blocks = append(blocks, domain.ContextBlock{ID: "facts", Label: "公开连载账本截取", Source: "continuity/facts.md", Content: facts, Bytes: len(facts)})
-			hashes["continuity/facts.md"] = shortHash(facts)
+		// 卷纲需要的"已揭/未揭"来自状态账的最新一段，不再读以前的散文账本。
+		if cont := ExtractContinuityLatest(snap, nil, ContinuityForReview); cont != "" {
+			blocks = append(blocks, domain.ContextBlock{ID: "continuity", Label: "连续性状态（截至最近定稿）", Source: books.StatePath, Content: cont, Bytes: len(cont)})
+			hashes[books.StatePath] = shortHash(cont)
 		}
 		// 只给本卷在场 + 主角 + 上一卷在场人物，不灌全书卡。
 		relevant := VolumeCastStems(snap, volume)
@@ -401,7 +514,7 @@ func BuildFinalizePacket(snap domain.BookSnapshot, unit domain.UnitInfo) domain.
 	}
 }
 
-func BuildReviewPacket(snap domain.BookSnapshot, unit domain.UnitInfo, localFindings []domain.ReviewFinding, modelMaxOut int) domain.ContextPacket {
+func BuildReviewPacket(snap domain.BookSnapshot, unit domain.UnitInfo, localFindings []domain.ReviewFinding, modelMaxOut int, libraryRules string) domain.ContextPacket {
 	policy := DefaultPolicy(domain.TaskReview, 0)
 	policy.MaxOutputTokens = CapMaxOutput(policy.MaxOutputTokens, modelMaxOut)
 	prose := unit.ProseRaw
@@ -410,9 +523,9 @@ func BuildReviewPacket(snap domain.BookSnapshot, unit domain.UnitInfo, localFind
 		{ID: "outline", Label: "单元合同", Source: unit.OutlinePath, Content: unit.OutlineRaw, Bytes: len(unit.OutlineRaw)},
 		{ID: "prose", Label: "正文", Source: unit.ProsePath, Content: prose, Bytes: len(prose)},
 	}
-	// 审校读取公开连载事实与 on_stage 人物状态；绝不读作者底牌。
-	if facts := ExtractFactsForWrite(snap.Files["continuity/facts.md"], onStage, unit.UnitID); facts != "" {
-		blocks = append(blocks, domain.ContextBlock{ID: "facts", Label: "公开连载事实", Source: "continuity/facts.md", Content: facts, Bytes: len(facts)})
+	// 审校读取连续性状态（含知情范围，用来判断 POV 越权）；绝不读作者底牌。
+	if cont := ExtractContinuity(snap, unit, onStage, ContinuityForReview); cont != "" {
+		blocks = append(blocks, domain.ContextBlock{ID: "continuity", Label: "连续性状态", Source: books.StatePath, Content: cont, Bytes: len(cont)})
 	}
 	for _, stem := range onStage {
 		for _, c := range snap.Cast {
@@ -427,6 +540,17 @@ func BuildReviewPacket(snap domain.BookSnapshot, unit domain.UnitInfo, localFind
 	// 审校同样校验信息释放边界（按卷截取，不含底牌）。
 	if reveal := ExtractRevealForVolume(snap.Files["canon/reveal-schedule.md"], unit.Volume); reveal != "" {
 		blocks = append(blocks, domain.ContextBlock{ID: "reveal", Label: "揭示约束", Source: "canon/reveal-schedule.md", Content: reveal, Bytes: len(reveal)})
+	}
+	// 整单元路径同样带审校清单，与分章路径来源一致。
+	if rules, source := ResolveReviewRules(snap, libraryRules); rules != "" {
+		src := "knowledge:25-review-checklist.md"
+		switch source {
+		case RulesFromBook:
+			src = "canon/review-checklist.md"
+		case RulesFromLibrary:
+			src = "knowledge:25-review-checklist.md（作者已编辑）"
+		}
+		blocks = append(blocks, domain.ContextBlock{ID: "review-rules", Label: "审校清单", Source: src, Content: rules, Bytes: len(rules)})
 	}
 	var fb strings.Builder
 	for _, f := range localFindings {

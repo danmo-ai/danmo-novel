@@ -82,7 +82,7 @@ How conflict renews each arc:
 		"canon/author-lore.md": fmt.Sprintf(`# Author lore — %s
 
 **Author-only.** 写正文与审校禁止加载。真相、未来反转、终局储备细节只在这里。
-公开读者事实写 continuity/facts.md；锁词写 canon/locked-terms.yaml。
+随剧情变化的事实写 continuity/state.yaml（定稿时自动追加）；锁词写 canon/locked-terms.yaml。
 
 ## 终局储备（细节）
 | 底牌 | 真相（作者可见） | 最早解锁卷 | 公开层目前可见 |
@@ -151,26 +151,17 @@ aliases: {}
 |--------------|--------------|------------|----------|
 | | | v | locked |
 `,
+		"continuity/state.yaml": `# 连续性状态账本（机器可读，按单元段）
+# 每个已定稿单元追加一段；读取时取目标单元之前最近的一段。
+# 只存随剧情变化的事实：位置、伤势、资源、目标、知情范围、伏笔。
+# 静态人设见 canon/cast/，连载位置见 novel-state.yaml 顶层。
+version: 1
+units: []
+`,
 		"continuity/facts.md": fmt.Sprintf(`# Continuity facts — %s
 
-只存读者已知事实与连载游标，不存作者底牌或执行日志。
-
-## Public facts
-| Kind | Fact | First seen | Notes |
-|------|------|------------|-------|
-
-## Tracking
-### Cursor
-- last_committed_ch:
-- current volume / unit:
-- next action:
-
-### Cast snapshot
-| 角色 | 年龄 | 职位 | 位置 | 目标 | 伤势/资源 | 知情范围 | 关系质态 |
-|------|------|------|------|------|-----------|----------|----------|
-
-### Cannot rewind
--
+读者已知事实的**人类可读视图**。机器读写走 continuity/state.yaml：
+应用不再解析本文件，它只供作者翻阅。
 
 ## Open loops
 | FS-id | 内容 | 状态 | 埋点章 | 计划回收 | 实际回收 |

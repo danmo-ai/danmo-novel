@@ -99,7 +99,21 @@ func (p *AnthropicMessagesClient) Chat(ctx context.Context, req port.LLMChatRequ
 				"content":     anthropicUserContent(m),
 			}}
 		} else {
-			msg["content"] = anthropicUserContent(m)
+			// Anthropic 的前缀缓存是显式断点制：只有打了 cache_control 的位置
+			// 及其之前的内容会被缓存。system 已有断点，但正文在 user 里——不给
+			// user 打点，重试时整份正文就按全价重算。这里在 repair 之前切一刀，
+			// 让稳定部分成为可命中前缀；两个 block 会被 Anthropic 无缝拼接，
+			// 模型看到的文本与切分前逐字节相同。
+			content := anthropicUserContent(m)
+			if text, ok := content.(string); ok && m.Role == "user" {
+				if stable, tail, ok := splitPromptCachePrefix(text); ok {
+					content = []map[string]any{
+						{"type": "text", "text": stable, "cache_control": map[string]any{"type": "ephemeral"}},
+						{"type": "text", "text": tail},
+					}
+				}
+			}
+			msg["content"] = content
 		}
 		messages = append(messages, msg)
 	}

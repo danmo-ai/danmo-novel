@@ -26,7 +26,14 @@ const loadError = ref('')
 const packet = ref<ContextPacket | null>(null)
 const instruction = ref('')
 const expandedBlock = ref('')
-type KnowledgeDoc = { id: string; title: string; summary: string; bytes: number; stages?: string[]; genres?: string[]; subgenres?: string[] }
+type KnowledgeDoc = {
+  id: string; title: string; summary: string; bytes: number
+  stages?: string[]; genres?: string[]; subgenres?: string[]
+  /** 默认注入：pipeline 每次自动带上，不在选择器里提供勾选。 */
+  default?: boolean
+  /** author = 作者操作说明（平台运营/应用流程/出处），永不进提示词。 */
+  audience?: string
+}
 const knowledgeDocs = ref<KnowledgeDoc[]>([])
 const selectedKnowledge = ref<Set<string>>(new Set())
 const knowledgeOpen = ref(false)
@@ -93,17 +100,36 @@ const totalBytes = computed(() => (packet.value?.blocks || []).reduce((s, b) => 
 
 // Knowledge is offered per step and per genre: 立项 articles are not noise at
 // 审校, and 玄幻 rules are not offered to a 悬疑 book.
+//
+// 三类规则分得清：
+//   1. 程序规则（gates/deslop_rules.yaml）—— 引擎侧执行，从不出现在这里
+//   2. 默认注入（front matter `default: true`）—— pipeline 每次自动带上，这里是只读提示
+//   3. 用户选择（本文其余项）—— 作者勾选后才附加
+// 把第 2 类列成可勾选项会造成同一份文本被注入两次。
 const knowledgeStage = computed(() => specKnowledgeStage(props.spec))
 const knowledgeStageText = computed(() => knowledgeStageLabel(knowledgeStage.value))
 const bookGenre = computed(() => store.currentBook?.summary?.genre || '')
 const bookSubgenre = computed(() => store.currentBook?.summary?.subgenre || '')
+const autoInjected = computed(() =>
+  knowledgeDocs.value.filter((d) => d.default && knowledgeAppliesTo(d.stages, knowledgeStage.value)),
+)
 const genreStepMatch = (d: KnowledgeDoc) =>
-  knowledgeAppliesTo(d.stages, knowledgeStage.value) && knowledgeAppliesToGenre(d, bookGenre.value, bookSubgenre.value)
+  !d.default &&
+  d.audience !== 'author' &&
+  knowledgeAppliesTo(d.stages, knowledgeStage.value) &&
+  knowledgeAppliesToGenre(d, bookGenre.value, bookSubgenre.value)
 const suitableKnowledge = computed(() => knowledgeDocs.value.filter(genreStepMatch))
 const commonKnowledge = computed(() => suitableKnowledge.value.filter((d) => !d.genres?.length && !d.subgenres?.length))
 const genreKnowledge = computed(() => suitableKnowledge.value.filter((d) => d.genres?.length || d.subgenres?.length))
-const hiddenKnowledge = computed(() => knowledgeDocs.value.length - suitableKnowledge.value.length)
-const shownKnowledge = computed(() => (knowledgeShowAll.value ? knowledgeDocs.value : suitableKnowledge.value))
+const hiddenKnowledge = computed(() =>
+  knowledgeDocs.value.filter((d) => !d.default && d.audience !== 'author').length - suitableKnowledge.value.length,
+)
+// "显示全部" 同样排除默认注入：它们不是选项，出现在列表里只会让人想勾选。
+const shownKnowledge = computed(() => (
+  knowledgeShowAll.value
+    ? knowledgeDocs.value.filter((d) => !d.default && d.audience !== 'author')
+    : suitableKnowledge.value
+))
 const genreText = computed(() => (bookGenre.value ? bookGenre.value + (bookSubgenre.value ? ` / ${bookSubgenre.value}` : '') : '未设置题材'))
 
 /** Why a row is greyed out when the author chooses to see everything. */
@@ -206,12 +232,16 @@ function confirm() {
           </button>
           <div v-if="knowledgeStage" class="knowledge-scope">
             <span v-if="!knowledgeShowAll">
-              「{{ knowledgeStageText }}」· 题材 {{ genreText }} · 可用 {{ suitableKnowledge.length }} 篇
+              「{{ knowledgeStageText }}」· 题材 {{ genreText }} · 可选 {{ suitableKnowledge.length }} 篇
               （公共 {{ commonKnowledge.length }}<template v-if="genreKnowledge.length"> + 题材专属 {{ genreKnowledge.length }}</template>）<template v-if="hiddenKnowledge">，已隐藏 {{ hiddenKnowledge }} 篇</template>
             </span>
-            <span v-else>「{{ knowledgeStageText }}」可用 {{ suitableKnowledge.length }} 篇 · 已显示全部 {{ knowledgeDocs.length }} 篇，灰底为不适用</span>
+            <span v-else>「{{ knowledgeStageText }}」可选 {{ suitableKnowledge.length }} 篇 · 已显示全部 {{ shownKnowledge.length }} 篇，灰底为不适用</span>
             <button v-if="hiddenKnowledge" class="scope-link" @click="knowledgeShowAll = !knowledgeShowAll">{{ knowledgeShowAll ? '只看适用' : '显示全部' }}</button>
           </div>
+          <!-- 默认注入不是选项：列成勾选框会让同一份文本被注入两次。 -->
+          <p v-if="autoInjected.length" class="knowledge-auto">
+            默认注入（无需勾选，已包含在本次上下文里）：{{ autoInjected.map((d) => d.title).join('、') }}
+          </p>
           <div v-if="knowledgeOpen" class="knowledge-list">
             <p class="knowledge-note">勾选的文章会作为「方法/风格参考」附加到本次调用，不写入正文事实。</p>
             <label v-for="d in shownKnowledge" :key="d.id" class="knowledge-item"
@@ -290,6 +320,7 @@ function confirm() {
 .knowledge-scope { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 0 24px 10px; font-size: 11px; color: var(--ink-soft); }
 .scope-link { border: none; background: transparent; color: var(--accent); font-size: 11px; padding: 0; }
 .knowledge-note { margin: 0 0 10px; font-size: 11px; color: var(--ink-soft); line-height: 1.6; }
+.knowledge-auto { margin: 0; padding: 0 24px 10px; font-size: 11px; color: var(--ink-soft); line-height: 1.6; }
 .knowledge-empty { margin: 0; padding: 10px 0; font-size: 12px; color: var(--ink-soft); line-height: 1.6; }
 .knowledge-item { display: flex; align-items: flex-start; gap: 10px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; margin-bottom: 6px; cursor: pointer; }
 .knowledge-item.off-stage { opacity: .55; }

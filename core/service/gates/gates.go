@@ -10,20 +10,33 @@ import (
 	"github.com/danmo-ai/danmo-novel/core/domain"
 )
 
+// 规则表已移出代码：见 core/resource/novel/deslop-rules.yaml 与 rules.go。
+// 加词、调阈值、开关某条都是编辑 YAML，不需要改 Go，也不需要重新发版。
+
 var (
-	emDashRe     = regexp.MustCompile(`[—–]`)
-	aiVocabRe    = regexp.MustCompile(`(?:不禁|目光深邃|心中一动|涌上心头|嘴角微微上扬|空气仿佛凝固|仿佛时间静止)`)
-	englishLeak  = regexp.MustCompile(`[A-Za-z]{4,}`)
-	simileHeavy  = regexp.MustCompile(`如同|宛如|仿佛|好似`)
+	aiVocabRe   = regexp.MustCompile(`(?:不禁|目光深邃|心中一动|涌上心头|嘴角微微上扬|空气仿佛凝固|仿佛时间静止)`)
+	emDashRe    = regexp.MustCompile(`[—–]`)
+	englishLeak = regexp.MustCompile(`[A-Za-z]{4,}`)
+	simileHeavy = regexp.MustCompile(`如同|宛如|仿佛|好似`)
 )
 
 type Report struct {
-	OK       bool                  `json:"ok"`
+	OK       bool                   `json:"ok"`
 	Findings []domain.ReviewFinding `json:"findings"`
-	Counts   map[string]int        `json:"counts"`
+	Counts   map[string]int         `json:"counts"`
 }
 
+// CheckProse runs the fixed structural checks plus the built-in deslop rules.
 func CheckProse(chapters []domain.ChapterDraft, wordTargetPerChapter int) Report {
+	return CheckProseWithRules(chapters, wordTargetPerChapter, nil)
+}
+
+// CheckProseWithRules is CheckProse with an author-resolved rule set.
+// The pipeline passes the book/library one; nil falls back to the embedded set.
+func CheckProseWithRules(chapters []domain.ChapterDraft, wordTargetPerChapter int, rules *Ruleset) Report {
+	if rules == nil {
+		rules = BuiltinRules()
+	}
 	r := Report{OK: true, Counts: map[string]int{}}
 	totalEm, totalAI, totalEN, totalSim := 0, 0, 0, 0
 	for _, ch := range chapters {
@@ -48,10 +61,11 @@ func CheckProse(chapters []domain.ChapterDraft, wordTargetPerChapter int) Report
 			r.Findings = append(r.Findings, domain.ReviewFinding{
 				ID: fmt.Sprintf("length-ch%d", ch.Chapter), Severity: "blocking", Source: "local_gate",
 				Lens: "length", Title: "字数不足", Chapter: ch.Chapter,
-				Evidence: fmt.Sprintf("chars=%d target≈%d", chars, wordTargetPerChapter),
+				Evidence:   fmt.Sprintf("chars=%d target≈%d", chars, wordTargetPerChapter),
 				Suggestion: "扩写至目标字数区间",
 			})
 		}
+		// 以下旧阈值保持不变（只加不减，避免已有书突然变宽松）。
 		if em > 8 {
 			r.OK = false
 			r.Findings = append(r.Findings, domain.ReviewFinding{
@@ -75,6 +89,21 @@ func CheckProse(chapters []domain.ChapterDraft, wordTargetPerChapter int) Report
 				Evidence: fmt.Sprintf("ai_vocab=%d", ai),
 			})
 		}
+		if sim > 8 {
+			r.Findings = append(r.Findings, domain.ReviewFinding{
+				ID: fmt.Sprintf("simile-ch%d", ch.Chapter), Severity: "advisory", Source: "local_gate",
+				Lens: "deslop", Title: "比喻词偏多", Chapter: ch.Chapter,
+				Evidence:   fmt.Sprintf("simile=%d (如同/宛如/仿佛/好似)", sim),
+				Suggestion: "减少比喻密度，保留最贴切的一两个",
+			})
+		}
+
+		for _, f := range checkProseSignals(rules, ch, chars) {
+			if f.Severity == "blocking" {
+				r.OK = false
+			}
+			r.Findings = append(r.Findings, f)
+		}
 	}
 	r.Counts["em_dash"] = totalEm
 	r.Counts["ai_vocab"] = totalAI
@@ -83,6 +112,68 @@ func CheckProse(chapters []domain.ChapterDraft, wordTargetPerChapter int) Report
 	return r
 }
 
+// checkProseSignals runs the 去 AI 味 checks for one chapter using the
+// author-resolved rule set (see deslop-rules.yaml). Adding or tuning a rule is
+// a YAML edit, never a code change.
+//
+// 两条设计约束（来自社区实测的教训）：
+//  1. 按每千字密度判定，不按绝对条数——否则短章被小样本放大、长章永远漏报。
+//  2. 聚簇判定：单个弱信号不定罪（真人也会用破折号和排比），只有多项同时密集
+//     才补一条「成簇」提示。避免把作者自己的文风当成 AI 味删掉。
+func checkProseSignals(rs *Ruleset, ch domain.ChapterDraft, chars int) []domain.ReviewFinding {
+	if chars <= 0 || rs == nil {
+		return nil
+	}
+	var out []domain.ReviewFinding
+	// 每千字基数：短章用 1000 兜底，避免 200 字段落算出一万/千字的荒谬密度。
+	perKilo := float64(chars) / 1000
+	if perKilo < 1 {
+		perKilo = 1
+	}
+
+	hitsByCategory := 0
+	weak := 0
+	for _, sig := range rs.Signals {
+		hits := sig.hits(ch.Body)
+		if hits == 0 {
+			continue
+		}
+		if sig.MinHits > 0 && hits < sig.MinHits {
+			// 未过绝对下限；密度极高时仍算一类命中（长章的成簇判定）。
+			if sig.PerMille <= 0 || float64(hits)/perKilo < sig.PerMille {
+				continue
+			}
+		}
+		if sig.PerMille > 0 && float64(hits)/perKilo < sig.PerMille {
+			continue
+		}
+		hitsByCategory++
+		if sig.Severity == SeverityWeak {
+			weak++
+			continue
+		}
+		f := domain.ReviewFinding{
+			ID:       fmt.Sprintf("%s-ch%d", sig.ID, ch.Chapter),
+			Severity: sig.Severity, Source: "local_gate", Lens: sig.Lens,
+			Title: sig.Title, Chapter: ch.Chapter,
+			Evidence:   fmt.Sprintf("%d 处，密度 %.1f/千字", hits, float64(hits)/perKilo),
+			Suggestion: sig.Suggest,
+		}
+		out = append(out, f)
+	}
+
+	// 成簇：多类同时命中，说明不是单点口味问题，而是整章的 AI 腔。
+	if hitsByCategory >= rs.ClusterAt {
+		out = append(out, domain.ReviewFinding{
+			ID:       fmt.Sprintf("ai-cluster-ch%d", ch.Chapter),
+			Severity: "advisory", Source: "local_gate", Lens: "deslop",
+			Title: "成簇的 AI 文风特征", Chapter: ch.Chapter,
+			Evidence:   fmt.Sprintf("%d 类特征同时命中（含弱信号 %d 类）", hitsByCategory, weak),
+			Suggestion: "单条特征不算证据，成簇说明整章腔调有问题：优先改叙述者的态度与具体细节，别逐词替换",
+		})
+	}
+	return out
+}
 func CheckUnitOutline(u domain.UnitOutlineDraft, volumeCast []string) Report {
 	r := Report{OK: true, Counts: map[string]int{}}
 	if u.UnitID == "" {

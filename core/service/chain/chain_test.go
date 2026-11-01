@@ -26,15 +26,31 @@ import (
 // number of times without hand-queued steps. It records every request so tests
 // can assert which instruction / knowledge reached which stage.
 type fakeLLM struct {
-	mu       sync.Mutex
-	blocking bool
-	requests []port.LLMChatRequest
+	mu             sync.Mutex
+	blocking       bool
+	blockFirstOnly bool
+	reviewCalls    int
+	requests       []port.LLMChatRequest
 }
 
 func (f *fakeLLM) setBlocking(v bool) {
 	f.mu.Lock()
 	f.blocking = v
 	f.mu.Unlock()
+}
+
+// setBlockFirstOnly makes only the first review of a test run report blocking,
+// so the auto-revise path can be exercised without a second manual round.
+func (f *fakeLLM) setBlockFirstOnly(v bool) {
+	f.mu.Lock()
+	f.blockFirstOnly = v
+	f.mu.Unlock()
+}
+
+func (f *fakeLLM) reviewCallCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.reviewCalls
 }
 
 func (f *fakeLLM) captured() []port.LLMChatRequest {
@@ -70,7 +86,14 @@ func (f *fakeLLM) Chat(_ context.Context, req port.LLMChatRequest) (port.LLMChat
 			"payoff": "入门资格", "pleasure": "弱者翻盘", "forbidden": "不揭金手指来源",
 			"wordTarget": "2500", "pov": "linchen",
 			"chapterFrom": 1, "chapterTo": 3, "onStage": []string{"linchen"},
-			"scenes":   []map[string]any{{"id": "S1", "chapter": 1, "beat": "被点名", "who": []string{"linchen"}, "pov": "linchen", "where": "试炼场"}},
+			"scenes": []map[string]any{
+				{"id": "S1", "chapter": 1, "beat": "被点名", "who": []string{"linchen"}, "pov": "linchen", "where": "试炼场"},
+				{"id": "S2", "chapter": 1, "beat": "名额只剩一个", "who": []string{"linchen"}, "pov": "linchen", "where": "试炼场"},
+				{"id": "S3", "chapter": 2, "beat": "被迫接战", "who": []string{"linchen"}, "pov": "linchen", "where": "石台"},
+				{"id": "S4", "chapter": 2, "beat": "代价初现", "who": []string{"linchen"}, "pov": "linchen", "where": "石台"},
+				{"id": "S5", "chapter": 3, "beat": "爆发换资格", "who": []string{"linchen"}, "pov": "linchen", "where": "试炼场"},
+				{"id": "S6", "chapter": 3, "beat": "入门", "who": []string{"linchen"}, "pov": "linchen", "where": "山门"},
+			},
 			"storyDay": "1", "gapFromPrev": "开场",
 		}}})
 		return port.LLMChatResponse{Content: string(out), Done: true}, nil
@@ -83,12 +106,32 @@ func (f *fakeLLM) Chat(_ context.Context, req port.LLMChatRequest) (port.LLMChat
 			"chapter": ch, "title": fmt.Sprintf("第%d章", ch), "body": proseBody(),
 		}}})
 		return port.LLMChatResponse{Content: string(out), Done: true}, nil
+	case domain.TaskRevise:
+		// Per-chapter revise returns a single chapter object, not an array.
+		ch := 1
+		if v, ok := payload.Extra["reviseChapter"].(float64); ok && v > 0 {
+			ch = int(v)
+		}
+		out, _ := json.Marshal(map[string]any{
+			"chapter": ch, "title": fmt.Sprintf("第%d章·修", ch), "body": "【修订】" + proseBody(),
+		})
+		return port.LLMChatResponse{Content: string(out), Done: true}, nil
 	case domain.TaskReview:
+		f.mu.Lock()
+		f.reviewCalls++
+		first := f.reviewCalls == 1
+		firstOnly := f.blockFirstOnly
+		f.mu.Unlock()
+		// 分章审校的 finding 必须落在被审的那一章，否则校验会（正确地）拒收。
+		reviewed := 0
+		if v, ok := payload.Book["chapter"].(float64); ok {
+			reviewed = int(v)
+		}
 		findings := []map[string]any{}
-		if blocking {
+		if blocking && (!firstOnly || first) {
 			findings = append(findings, map[string]any{
 				"id": "ai-continuity", "severity": "blocking", "source": "ai_review",
-				"title": "连续性错误", "evidence": "第 2 章位置跳变", "chapter": 2,
+				"title": "连续性错误", "evidence": "第 2 章位置跳变", "chapter": reviewed,
 				"suggestion": "补一句移动过程",
 			})
 		}
@@ -215,6 +258,21 @@ func readFile(t *testing.T, path string) string {
 		t.Fatalf("read %s: %v", path, err)
 	}
 	return string(raw)
+}
+
+// countTask counts how many LLM calls were made for one task kind.
+func (h *harness) countTask(kind domain.TaskKind) int {
+	n := 0
+	for _, req := range h.llm.captured() {
+		payload, err := contextsvc.DecodeUserPayload(req.Messages[len(req.Messages)-1].Content)
+		if err != nil {
+			continue
+		}
+		if domain.TaskKind(payload.Task) == kind {
+			n++
+		}
+	}
+	return n
 }
 
 func TestChainRunsWholeUnit(t *testing.T) {
@@ -352,6 +410,82 @@ func TestChainStopsOnBlockingReview(t *testing.T) {
 	final := h.wait(t, ch.ID)
 	if final.Status != domain.ChainCompleted {
 		t.Fatalf("status=%s err=%s", final.Status, final.Error)
+	}
+}
+
+// 审校阻断不再是"直接停机"：先按 blocking 清单自动修订一次并复审，
+// 复审通过就继续跑完整单元；预算固定，不做第二轮。
+func TestChainAutoRevisesOnceThenCompletes(t *testing.T) {
+	h := newHarness(t)
+	h.llm.setBlocking(true)
+	h.llm.setBlockFirstOnly(true)
+	ch := h.start(t, domain.ChainSpec{})
+	if ch.Status != domain.ChainCompleted {
+		t.Fatalf("status=%s err=%s", ch.Status, ch.Error)
+	}
+	// 阻断只出现在首轮的那一章：按章修订，所以恰好 1 次修订调用。
+	if got := h.countTask(domain.TaskRevise); got != 1 {
+		t.Fatalf("revise calls=%d want exactly 1 (only the blocked chapter)", got)
+	}
+	// 分章审校：3 章 × 2 轮（首轮阻断 + 复审）= 6 次调用，仍是固定 2 轮。
+	if got := h.countTask(domain.TaskReview); got != 6 {
+		t.Fatalf("review calls=%d want 6 (3 chapters x 2 rounds)", got)
+	}
+	prose := readFile(t, filepath.Join(h.root, "units", "v01-U1.md"))
+	if !strings.Contains(prose, "【修订】") {
+		t.Fatalf("prose should be the revised draft:\n%s", prose)
+	}
+	// 修订也会覆盖正文，必须留一份旧稿备份。
+	if matches, _ := filepath.Glob(filepath.Join(h.root, "backups", "*-chain", "units", "v01-U1.md")); len(matches) == 0 {
+		t.Fatal("auto-revise must back up the pre-revise prose")
+	}
+	// 阻断清单修过就归档：不留 open 候选挡住 Resume / 后续单元。
+	if open, _ := h.svc.Store.ListOpenCandidates(context.Background(), h.book); len(open) != 0 {
+		t.Fatalf("open candidates left behind: %+v", open)
+	}
+	if yaml := readFile(t, filepath.Join(h.root, "outline", "units", "v01-U1.yaml")); !strings.Contains(yaml, "status: reviewed") {
+		t.Fatalf("unit not finalized:\n%s", yaml)
+	}
+}
+
+// 只修一轮：复审仍阻断就停机交回人工，不会无限自我修复。
+func TestChainAutoReviseStopsAfterOneRound(t *testing.T) {
+	h := newHarness(t)
+	h.llm.setBlocking(true)
+	ch := h.start(t, domain.ChainSpec{})
+	if ch.Status != domain.ChainWaitingManual {
+		t.Fatalf("status=%s", ch.Status)
+	}
+	// 每章都报阻断，按章修订 → 3 次修订调用，但仍只跑一轮。
+	if got := h.countTask(domain.TaskRevise); got != 3 {
+		t.Fatalf("revise calls=%d want 3 (one per blocked chapter, still a single round)", got)
+	}
+	// 分章审校：3 章 × 2 轮后仍阻断就停，绝不发起第三轮。
+	if got := h.countTask(domain.TaskReview); got != 6 {
+		t.Fatalf("review calls=%d want 6 (3 chapters x 2 rounds, no third round)", got)
+	}
+	if !strings.Contains(ch.Error, "连续性错误") {
+		t.Fatalf("error=%q", ch.Error)
+	}
+	open, err := h.svc.Store.ListOpenCandidates(context.Background(), h.book)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 只留复审那份清单；已被修订消费的第一份必须归档。
+	if len(open) != 1 || open[0].Kind != domain.TaskReview {
+		t.Fatalf("open candidates=%+v", open)
+	}
+	// 闭环二的失败语义：停机交回人工，单元标 blocked，cursor 不动。
+	if ch.Cursor != 0 || ch.Units[0].Status != domain.ChainUnitBlocked {
+		t.Fatalf("unit state=%+v cursor=%d, want blocked at unit 0", ch.Units[0], ch.Cursor)
+	}
+	if ch.Units[0].Stage != domain.ChainStageReview {
+		t.Fatalf("blocked stage=%s, want review", ch.Units[0].Stage)
+	}
+	// 正文必须停在"修订后"的状态：自动修复已经写盘，不该回滚。
+	prose := readFile(t, filepath.Join(h.root, "units", "v01-U1.md"))
+	if !strings.Contains(prose, "【修订】") {
+		t.Fatalf("auto-revise output should be on disk before stopping:\n%s", prose)
 	}
 }
 

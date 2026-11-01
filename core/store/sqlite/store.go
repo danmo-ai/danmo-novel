@@ -347,6 +347,34 @@ func (s *Store) ListOpenCandidates(ctx context.Context, bookID string) ([]domain
 	return out, nil
 }
 
+// ListClosedCandidates returns 已终结候选（accepted/rejected/expired），最新在前。
+// 「接受归档」的审校清单只能靠它回看，所以按 book 维度整体取回，由调用方按单元分组。
+func (s *Store) ListClosedCandidates(ctx context.Context, bookID string, limit int) ([]domain.Candidate, error) {
+	if limit <= 0 {
+		limit = 200
+	}
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT payload FROM candidates WHERE book_id = ? AND status IN ('accepted','rejected','expired') ORDER BY created_at DESC LIMIT ?`,
+		bookID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]domain.Candidate, 0)
+	for rows.Next() {
+		var payload string
+		if err := rows.Scan(&payload); err != nil {
+			return nil, err
+		}
+		var c domain.Candidate
+		if err := json.Unmarshal([]byte(payload), &c); err != nil {
+			continue
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
 // ---- Chains ----
 
 func (s *Store) SaveChain(ctx context.Context, c domain.Chain) error {

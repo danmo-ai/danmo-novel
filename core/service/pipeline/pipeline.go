@@ -22,8 +22,23 @@ type Runner struct {
 	// KnowledgeDocs are author-attached reference articles appended to the user
 	// prompt as method/style reference (never as canon facts).
 	KnowledgeDocs []string
+	// ReviewChecklist is the author's edited 25-review-checklist body, already
+	// resolved through the knowledge library (overlay beats built-in). Empty
+	// means "use the built-in article".
+	ReviewChecklist string
+	// DeslopRules is the author-resolved 去 AI 味 rule set for local gates
+	// (book canon/deslop-rules.yaml > library edit > embedded). Nil = embedded.
+	DeslopRules *gates.Ruleset
 	// ModelMaxOut returns the assigned model's catalog max_output (0 = unknown).
 	ModelMaxOut func(modelID string) int
+}
+
+// proseRules returns the effective local-gate rule set.
+func (r *Runner) proseRules() *gates.Ruleset {
+	if r != nil && r.DeslopRules != nil {
+		return r.DeslopRules
+	}
+	return gates.BuiltinRules()
 }
 
 func New(llm port.LLMProvider) *Runner { return &Runner{LLM: llm} }
@@ -45,6 +60,9 @@ type Result struct {
 	Calls     []domain.CallRecord
 	Packet    domain.ContextPacket
 	LocalGate gates.Report
+	// NextReviewCursor is the first chapter that failed during a split review;
+	// a retry resumes from it instead of re-reviewing finished chapters.
+	NextReviewCursor int
 }
 
 func (r *Runner) RunWrite(ctx context.Context, snap domain.BookSnapshot, unit domain.UnitInfo, instruction string, modelID string) (Result, error) {
@@ -57,13 +75,15 @@ func (r *Runner) RunWrite(ctx context.Context, snap domain.BookSnapshot, unit do
 			if err := unmarshalJSON(raw, &parsed); err != nil {
 				return err
 			}
-			if len(parsed.Chapters) == 0 {
-				return fmt.Errorf("empty chapters")
+			// 章号与章体是下游一切计算的基础；漏章尤其危险——它不会报错，
+			// 只会让摘要、账本游标和下次续写全部错位。
+			if err := validateChapters("正文", parsed.Chapters, unit.ChapterFrom, unit.ChapterTo); err != nil {
+				return err
 			}
 			cand.Chapters = parsed.Chapters
 			return nil
 		}, func(cand domain.Candidate) gates.Report {
-			return gates.CheckProse(cand.Chapters, 2000)
+			return gates.CheckProseWithRules(cand.Chapters, 2000, r.proseRules())
 		})
 	}
 
@@ -88,8 +108,10 @@ func (r *Runner) RunWrite(ctx context.Context, snap domain.BookSnapshot, unit do
 			prev := cand.Chapters[len(cand.Chapters)-1]
 			extra["previousChapter"] = map[string]any{"chapter": prev.Chapter, "body": prev.Body, "note": "仅供承接，不要重复输出"}
 		}
-		user := contextsvc.MergeExtraIntoUserPayload(r.withKnowledge(packet.UserPrompt), extra)
-		draft, rec, err := r.generateChapter(ctx, modelID, packet, user, ch, &calls)
+		// 单章只带本章的场面节拍：整单元 20+ 个场面每章重复注入一遍纯属浪费。
+		chapterPacket := contextsvc.NarrowBeats(packet, unit, ch)
+		user := contextsvc.MergeExtraIntoUserPayload(r.withKnowledge(chapterPacket.UserPrompt), extra)
+		draft, rec, err := r.generateChapter(ctx, modelID, chapterPacket, user, ch, &calls)
 		if err != nil {
 			return Result{Calls: calls, Packet: packet}, err
 		}
@@ -98,7 +120,7 @@ func (r *Runner) RunWrite(ctx context.Context, snap domain.BookSnapshot, unit do
 	}
 	// 按章定向修复：单章硬门不过只重生成该章，其他章不动。
 	cand.Chapters = r.repairFailedChapters(ctx, modelID, packet, cand.Chapters, &calls)
-	rep := gates.CheckProse(cand.Chapters, 2000)
+	rep := gates.CheckProseWithRules(cand.Chapters, 2000, r.proseRules())
 	cand.Findings = append(cand.Findings, rep.Findings...)
 	return Result{Candidate: cand, Calls: calls, Packet: packet, LocalGate: rep}, nil
 }
@@ -115,6 +137,10 @@ func (r *Runner) RunOutline(ctx context.Context, snap domain.BookSnapshot, volum
 	return r.runJSON(ctx, snap, packet, modelID, domain.TaskOutline, "", "", func(raw string, cand *domain.Candidate) error {
 		units, err := parseOutlineUnits(raw)
 		if err != nil {
+			return err
+		}
+		// scene 章号越界会让按章过滤失效：那一章拿不到节拍，写作时等于盲写。
+		if err := validateOutlineScenes(units); err != nil {
 			return err
 		}
 		cand.UnitOutlines = units
@@ -185,6 +211,11 @@ func (r *Runner) RunPlanMode(ctx context.Context, snap domain.BookSnapshot, volu
 			cand.PlanMarkdown["cast_json"] = string(b)
 			if parsed.Settings == nil || len(parsed.Settings.Files) == 0 {
 				return fmt.Errorf("立项必须输出 settings.files")
+			}
+			// 人物骨架是后续所有人名引用的根：缺 stem/role 要到写作阶段才显形。
+			normalizePlanCast(parsed.Cast)
+			if err := validatePlanCast(parsed.Cast); err != nil {
+				return err
 			}
 			cand.PlanSettings = map[string]string{}
 			for _, path := range books.PlanSettingsPaths {
@@ -259,39 +290,6 @@ func castHasProtagonist(castJSON string) bool {
 	return false
 }
 
-func (r *Runner) RunReview(ctx context.Context, snap domain.BookSnapshot, unit domain.UnitInfo, modelID string) (Result, error) {
-	chapters := gates.ParseProseChapters(unit.ProseRaw)
-	local := gates.CheckProse(chapters, 2000)
-	packet := contextsvc.BuildReviewPacket(snap, unit, local.Findings, r.modelMaxOut(modelID))
-	res, err := r.runJSON(ctx, snap, packet, modelID, domain.TaskReview, unit.UnitID, unit.ProsePath, func(raw string, cand *domain.Candidate) error {
-		var parsed struct {
-			Verdict  string                 `json:"verdict"`
-			Findings []domain.ReviewFinding `json:"findings"`
-		}
-		if err := unmarshalJSON(raw, &parsed); err != nil {
-			// 长文审校经常先输出正文分析、被输出预算截断或 JSON 后追加说明；尽力救回 findings。
-			verdict, findings, serr := salvageReviewJSON(raw)
-			if serr != nil {
-				return err
-			}
-			_ = verdict
-			parsed.Findings = findings
-		}
-		for i := range parsed.Findings {
-			if parsed.Findings[i].Source == "" {
-				parsed.Findings[i].Source = "ai_review"
-			}
-		}
-		cand.Findings = append(local.Findings, parsed.Findings...)
-		cand.Chapters = chapters
-		return nil
-	}, func(cand domain.Candidate) gates.Report {
-		return local
-	})
-	res.LocalGate = local
-	return res, err
-}
-
 func (r *Runner) RunLocalEdit(ctx context.Context, snap domain.BookSnapshot, sel domain.TextSelection, instruction, modelID string) (Result, error) {
 	packet := contextsvc.BuildLocalEditPacket(snap, sel, instruction)
 	return r.runJSON(ctx, snap, packet, modelID, domain.TaskLocalEdit, "", sel.Path, func(raw string, cand *domain.Candidate) error {
@@ -302,42 +300,16 @@ func (r *Runner) RunLocalEdit(ctx context.Context, snap domain.BookSnapshot, sel
 			return err
 		}
 		if strings.TrimSpace(parsed.Replacement) == "" {
-			return fmt.Errorf("empty replacement")
+			return contractFail("局部改写", []Violation{{
+				Path: "replacement",
+				Want: "改写后的完整替换文本，可直接替换原文选区",
+				Got:  "空",
+			}})
 		}
 		cand.Replacement = parsed.Replacement
 		return nil
 	}, func(cand domain.Candidate) gates.Report {
 		return gates.Report{OK: true, Counts: map[string]int{}}
-	})
-}
-
-// RunRevise applies selected findings in one bounded revision call.
-func (r *Runner) RunRevise(ctx context.Context, snap domain.BookSnapshot, unit domain.UnitInfo, findings []domain.ReviewFinding, modelID string) (Result, error) {
-	chapters := gates.ParseProseChapters(unit.ProseRaw)
-	local := gates.CheckProse(chapters, 2000)
-	packet := contextsvc.BuildReviewPacket(snap, unit, append(local.Findings, findings...), r.modelMaxOut(modelID))
-	packet.TaskKind = domain.TaskRevise
-	packet.Policy = contextsvc.DefaultPolicy(domain.TaskRevise, 0)
-	packet.SystemPrompt = "你是小说修订助手。只针对列出的审校问题改正文，返回 JSON {\"chapters\":[...],\"canonChanges\":[]}。不要新增自由审稿轮次。"
-	packet.UserPrompt = contextsvc.MergeExtraIntoUserPayload(packet.UserPrompt, map[string]any{
-		"reviseNote": "请定向修订并返回完整 chapters。",
-	})
-	return r.runJSON(ctx, snap, packet, modelID, domain.TaskRevise, unit.UnitID, unit.ProsePath, func(raw string, cand *domain.Candidate) error {
-		var parsed struct {
-			Chapters     []domain.ChapterDraft `json:"chapters"`
-			CanonChanges []domain.CanonChange  `json:"canonChanges"`
-		}
-		if err := unmarshalJSON(raw, &parsed); err != nil {
-			return err
-		}
-		if len(parsed.Chapters) == 0 {
-			return fmt.Errorf("empty revised chapters")
-		}
-		cand.Chapters = parsed.Chapters
-		cand.CanonChanges = parsed.CanonChanges
-		return nil
-	}, func(cand domain.Candidate) gates.Report {
-		return gates.CheckProse(cand.Chapters, 2000)
 	})
 }
 
@@ -353,7 +325,11 @@ func (r *Runner) RunRewriteEntity(ctx context.Context, snap domain.BookSnapshot,
 			return err
 		}
 		if strings.TrimSpace(parsed.Content) == "" {
-			return fmt.Errorf("empty rewritten content")
+			return contractFail("改写设定", []Violation{{
+				Path: "content",
+				Want: "改写后的完整文件内容（保留 front matter 与原有结构）",
+				Got:  "空",
+			}})
 		}
 		cand.Replacement = parsed.Content
 		return nil
@@ -365,7 +341,7 @@ func (r *Runner) RunRewriteEntity(ctx context.Context, snap domain.BookSnapshot,
 // RunFinalize performs local gates only — no extra LLM review loop.
 func (r *Runner) RunFinalize(_ context.Context, snap domain.BookSnapshot, unit domain.UnitInfo) (Result, error) {
 	chapters := gates.ParseProseChapters(unit.ProseRaw)
-	local := gates.CheckProse(chapters, 2000)
+	local := gates.CheckProseWithRules(chapters, 2000, r.proseRules())
 	cand := domain.Candidate{
 		ID: uuid.NewString(), BookID: snap.Summary.ID, Kind: domain.TaskFinalize,
 		Status: domain.CandidateOpen, BaseRevision: snap.Revision,
@@ -390,9 +366,22 @@ func (r *Runner) generateChapter(ctx context.Context, modelID string, packet dom
 	if err := unmarshalJSON(raw, &parsed); err != nil {
 		return domain.ChapterDraft{}, rec, fmt.Errorf("chapter %d: %w", ch, err)
 	}
-	if len(parsed.Chapters) != 1 || strings.TrimSpace(parsed.Chapters[0].Body) == "" {
-		return domain.ChapterDraft{}, rec, fmt.Errorf("chapter %d: expected one non-empty chapter", ch)
+	if len(parsed.Chapters) != 1 {
+		return domain.ChapterDraft{}, rec, contractFail(fmt.Sprintf("第 %d 章正文", ch), []Violation{{
+			Path: "chapters",
+			Want: "恰好 1 章（本次只写这一章）",
+			Got:  fmt.Sprintf("%d 章", len(parsed.Chapters)),
+		}})
 	}
+	if strings.TrimSpace(parsed.Chapters[0].Body) == "" {
+		return domain.ChapterDraft{}, rec, contractFail(fmt.Sprintf("第 %d 章正文", ch), []Violation{{
+			Path: "chapters[0].body",
+			Want: "非空正文",
+			Got:  "空",
+		}})
+	}
+	// 章号由调用方决定：这是"一次一章"的调用，模型给错号说明它理解偏差，
+	// 但正文仍属本章，覆盖比丢弃更安全（丢弃会让整单元重写）。
 	parsed.Chapters[0].Chapter = ch
 	return parsed.Chapters[0], rec, nil
 }
@@ -400,7 +389,7 @@ func (r *Runner) generateChapter(ctx context.Context, modelID string, packet dom
 // repairFailedChapters re-generates only chapters that fail the local hard
 // gate, with evidence+suggestion回注。每章最多一次修复，通过的章不动。
 func (r *Runner) repairFailedChapters(ctx context.Context, modelID string, packet domain.ContextPacket, chapters []domain.ChapterDraft, calls *[]domain.CallRecord) []domain.ChapterDraft {
-	rep := gates.CheckProse(chapters, 2000)
+	rep := gates.CheckProseWithRules(chapters, 2000, r.proseRules())
 	if rep.OK {
 		return chapters
 	}
@@ -450,19 +439,20 @@ func (r *Runner) runJSON(
 	user := packet.UserPrompt
 	var lastRaw string
 	var lastErr error
-	max := packet.Policy.MaxCalls
+	policy := packet.Policy
+	max := policy.MaxCalls
 	if max < 1 {
 		max = 1
 	}
 	for attempt := 1; attempt <= max; attempt++ {
-		if attempt > 1 && !packet.Policy.AllowOneRepair {
+		if attempt > 1 && !policy.AllowOneRepair {
 			break
 		}
 		user = r.withKnowledge(packet.UserPrompt)
 		if attempt > 1 {
 			user = contextsvc.MergeRepairIntoUserPayload(user, lastErr)
 		}
-		raw, rec, err := r.chat(ctx, modelID, packet.SystemPrompt, user, packet.Policy)
+		raw, rec, err := r.chat(ctx, modelID, packet.SystemPrompt, user, policy)
 		if attempt > 1 {
 			rec.Step = "repair"
 		} else {
@@ -491,8 +481,20 @@ func (r *Runner) runJSON(
 		}
 		if err := parse(raw, &cand); err != nil {
 			lastErr = err
-			if attempt < max && packet.Policy.AllowOneRepair {
+			truncated := truncatedOutput(rec, policy)
+			if truncated {
+				// 预算用完是唯一能靠"改预算"修掉的失败：原样重试必然在同一处再截断。
+				lastErr = fmt.Errorf("%w；上一次输出在 %d tokens 预算处被截断（思维链与答案共用这份预算），"+
+					"这次只返回精简 JSON：不要复述或引用正文，条目与字段文本尽量短", err, policy.MaxOutputTokens)
+			}
+			if attempt < max && policy.AllowOneRepair {
+				if truncated {
+					policy.MaxOutputTokens = escalateOutputBudget(policy.MaxOutputTokens, r.modelMaxOut(modelID))
+				}
 				continue
+			}
+			if truncated {
+				return Result{Calls: calls, Packet: packet}, fmt.Errorf("parse: %w（输出在 %d tokens 预算处被截断）", err, policy.MaxOutputTokens)
 			}
 			return Result{Calls: calls, Packet: packet}, fmt.Errorf("parse: %w", err)
 		}
@@ -506,6 +508,27 @@ func (r *Runner) runJSON(
 		return Result{Candidate: cand, Calls: calls, Packet: packet, LocalGate: rep}, nil
 	}
 	return Result{Calls: calls, Packet: packet}, fmt.Errorf("budget exhausted: %v; last=%s", lastErr, clip(lastRaw, 200))
+}
+
+// truncatedOutput reports that the call used up the whole output budget, so the
+// response was cut off rather than finished (thinking tokens share that budget
+// on Chat Completions dialects that enable reasoning).
+func truncatedOutput(rec domain.CallRecord, policy domain.CallPolicy) bool {
+	return policy.MaxOutputTokens > 0 && rec.CompletionTokens >= policy.MaxOutputTokens
+}
+
+// escalateOutputBudget doubles the answer budget for a retry, never beyond what
+// the model itself accepts. Truncation is the one failure a retry can actually
+// fix, and only if the retry differs in the dimension that failed.
+func escalateOutputBudget(current, modelMax int) int {
+	if current <= 0 {
+		return current
+	}
+	next := current * 2
+	if modelMax > 0 && next > modelMax {
+		next = modelMax
+	}
+	return next
 }
 
 func (r *Runner) chat(ctx context.Context, modelID, system, user string, policy domain.CallPolicy) (string, domain.CallRecord, error) {
@@ -529,6 +552,10 @@ func (r *Runner) chat(ctx context.Context, modelID, system, user string, policy 
 	if resp.Usage != nil {
 		rec.PromptTokens = resp.Usage.PromptTokens
 		rec.CompletionTokens = resp.Usage.CompletionTokens
+		// 缓存命中量是重试成本的直接指标：repair 追加在 payload 末尾时，
+		// 第二次调用应命中首轮 prompt 的绝大部分（各家自动前缀缓存）。
+		rec.CacheReadTokens = resp.Usage.CacheReadTokens
+		rec.CacheCreationTokens = resp.Usage.CacheCreationTokens
 	}
 	if err != nil {
 		rec.Error = sanitizeErr(err)
@@ -558,7 +585,11 @@ func parseOutlineUnits(raw string) ([]domain.UnitOutlineDraft, error) {
 	if err := unmarshalJSON(raw, &one); err == nil && strings.TrimSpace(one.UnitID) != "" {
 		return []domain.UnitOutlineDraft{one}, nil
 	}
-	return nil, fmt.Errorf("empty units（须输出 {\"units\":[...]}，即使只改 1 个单元）")
+	return nil, contractFail("细纲", []Violation{{
+		Path: "units",
+		Want: `非空数组 {"units":[...]}（即使只改 1 个单元）`,
+		Got:  "0 个单元",
+	}})
 }
 
 var outlineStringFields = []string{
@@ -621,6 +652,40 @@ func coerceOutlineUnitMap(m map[string]any) {
 		if v, ok := m[k]; ok {
 			m[k] = coerceToOutlineInt(v)
 		}
+	}
+	// nextHook 落盘是 {type,out} 对象；模型常漂移成一句话字符串。
+	if v, ok := m["nextHook"]; ok {
+		m["nextHook"] = coerceOutlineNextHook(v)
+	}
+}
+
+// coerceOutlineNextHook 把字符串/字符串数组形态的 nextHook 归一成
+// {out: "..."} 对象，避免整份细纲因类型不匹配而 decode 失败。
+func coerceOutlineNextHook(v any) any {
+	switch t := v.(type) {
+	case nil:
+		return nil
+	case string:
+		s := strings.TrimSpace(t)
+		if s == "" {
+			return nil
+		}
+		return map[string]any{"out": s}
+	case []any:
+		parts := make([]string, 0, len(t))
+		for _, x := range t {
+			if s := strings.TrimSpace(coerceToOutlineString(x)); s != "" {
+				parts = append(parts, s)
+			}
+		}
+		if len(parts) == 0 {
+			return nil
+		}
+		return map[string]any{"out": strings.Join(parts, "；")}
+	case map[string]any:
+		return t
+	default:
+		return v
 	}
 }
 
@@ -719,29 +784,85 @@ func normalizeChapterNumbers(raw string) string {
 	return re.ReplaceAllString(raw, "$1$2")
 }
 
-// salvageReviewJSON recovers the review object when the model rambles after a
-// valid JSON and/or the response is truncated mid-object (output budget hit).
-func salvageReviewJSON(raw string) (verdict string, findings []domain.ReviewFinding, err error) {
-	start := strings.Index(raw, "{")
-	if start < 0 {
-		return "", nil, fmt.Errorf("no JSON")
+var reviewVerdictRe = regexp.MustCompile(`"verdict"\s*:\s*"([^"]*)"`)
+
+// salvageReviewJSON interprets a review response the strict parser rejected.
+//
+// 它只做两件"结构上无法避免"的事：跳过 JSON 前面的分析文字，认出被预算切断的
+// 输出。被切断时只保留完整的 finding 对象——半条结论不算结论，交给 runJSON 用
+// 更大预算重试，而不是把猜测补成一条看似成立的问题。
+// truncated 让调用方既能重试、也能在最终失败时如实说"被截断"而不是"没有 JSON"。
+func salvageReviewJSON(raw string) (verdict string, findings []domain.ReviewFinding, truncated bool, err error) {
+	if m := reviewVerdictRe.FindStringSubmatch(raw); len(m) == 2 {
+		verdict = m[1]
 	}
-	// Walk balanced braces/arrays, respecting strings; grab the largest closed
-	// prefix; if unbalanced at the end, drop to the last complete "}" at depth 0
-	// or last complete array element then force-close.
-	depthObj, depthArr := 0, 0
-	inStr := false
-	esc := false
-	lastGoodObjEnd := -1
-	lastGoodArrElemEnd := -1
+	complete, truncated := scanFindingObjects(raw)
+	findings = make([]domain.ReviewFinding, 0, len(complete))
+	for _, obj := range complete {
+		if f, ok := decodeFinding(obj); ok {
+			findings = append(findings, f)
+		}
+	}
+	// 输出被切断，且一条完整结论都没救回来：这不是"审校没问题"，
+	// 而是"没审完"，必须报错让重试提高预算。
+	if truncated && len(findings) == 0 {
+		return "", nil, true, fmt.Errorf("model output truncated before any finding was completed")
+	}
+	if len(findings) == 0 && verdict == "" {
+		start := strings.Index(raw, "{")
+		end := strings.LastIndex(raw, "}")
+		if start >= 0 && end > start {
+			var parsed struct {
+				Verdict  string                 `json:"verdict"`
+				Findings []domain.ReviewFinding `json:"findings"`
+			}
+			if e := unmarshalJSON(raw[start:end+1], &parsed); e == nil {
+				return parsed.Verdict, parsed.Findings, false, nil
+			}
+		}
+	}
+	if len(findings) == 0 && verdict == "" {
+		if truncated {
+			return "", nil, true, fmt.Errorf("model output truncated before any finding completed")
+		}
+		return "", nil, false, fmt.Errorf("no JSON object in model output")
+	}
+	return verdict, findings, truncated, nil
+}
+
+func decodeFinding(obj string) (domain.ReviewFinding, bool) {
+	var f domain.ReviewFinding
+	if err := json.Unmarshal([]byte(normalizeChapterNumbers(obj)), &f); err != nil {
+		return domain.ReviewFinding{}, false
+	}
+	if strings.TrimSpace(f.Title) == "" && f.ID == "" {
+		return domain.ReviewFinding{}, false
+	}
+	return f, true
+}
+
+// scanFindingObjects walks the findings array and returns the objects that were
+// complete; truncated reports that the array never closed (output cut off).
+// 半条 finding 不算结论：宁可交给重试，也不把猜测塞进审校清单。
+func scanFindingObjects(raw string) (complete []string, truncated bool) {
+	key := strings.Index(raw, `"findings"`)
+	if key < 0 {
+		return nil, false
+	}
+	lb := strings.IndexByte(raw[key:], '[')
+	if lb < 0 {
+		return nil, false
+	}
+	start := key + lb + 1
+	objStart := -1
+	depth := 0
+	inStr, esc := false, false
 	for i := start; i < len(raw); i++ {
 		c := raw[i]
 		if inStr {
 			if esc {
 				esc = false
-				continue
-			}
-			if c == '\\' {
+			} else if c == '\\' {
 				esc = true
 			} else if c == '"' {
 				inStr = false
@@ -752,64 +873,25 @@ func salvageReviewJSON(raw string) (verdict string, findings []domain.ReviewFind
 		case '"':
 			inStr = true
 		case '{':
-			depthObj++
+			if depth == 0 {
+				objStart = i
+			}
+			depth++
 		case '}':
-			if depthObj > 0 {
-				depthObj--
-			}
-			if depthObj == 0 && depthArr == 0 {
-				lastGoodObjEnd = i
-			}
-		case '[':
-			depthArr++
-		case ']':
-			if depthArr > 0 {
-				depthArr--
-				if depthObj == 1 && depthArr == 0 {
-					lastGoodArrElemEnd = i
+			if depth > 0 {
+				depth--
+				if depth == 0 && objStart >= 0 {
+					complete = append(complete, raw[objStart:i+1])
+					objStart = -1
 				}
 			}
+		case ']':
+			if depth == 0 {
+				return complete, false
+			}
 		}
 	}
-	tryParse := func(s string) bool {
-		var parsed struct {
-			Verdict  string                 `json:"verdict"`
-			Findings []domain.ReviewFinding `json:"findings"`
-		}
-		if e := unmarshalJSON(s, &parsed); e != nil {
-			return false
-		}
-		if verdict == "" {
-			verdict = parsed.Verdict
-		}
-		findings = parsed.Findings
-		return true
-	}
-	if lastGoodObjEnd > start && tryParse(raw[start:lastGoodObjEnd+1]) {
-		return verdict, findings, nil
-	}
-	// Truncated: close what we can.
-	tail := raw[start:]
-	if lastGoodArrElemEnd >= 0 {
-		tail = raw[start : lastGoodArrElemEnd+1]
-	}
-	// Trim dangling comma/property after the last complete element.
-	if i := strings.LastIndex(tail, "}"); i > 0 {
-		tail = tail[:i+1]
-	}
-	for depthObj > 0 || depthArr > 0 {
-		if depthArr > 0 {
-			tail += "]"
-			depthArr--
-			continue
-		}
-		tail += "}"
-		depthObj--
-	}
-	if tryParse(tail) {
-		return verdict, findings, nil
-	}
-	return "", nil, fmt.Errorf("no JSON object in model output（疑似输出被截断）")
+	return complete, true
 }
 
 func joinFindings(fs []domain.ReviewFinding) string {

@@ -5,16 +5,17 @@ import (
 	"strings"
 
 	"github.com/danmo-ai/danmo-novel/core/domain"
+	"github.com/danmo-ai/danmo-novel/core/service/books"
 )
 
 // SettingLayer classifies canon files: 总纲派生（骨架） vs 生产约束（工艺） vs 账本。
 type SettingLayer string
 
 const (
-	LayerDerived     SettingLayer = "总纲派生"
-	LayerCraft       SettingLayer = "生产约束"
-	LayerLedger      SettingLayer = "连载账本"
-	LayerAuthorOnly  SettingLayer = "作者底牌"
+	LayerDerived    SettingLayer = "总纲派生"
+	LayerCraft      SettingLayer = "生产约束"
+	LayerLedger     SettingLayer = "连载账本"
+	LayerAuthorOnly SettingLayer = "作者底牌"
 )
 
 // ClassifySetting returns the production layer for a canon path.
@@ -131,8 +132,8 @@ func AddRewriteBasis(snap domain.BookSnapshot, target string, add func(id, label
 		if body := strings.TrimSpace(snap.Files["canon/reveal-schedule.md"]); body != "" && target != "canon/reveal-schedule.md" {
 			add("basis-reveal", "依据·揭示计划", "canon/reveal-schedule.md", clip(body, 1000))
 		}
-		if facts := ExtractFactsForWrite(snap.Files["continuity/facts.md"], []string{stem}, ""); facts != "" && facts != "尚无已提交公开事实。" {
-			add("basis-facts", "依据·人物公开状态", "continuity/facts.md", clip(facts, 1200))
+		if cont := ExtractContinuityLatest(snap, []string{stem}, ContinuityForReview); cont != "" {
+			add("basis-continuity", "依据·人物当前状态", books.StatePath, clip(cont, 1200))
 		}
 		for _, v := range snap.Volumes {
 			for _, s := range v.Cast {
@@ -150,8 +151,8 @@ func AddRewriteBasis(snap domain.BookSnapshot, target string, add func(id, label
 		// 揭示计划依据：总纲 + 当前卷纲 + 公开账本（已揭/未揭），不读 author-lore 到公开重写里。
 		addVolume()
 		addBible()
-		if facts := ExtractFactsForVolumePlan(snap.Files["continuity/facts.md"]); facts != "" {
-			add("basis-facts", "依据·公开账本（已揭/未揭）", "continuity/facts.md", clip(facts, 1600))
+		if cont := ExtractContinuityLatest(snap, nil, ContinuityForReview); cont != "" {
+			add("basis-continuity", "依据·连续性状态（已揭/未揭）", books.StatePath, clip(cont, 1600))
 		}
 
 	case target == "canon/author-lore.md":

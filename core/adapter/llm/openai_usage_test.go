@@ -64,8 +64,8 @@ func TestOpenAICompatibleUsageCacheReadShapes(t *testing.T) {
 			wantRead: 400, wantPrompt: 10, wantComplete: 1,
 		},
 		{
-			name: "no cache fields",
-			raw:  `{"prompt_tokens": 3, "completion_tokens": 1, "total_tokens": 4}`,
+			name:     "no cache fields",
+			raw:      `{"prompt_tokens": 3, "completion_tokens": 1, "total_tokens": 4}`,
 			wantRead: 0, wantPrompt: 3, wantComplete: 1,
 		},
 	}

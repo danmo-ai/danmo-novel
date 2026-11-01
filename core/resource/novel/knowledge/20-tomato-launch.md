@@ -1,5 +1,5 @@
 ---
-stages: [plan, volume]
+audience: author
 ---
 
 # 番茄发布与冷启动

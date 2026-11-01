@@ -93,7 +93,7 @@ var genreAliases = map[string][]string{
 	"仙侠": {"仙侠"}, "修真": {"仙侠"}, "武侠": {"仙侠"}, "凡人修仙": {"仙侠"}, "古典仙侠": {"仙侠"},
 	"都市": {"都市"}, "现实": {"都市"}, "都市日常": {"都市"}, "都市高武": {"都市"}, "战神赘婿": {"都市"},
 	"悬疑": {"悬疑"}, "推理": {"悬疑"}, "刑侦": {"悬疑"}, "灵异": {"悬疑"}, "悬疑灵异": {"悬疑"},
-	"言情": {"现代言情", "古代言情"},
+	"言情":   {"现代言情", "古代言情"},
 	"现代言情": {"现代言情"}, "都市言情": {"现代言情"},
 	"古代言情": {"古代言情"}, "古言": {"古代言情"}, "宫斗": {"古代言情"},
 	"仕途扫黑": {"仕途扫黑"}, "仕途": {"仕途扫黑"}, "官场": {"仕途扫黑"}, "扫黑": {"仕途扫黑"},
@@ -221,7 +221,19 @@ type Doc struct {
 	// `genres:` / `subgenres:`). Empty both = 公共, offered for every book.
 	Genres    []string `json:"genres"`
 	Subgenres []string `json:"subgenres"`
+	// Default marks a 默认注入 article: the pipeline always adds it to that
+	// stage's baseline prompt, so the picker must hide it instead of offering
+	// a switch that would double-inject the same text.
+	Default bool `json:"default,omitempty"`
+	// Audience is "model" (default) or "author". Author docs (平台运营、应用流程、
+	// 出处索引) never reach a prompt and are hidden from the picker.
+	Audience string `json:"audience,omitempty"`
 }
+
+// ForModel reports whether the article may be injected into an LLM call.
+// This is the single guard the picker and the pipeline both consult, so an
+// author-only document cannot reach a prompt through a forgotten code path.
+func (d Doc) ForModel() bool { return d.Audience != AudienceAuthor }
 
 // Applies reports whether the article is offered for the given step. Untagged
 // articles apply everywhere so a new article is never silently invisible.
@@ -325,6 +337,17 @@ func List(libraryRoot string) ([]Doc, error) {
 			doc.Genres = builtinTags.Genres
 			doc.Subgenres = builtinTags.Subgenres
 		}
+		// 默认注入同样继承：作者只改正文时，不能把这份文章变成可选清单。
+		if !doc.Default {
+			doc.Default = builtinTags.Default
+		}
+		// audience=author 也要继承：覆盖文件只改正文时，作者文档不能变成可注入。
+		if doc.Audience == "" {
+			doc.Audience = builtinTags.Audience
+		}
+		if doc.Audience == "" {
+			doc.Audience = AudienceModel
+		}
 		out = append(out, doc)
 	}
 	for id, raw := range local {
@@ -346,6 +369,7 @@ func newDoc(id, raw string, builtin, customized bool) Doc {
 		ID: id, Title: titleOf(id, body), Summary: summaryOf(body), Bytes: len(body),
 		Category: CategoryOf(id), Builtin: builtin, Customized: customized,
 		Stages: tags.Stages, Genres: tags.Genres, Subgenres: tags.Subgenres,
+		Default: tags.Default, Audience: tags.Audience,
 	}
 }
 
@@ -355,6 +379,7 @@ func newDoc(id, raw string, builtin, customized bool) Doc {
 //	stages: [plan, outline]
 //	genres: [悬疑]
 //	subgenres: [刑侦探案]
+//	default: true
 //	---
 //
 // It carries applicability metadata only; the body is what the author edits and
@@ -363,6 +388,28 @@ type frontMatter struct {
 	Stages    []string `yaml:"stages"`
 	Genres    []string `yaml:"genres"`
 	Subgenres []string `yaml:"subgenres"`
+	// Default marks a 默认注入 article: the pipeline always includes it in that
+	// stage's baseline prompt, so it is NOT offered in the picker. Selecting it
+	// again would double-inject the same text.
+	Default bool `yaml:"default"`
+	// Audience separates 给模型的规则 from 给作者的操作说明（平台运营、应用流程、
+	// 出处索引）。默认为 model；author 的文章永不进提示词，也不出现在选择器里。
+	Audience string `yaml:"audience"`
+}
+
+// Audience values. An empty audience is model: that is the common case and the
+// safe default, because a new article should be usable rather than invisible.
+const (
+	AudienceModel  = "model"
+	AudienceAuthor = "author"
+)
+
+// normalizeAudience clamps the front-matter value to the two known audiences.
+func normalizeAudience(in string) string {
+	if strings.EqualFold(strings.TrimSpace(in), AudienceAuthor) {
+		return AudienceAuthor
+	}
+	return AudienceModel
 }
 
 // Tags is the effective applicability metadata of one article: which steps it
@@ -371,6 +418,10 @@ type Tags struct {
 	Stages    []string `json:"stages"`
 	Genres    []string `json:"genres"`
 	Subgenres []string `json:"subgenres"`
+	// Default = 默认注入：由 pipeline 自动带上，不进选择器。
+	Default bool `json:"default,omitempty"`
+	// Audience = model（默认）或 author。author 永不进提示词。
+	Audience string `json:"audience,omitempty"`
 }
 
 // splitFrontMatter separates the YAML header from the body. Documents without a
@@ -411,6 +462,8 @@ func tagsFrom(raw string) Tags {
 		Stages:    NormalizeStages(fm.Stages),
 		Genres:    NormalizeGenres(fm.Genres),
 		Subgenres: normalizeSubgenres(fm.Subgenres),
+		Default:   fm.Default,
+		Audience:  normalizeAudience(fm.Audience),
 	}
 }
 
@@ -431,6 +484,14 @@ func compose(body string, tags Tags) string {
 	}
 	if len(tags.Subgenres) > 0 {
 		lines = append(lines, "subgenres: ["+strings.Join(tags.Subgenres, ", ")+"]")
+	}
+	// default 必须能写回：否则作者在知识库页保存一次，默认注入的标记就丢了。
+	if tags.Default {
+		lines = append(lines, "default: true")
+	}
+	// audience=author 同理：丢了这一行，作者文档会变成可注入的文章。
+	if tags.Audience == AudienceAuthor {
+		lines = append(lines, "audience: author")
 	}
 	if len(lines) == 0 {
 		return body
@@ -509,6 +570,16 @@ func TagsOf(libraryRoot, id string) (Tags, error) {
 		tags.Genres = bt.Genres
 		tags.Subgenres = bt.Subgenres
 	}
+	// 默认注入是结构属性，不是作者可选项：本地覆盖文件没写就继承内置。
+	if !tags.Default {
+		tags.Default = bt.Default
+	}
+	if tags.Audience == "" {
+		tags.Audience = bt.Audience
+	}
+	if tags.Audience == "" {
+		tags.Audience = AudienceModel
+	}
 	return tags, nil
 }
 
@@ -526,6 +597,26 @@ func Restore(libraryRoot, id string) (string, error) {
 
 func validID(id string) bool {
 	return id != "" && !strings.ContainsAny(id, "/\\") && !strings.Contains(id, "..")
+}
+
+// IsCustomized reports whether the author's library holds a body that differs
+// from the built-in article (same test List uses for the "已编辑" badge).
+// Callers that must know whether to prefer an edit over the shipped default
+// should use this instead of byte-comparing raw files, because Read returns the
+// body while the embedded article still carries its front matter.
+func IsCustomized(libraryRoot, id string) bool {
+	if !validID(id) {
+		return false
+	}
+	local, err := os.ReadFile(filepath.Join(Root(libraryRoot), id+".md"))
+	if err != nil {
+		return false
+	}
+	builtin, ok := novel.BuiltinKnowledgeDocument(id)
+	if !ok {
+		return true // 作者自建文章，没有内置版本可比较
+	}
+	return bodyOf(string(local)) != bodyOf(builtin)
 }
 
 // Write saves an article body (author edits own copy; no candidate flow needed
@@ -551,6 +642,10 @@ func Write(libraryRoot, id, content string, keep *Tags) error {
 		Stages:    NormalizeStages(tags.Stages),
 		Genres:    NormalizeGenres(tags.Genres),
 		Subgenres: normalizeSubgenres(tags.Subgenres),
+		// Default / Audience 不在归一化范围内，必须显式保留：漏掉它们会让
+		// 默认注入的文章退化成可勾选项，让作者文档变成可注入文章。
+		Default:  tags.Default,
+		Audience: normalizeAudience(tags.Audience),
 	}
 	if err := os.MkdirAll(Root(libraryRoot), 0o755); err != nil {
 		return err
