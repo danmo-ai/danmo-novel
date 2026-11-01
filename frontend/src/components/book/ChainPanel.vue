@@ -59,11 +59,13 @@ const outlineInstruction = ref('')
 const writeInstruction = ref('')
 const outlineKnowledge = ref<Set<string>>(new Set())
 const writeKnowledge = ref<Set<string>>(new Set())
+const reviewKnowledge = ref<Set<string>>(new Set())
 const knowledgeDocs = ref<KnowledgeDoc[]>([])
 const knowledgeError = ref('')
 const showParams = ref(false)
 const showOutlineKnowledge = ref(false)
 const showWriteKnowledge = ref(false)
+const showReviewKnowledge = ref(false)
 
 const running = computed(() => props.chain?.status === 'pending' || props.chain?.status === 'running')
 const blocked = computed(() => props.chain?.status === 'waiting_manual' || props.chain?.status === 'failed')
@@ -85,13 +87,14 @@ const storageKey = computed(() => `chain:stage-config:${store.currentBook?.summa
 // 所有步骤/题材可见。
 const bookGenre = computed(() => store.currentBook?.summary.genre || '')
 const bookSubgenre = computed(() => store.currentBook?.summary.subgenre || '')
-function docsForStage(stage: 'outline' | 'write') {
+function docsForStage(stage: 'outline' | 'write' | 'review') {
   return knowledgeDocs.value.filter(
     (d) => knowledgeAppliesTo(d.stages, stage) && knowledgeAppliesToGenre(d, bookGenre.value, bookSubgenre.value),
   )
 }
 const outlineDocs = computed(() => docsForStage('outline'))
 const writeDocs = computed(() => docsForStage('write'))
+const reviewDocs = computed(() => docsForStage('review'))
 
 function defaultFromUnit() {
   if (fromUnitId.value && volumeUnits.value.some((u) => u.unitId === fromUnitId.value)) return
@@ -101,8 +104,8 @@ function defaultFromUnit() {
 
 watch(() => props.selectedUnit?.unitId, defaultFromUnit)
 
-function toggleKnowledge(kind: 'outline' | 'write', id: string) {
-  const target = kind === 'outline' ? outlineKnowledge : writeKnowledge
+function toggleKnowledge(kind: 'outline' | 'write' | 'review', id: string) {
+  const target = kind === 'outline' ? outlineKnowledge : kind === 'write' ? writeKnowledge : reviewKnowledge
   const next = new Set(target.value)
   if (next.has(id)) next.delete(id)
   else next.add(id)
@@ -119,6 +122,7 @@ function persistDraft() {
       writeInstruction: writeInstruction.value,
       outlineKnowledge: [...outlineKnowledge.value],
       writeKnowledge: [...writeKnowledge.value],
+      reviewKnowledge: [...reviewKnowledge.value],
     }))
   } catch { /* 隐私模式下忽略 */ }
 }
@@ -134,6 +138,7 @@ function restoreDraft() {
     writeInstruction.value = saved.writeInstruction || ''
     outlineKnowledge.value = new Set<string>(saved.outlineKnowledge || [])
     writeKnowledge.value = new Set<string>(saved.writeKnowledge || [])
+    reviewKnowledge.value = new Set<string>(saved.reviewKnowledge || [])
   } catch { /* 忽略损坏草稿 */ }
 }
 
@@ -162,6 +167,10 @@ function start() {
     write: {
       instruction: writeInstruction.value.trim(),
       knowledgeIds: [...writeKnowledge.value],
+    },
+    review: {
+      // 审校没有"追加指令"：规则来自审校清单与本地 gate。
+      knowledgeIds: [...reviewKnowledge.value],
     },
   }
   persistDraft()
@@ -278,6 +287,22 @@ function start() {
               <span class="k-tag">{{ knowledgeStageSummary(d.stages) }} · {{ knowledgeGenreSummary(d) }}</span>
             </label>
           </div>
+        </div>
+        <div class="param-group">
+          <label>审校阶段 · 参考知识</label>
+          <button class="knowledge-toggle" type="button" @click="showReviewKnowledge = !showReviewKnowledge">
+            <span>参考知识{{ reviewKnowledge.size ? ` · 已选 ${reviewKnowledge.size} 篇` : '（未选）' }}</span>
+            <span>{{ showReviewKnowledge ? '收起' : '展开' }}</span>
+          </button>
+          <div v-if="showReviewKnowledge" class="knowledge-list">
+            <p v-if="!reviewDocs.length" class="chain-hint">没有适用于审校的知识文章（可在「知识」页添加）。</p>
+            <label v-for="d in reviewDocs" :key="d.id" class="knowledge-item" :class="{ selected: reviewKnowledge.has(d.id) }">
+              <input type="checkbox" :checked="reviewKnowledge.has(d.id)" @change="toggleKnowledge('review', d.id)" />
+              <span class="k-title">{{ d.title }}</span>
+              <span class="k-tag">{{ knowledgeStageSummary(d.stages) }} · {{ knowledgeGenreSummary(d) }}</span>
+            </label>
+          </div>
+          <p class="chain-hint">审校不接受追加指令：判定规则来自审校清单与本地硬门。</p>
         </div>
       </div>
       <button class="primary chain-start" :disabled="busy || readOnly || !scopeUnits.length" @click="start">

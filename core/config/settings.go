@@ -20,7 +20,7 @@ type Settings struct {
 
 // ReviewSettings controls how review calls are split and parallelised.
 type ReviewSettings struct {
-	SplitByChapter bool   `json:"splitByChapter"` // default false（保持现有书兼容）
+	SplitByChapter bool   `json:"splitByChapter"` // default true；人工审校与连续重写同源
 	Concurrency    int    `json:"concurrency"`    // default 3
 	Strictness     string `json:"strictness"`     // "loose" | "standard" | "strict"，default standard
 }
@@ -47,8 +47,11 @@ func Load() (*Manager, error) {
 		},
 		LLMHTTPTimeoutSec: 600,
 		Review: ReviewSettings{
-			Concurrency: 3,
-			Strictness:  "standard",
+			// 默认分章：单章 prompt 小、注意力集中，也不存在"输出预算被整单元
+			// 结论挤爆"的问题。人工审校与连续重写都读这一个开关。
+			SplitByChapter: true,
+			Concurrency:    3,
+			Strictness:     "standard",
 		},
 	}
 	b, err := os.ReadFile(m.path)

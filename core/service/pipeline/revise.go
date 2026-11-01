@@ -44,6 +44,34 @@ func (r *Runner) RunReviseWithOptions(ctx context.Context, snap domain.BookSnaps
 	for _, f := range findings {
 		byChapter[f.Chapter] = append(byChapter[f.Chapter], f)
 	}
+	// 章号对不上就修不了：以前静默无操作——候选与原稿逐字节相同，作者点「确认
+	// 落盘」等于什么都没发生。整单元审校产出的"全单元级"意见（chapter=0）必然
+	// 落到这里，所以必须报出来，而不是假装修过了。
+	known := map[int]bool{}
+	for _, ch := range chapters {
+		known[ch.Chapter] = true
+	}
+	var unmapped []string
+	for _, f := range findings {
+		if known[f.Chapter] {
+			continue
+		}
+		label := f.Title
+		if label == "" {
+			label = f.ID
+		}
+		if f.Chapter > 0 {
+			label = fmt.Sprintf("第 %d 章：%s", f.Chapter, label)
+		} else {
+			label = "（未标章号）" + label
+		}
+		unmapped = append(unmapped, label)
+	}
+	if len(unmapped) > 0 {
+		return Result{LocalGate: local}, fmt.Errorf(
+			"这些审校意见无法定位到具体章节，逐章修订无从下手：%s；请改选带章号的意见，或先按章重新审校",
+			strings.Join(unmapped, "；"))
+	}
 
 	concurrency := opts.Concurrency
 	if concurrency <= 0 {

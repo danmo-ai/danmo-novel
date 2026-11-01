@@ -38,7 +38,8 @@ func NextChainStage(s ChainStage) ChainStage {
 }
 
 // ChainStageConfig holds the author-provided extras for one stage. It applies
-// to every unit of the chain for that stage only (review/finalize take none).
+// to every unit of the chain for that stage only. Finalize takes none — it is a
+// local check with no LLM call.
 type ChainStageConfig struct {
 	Instruction  string   `json:"instruction,omitempty"`
 	KnowledgeIDs []string `json:"knowledgeIds,omitempty"`
@@ -51,9 +52,11 @@ type ChainSpec struct {
 	FromUnitID string `json:"fromUnitId"`         // inclusive
 	ToUnitID   string `json:"toUnitId,omitempty"` // default: last unit of the volume
 	ModelID    string `json:"modelId,omitempty"`  // overrides all four stages
-	// Outline / Write carry per-stage instruction + reference knowledge.
+	// Outline / Write / Review carry per-stage instruction + reference knowledge.
+	// Review carries knowledge only: 审校没有"追加指令"，规则由审校清单与本地 gate 决定。
 	Outline ChainStageConfig `json:"outline"`
 	Write   ChainStageConfig `json:"write"`
+	Review  ChainStageConfig `json:"review"`
 }
 
 // ChainUnitStatus is the progress of one unit inside a chain.

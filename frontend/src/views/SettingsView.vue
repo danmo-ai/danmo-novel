@@ -212,7 +212,7 @@ function effortsForModel(base: string) {
 }
 
 onMounted(async () => {
-  await Promise.all([store.loadLLM(), initAppVersion(), loadModelConfig()])
+  await Promise.all([store.loadLLM(), initAppVersion(), loadModelConfig(), loadReviewSettings()])
 })
 
 function openNew(preset?: any) {
@@ -275,6 +275,36 @@ function assignment(role: string) {
 async function saveAssignments() {
   await api.put('/api/settings/model-assignments', { assignments: store.assignments })
   store.note('阶段模型已保存')
+}
+
+// 审校分章是人工审校与连续重写共用的唯一开关：两条路读同一份设置，
+// 否则同一个单元在手动与自动流程下会得到不同粒度的 findings。
+const reviewSplit = ref(true)
+const reviewConcurrency = ref(3)
+const reviewSaved = ref(false)
+async function loadReviewSettings() {
+  try {
+    const res = await api.get<any>('/api/settings/review')
+    if (res?.review) {
+      reviewSplit.value = Boolean(res.review.splitByChapter)
+      reviewConcurrency.value = res.review.concurrency || 3
+    }
+  } catch { /* 读取失败保持默认 */ }
+}
+async function saveReviewSettings() {
+  try {
+    const res = await api.put<any>('/api/settings/review', {
+      splitByChapter: reviewSplit.value,
+      concurrency: reviewConcurrency.value,
+    })
+    if (res?.review) {
+      reviewSplit.value = Boolean(res.review.splitByChapter)
+      reviewConcurrency.value = res.review.concurrency || 3
+    }
+    reviewSaved.value = true
+    store.note('审校设置已保存；人工审校与连续重写同时生效')
+    setTimeout(() => { reviewSaved.value = false }, 2000)
+  } catch (e) { store.fail(e) }
 }
 </script>
 
@@ -377,9 +407,39 @@ async function saveAssignments() {
           <p class="assign-hint">{{ r.hint }}</p>
         </div>
       </section>
+      <section class="panel block">
+        <header class="block-head">
+          <h2>审校设置</h2>
+          <button class="primary" @click="saveReviewSettings">{{ reviewSaved ? '已保存' : '保存' }}</button>
+        </header>
+        <div class="assign-block">
+          <div class="assign-row">
+            <span class="assign-label">按章审校</span>
+            <div class="assign-controls">
+              <select :value="reviewSplit ? 'on' : 'off'" @change="reviewSplit = ($event.target as HTMLSelectElement).value === 'on'">
+                <option value="on">开启（每章一次调用）</option>
+                <option value="off">关闭（整单元一次调用）</option>
+              </select>
+            </div>
+          </div>
+          <p class="assign-hint">
+            人工审校与连续重写读取同一个开关：开启时按章并行、prompt 更小、不会被整单元结论挤爆输出预算；
+            关闭时一次看完整单元，跨章连续性问题更容易被一起发现，但长单元可能截断。
+          </p>
+        </div>
+        <div class="assign-block">
+          <div class="assign-row">
+            <span class="assign-label">并发数</span>
+            <div class="assign-controls">
+              <select :value="String(reviewConcurrency)" @change="reviewConcurrency = Number(($event.target as HTMLSelectElement).value)">
+                <option v-for="n in [1, 2, 3, 4, 6, 8]" :key="n" :value="String(n)">{{ n }}</option>
+              </select>
+            </div>
+          </div>
+          <p class="assign-hint">按章审校时同时发出的调用数；并发越高越快，但更容易撞上模型侧的限流。</p>
+        </div>
+      </section>
     </div>
-
-    <!-- ===== Model Config Tab ===== -->
     <div v-else-if="activeTab === 'modelConfig'" class="tab-content">
       <section class="panel block">
         <header class="block-head">

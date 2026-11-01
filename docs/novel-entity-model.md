@@ -187,10 +187,18 @@ proposed → accepted → drafted → reviewed
 
 **与手工点击完全同源**：链不构造 prompt，每阶段都用同一个 `TaskSpec` 走 `runs.Service` → `Pipeline` → `ContextBuilder`，系统提示词、上下文块、调用预算与手工同 kind 时逐字节一致。想核对输入用 `POST /api/runs/preview`。
 
-**分阶段追加指令与参考知识**：`ChainSpec.Outline` / `ChainSpec.Write` 各带一份 `instruction` + `knowledgeIds`，整条链对该阶段所有单元生效；`review` / `finalize` 不带。
+**分阶段追加指令与参考知识**：`ChainSpec.Outline` / `ChainSpec.Write` 各带一份 `instruction` + `knowledgeIds`，整条链对该阶段所有单元生效。`ChainSpec.Review` 只带 `knowledgeIds` —— 审校没有「追加指令」的语义，判定规则来自审校清单与本地门禁，作者的自由文本传进来会被 `normalizeSpec` 丢掉。`finalize` 不带（本地检查，无 LLM 调用）。
 
 - 指令落到 `UserPayload.instruction`，作为默认格式与门禁约束之外的「补充要求」追加（`withUserInstruction`），默认文本永不替换；`outline` / `write` 的 `TaskSpec.Instruction` 现在也用于手工点击。
 - 参考知识沿用既有语义：`TaskSpec.KnowledgeIDs` → `loadKnowledge` → `Runner.KnowledgeDocs` → user payload `references`，仅作方法/风格参考，不写入正文事实；启动前用 `knowledge.List` 校验，缺失直接报错。
+
+**审校分章：人工与链读同一个开关**。`settings.review.splitByChapter` 是唯一来源——人工路径在 `runs.Service` 里读它，链通过 `reviewSplitByChapter()` 读同一个值（包括自动复审那一次）。链不再强行 `true`：以前链固定分章、人工默认整单元，同一个单元在两条路下会得到不同粒度、不同条数的 findings。
+
+- 默认 `true`（按章）：prompt 小、注意力集中，不会撞输出预算被整单元结论挤爆。
+- 关掉则整单元一次调用：跨章连续性问题更容易一起发现，但长单元可能截断。
+- 设置在「设置 → 创作阶段 → 审校设置」里，`GET/PUT /api/settings/review`。
+
+**审校意见必须能定位到章节**：逐章修订按 `finding.chapter` 分配工作，章号为 0（整单元级意见）或超出单元范围时，`RunRevise` 现在直接报错并列出这些意见。以前是静默无操作——候选与原稿逐字节相同，作者点「确认落盘」等于什么都没发生。
 5. `novel-state.yaml`：`last_committed_ch`
 
 ## LLM 调用的定向修复（Retry 策略）

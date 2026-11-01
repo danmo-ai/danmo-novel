@@ -342,8 +342,9 @@ func (s *Service) runStage(ctx context.Context, ch *domain.Chain, unitID string,
 		ModelID:      ch.Spec.ModelID,
 		Instruction:  cfg.Instruction,
 		KnowledgeIDs: cfg.KnowledgeIDs,
-		// 审校与手工路径一致走分章：单章 prompt 小、注意力集中，也不会撞输出预算。
-		SplitByChapter: stage == domain.ChainStageReview,
+		// 分章与否与人工路径读同一份设置（settings.review.splitByChapter），
+		// 否则同一单元在两条路下会得到不同粒度的 findings。
+		SplitByChapter: stage == domain.ChainStageReview && s.reviewSplitByChapter(),
 	}
 	run, err := s.Runs.Start(ctx, spec)
 	if err != nil {
@@ -516,7 +517,8 @@ func (s *Service) autoReviseReview(ctx context.Context, ch *domain.Chain, unitID
 	}
 	reviewRun, err := s.Runs.Start(ctx, domain.TaskSpec{
 		Kind: domain.TaskReview, BookID: ch.BookID, UnitID: unitID,
-		ModelID: ch.Spec.ModelID, SplitByChapter: true,
+		ModelID: ch.Spec.ModelID, SplitByChapter: s.reviewSplitByChapter(),
+		KnowledgeIDs: ch.Spec.Review.KnowledgeIDs,
 	})
 	if err != nil {
 		return domain.Candidate{}, zero, reviseRun.ID, fmt.Errorf("自动复审未能启动：%w", err)
@@ -588,6 +590,9 @@ func normalizeSpec(spec domain.ChainSpec) domain.ChainSpec {
 	spec.Write.Instruction = strings.TrimSpace(limitRunes(spec.Write.Instruction, maxInstructionRunes))
 	spec.Outline.KnowledgeIDs = dedupe(spec.Outline.KnowledgeIDs)
 	spec.Write.KnowledgeIDs = dedupe(spec.Write.KnowledgeIDs)
+	spec.Review.KnowledgeIDs = dedupe(spec.Review.KnowledgeIDs)
+	// 审校不接受追加指令：规则来自审校清单与本地门禁，作者的自由文本会与之冲突。
+	spec.Review.Instruction = ""
 	return spec
 }
 
@@ -620,8 +625,23 @@ func stageConfig(spec domain.ChainSpec, stage domain.ChainStage) domain.ChainSta
 		return spec.Outline
 	case domain.ChainStageWrite:
 		return spec.Write
+	case domain.ChainStageReview:
+		// 审校只取参考知识：它没有"追加指令"的语义，规则来自审校清单与本地 gate。
+		// 人工审校在确认框里能勾文章，链若不透传，作者以为生效的规则其实没生效。
+		return domain.ChainStageConfig{KnowledgeIDs: spec.Review.KnowledgeIDs}
 	}
 	return domain.ChainStageConfig{}
+}
+
+// reviewSplitByChapter mirrors the manual path: 分章与否只看同一份设置。
+//
+// 人工审校在 runs.Service 里读 s.Settings.Get().Review.SplitByChapter，链必须
+// 读同一个来源，否则同一个单元两条路给出不同粒度、不同条数的 findings。
+func (s *Service) reviewSplitByChapter() bool {
+	if s.Settings == nil {
+		return false
+	}
+	return s.Settings.Get().Review.SplitByChapter
 }
 
 // stageForStatus maps an existing unit status to the stage a resumed chain
@@ -637,7 +657,7 @@ func stageForStatus(status domain.UnitStatus) domain.ChainStage {
 }
 
 func validateKnowledge(spec domain.ChainSpec, libraryRoot string) error {
-	ids := append(append([]string{}, spec.Outline.KnowledgeIDs...), spec.Write.KnowledgeIDs...)
+	ids := append(append(append([]string{}, spec.Outline.KnowledgeIDs...), spec.Write.KnowledgeIDs...), spec.Review.KnowledgeIDs...)
 	if len(ids) == 0 {
 		return nil
 	}

@@ -147,6 +147,28 @@ func NewRouter(app *App) *gin.Engine {
 			_ = app.Settings.Update(func(s *config.Settings) { s.ModelAssignments = body.Assignments })
 			c.JSON(200, app.Settings.Get())
 		})
+		// 审校分章是人工路径与连续重写共同读取的唯一开关；两处必须同源，
+		// 否则同一个单元在两条路下会得到不同粒度的 findings。
+		api.GET("/settings/review", func(c *gin.Context) {
+			c.JSON(200, gin.H{"review": app.Settings.Get().Review})
+		})
+		api.PUT("/settings/review", func(c *gin.Context) {
+			var body struct {
+				SplitByChapter bool `json:"splitByChapter"`
+				Concurrency    int  `json:"concurrency"`
+			}
+			if err := c.BindJSON(&body); err != nil {
+				c.JSON(400, gin.H{"error": err.Error()})
+				return
+			}
+			_ = app.Settings.Update(func(s *config.Settings) {
+				s.Review.SplitByChapter = body.SplitByChapter
+				if body.Concurrency > 0 {
+					s.Review.Concurrency = body.Concurrency
+				}
+			})
+			c.JSON(200, app.Settings.Get())
+		})
 		registerLLM(api, app)
 		registerBooks(api, app)
 		registerRuns(api, app)

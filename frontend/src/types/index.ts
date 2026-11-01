@@ -58,6 +58,8 @@ export interface ChainSpec {
   modelId?: string
   outline: ChainStageConfig
   write: ChainStageConfig
+  /** 审校只取参考知识：它没有「追加指令」的语义。 */
+  review: ChainStageConfig
 }
 
 export interface ChainUnitState {
