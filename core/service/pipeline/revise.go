@@ -137,9 +137,11 @@ func (r *Runner) RunReviseWithOptions(ctx context.Context, snap domain.BookSnaps
 		// 保留修订前正文：前端据此做 diff，"确认落盘"必须有据可依。
 		BaseChapters: append([]domain.ChapterDraft{}, chapters...),
 		Chapters:     revised,
-		Findings:     append([]domain.ReviewFinding{}, local.Findings...),
 		CreatedAt:    time.Now().UTC(),
 	}
+	// 只报修订后正文的门禁结果。以前把修订前的 local 也拼进去，候选会带着
+	// "字数不足 chars=1394" 这种早已修好的旧结论（实际已 2305 字），
+	// 作者与自动流程都会据此误判。
 	rep := gates.CheckProseWithRules(revised, target, r.proseRules())
 	cand.Findings = append(cand.Findings, rep.Findings...)
 

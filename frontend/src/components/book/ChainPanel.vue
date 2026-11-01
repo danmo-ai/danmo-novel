@@ -202,6 +202,10 @@ function start() {
       <div v-if="blocked" class="chain-error">
         <strong>已中断，等待人工处理</strong>
         <p>{{ chain.error }}</p>
+        <details v-if="chain.previousErrors?.length" class="chain-prev">
+          <summary>此前的中断原因（{{ chain.previousErrors.length }}）</summary>
+          <p v-for="(e, i) in chain.previousErrors" :key="i">{{ e }}</p>
+        </details>
         <p class="chain-hint">在单元栏或待审候选里修复这个单元，然后点继续。</p>
       </div>
       <ul class="chain-units">
@@ -331,6 +335,9 @@ function start() {
 .chain-error { padding: 8px 10px; border-radius: 8px; background: rgba(163,59,50,.08); }
 .chain-error strong { font-size: 11px; color: var(--bad); }
 .chain-error p { margin: 4px 0 0; font-size: 11px; color: var(--ink-soft); line-height: 1.6; word-break: break-word; }
+.chain-prev { margin-top: 6px; }
+.chain-prev summary { font-size: 10px; color: var(--ink-soft); cursor: pointer; }
+.chain-prev p { margin: 3px 0 0; font-size: 10px; opacity: .85; }
 .chain-units { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; max-height: 180px; overflow: auto; }
 .chain-units li { display: flex; align-items: center; gap: 6px; font-size: 11px; padding: 2px 0; color: var(--ink-soft); }
 .chain-units .u-id { flex: 1; }

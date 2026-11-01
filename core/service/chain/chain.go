@@ -25,6 +25,10 @@ const maxInstructionRunes = 2000
 // errStop unwinds execute() after an interruption/cancel has been persisted.
 var errStop = errors.New("chain stopped")
 
+// maxConcurrentRunWait bounds how long a stage waits for an in-flight manual
+// call on the same unit before giving up and asking the author.
+const maxConcurrentRunWait = 15 * time.Minute
+
 // Service runs 连续单元重写 chains.
 //
 // 链本身不构造 prompt：每个阶段都用同一套 TaskSpec 调 runs.Service（与手工
@@ -305,6 +309,42 @@ func (s *Service) execute(ctx context.Context, chainID string) {
 	}
 }
 
+// settleActiveRun resolves a pre-existing run of the same kind for this unit.
+//
+// 两种情形必须区别对待：
+//   - 还在跑（pending/running）：那是一次正在进行的手工调用，等它结束即可，
+//     不该让整条链因此中断——作者常常是先点审校、再点连续重写。
+//   - 停在 waiting_accept：候选不处理就永远占位，只能交回作者明确处理。
+//
+// 返回 blocked=true 表示链无法继续，why 是给作者看的说明。
+func (s *Service) settleActiveRun(ctx context.Context, ch *domain.Chain, stage domain.ChainStage, unitID string) (bool, string) {
+	kind := domain.TaskKind(stage)
+	active, busy, err := s.Store.FindActiveRun(ctx, ch.BookID, kind, unitID)
+	if err != nil || !busy {
+		return false, ""
+	}
+	if active.Status == domain.RunPending || active.Status == domain.RunRunning {
+		// 有界等待：调用自身有超时，这里再加一层上限，避免孤儿行无限挂住链。
+		waitCtx, cancel := context.WithTimeout(ctx, maxConcurrentRunWait)
+		defer cancel()
+		if _, werr := s.Runs.WaitRun(waitCtx, active.ID); werr != nil {
+			if ctx.Err() != nil {
+				return true, "已取消"
+			}
+			return true, fmt.Sprintf("等待单元 %s 上正在进行的调用超时（%s），请稍后继续",
+				unitID, maxConcurrentRunWait)
+		}
+		// 等完之后状态可能变成待接受，重新判断。
+		active, busy, err = s.Store.FindActiveRun(ctx, ch.BookID, kind, unitID)
+		if err != nil || !busy {
+			return false, ""
+		}
+	}
+	return true, fmt.Sprintf(
+		"单元 %s 已有一份待处理的审校结果等作者处理，连续重写无法同时开始新的调用；"+
+			"请先在审校页接受或丢弃它，再点继续", unitID)
+}
+
 // runStage runs one stage for one unit and persists the progress transition.
 func (s *Service) runStage(ctx context.Context, ch *domain.Chain, unitID string, stage domain.ChainStage) error {
 	if ctx.Err() != nil {
@@ -331,6 +371,12 @@ func (s *Service) runStage(ctx context.Context, ch *domain.Chain, unitID string,
 	ch.UpdatedAt = time.Now().UTC()
 	if err := s.Store.SaveChain(context.Background(), *ch); err != nil {
 		return errStop
+	}
+
+	// 同一单元同类型只能有一个调用。作者手点的那次可能还在跑，甚至可能停在
+	// 待接受——那会一直占着这个单元，让链"莫名其妙失败"。
+	if blocked, why := s.settleActiveRun(ctx, ch, stage, unitID); blocked {
+		return s.interrupt(ch, stage, "", why)
 	}
 
 	cfg := stageConfig(ch.Spec, stage)
@@ -434,6 +480,14 @@ func (s *Service) runStage(ctx context.Context, ch *domain.Chain, unitID string,
 }
 
 func (s *Service) interrupt(ch *domain.Chain, stage domain.ChainStage, runID, msg string) error {
+	// 保留上一条不同的原因：作者常常点几次「继续」才回来看，第一次的
+	// "门禁未通过：…" 才是根因，不能被后来的次生错误顶掉。
+	if prev := strings.TrimSpace(ch.Error); prev != "" && prev != msg {
+		ch.PreviousErrors = append([]string{prev}, ch.PreviousErrors...)
+		if len(ch.PreviousErrors) > 3 {
+			ch.PreviousErrors = ch.PreviousErrors[:3]
+		}
+	}
 	ch.Status = domain.ChainWaitingManual
 	ch.Stage = stage
 	ch.Error = msg

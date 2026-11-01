@@ -92,7 +92,7 @@ func (s *Service) Start(ctx context.Context, spec domain.TaskSpec) (domain.Run, 
 		// generation creating candidates is OK; accept will refuse writeback on read-only
 	}
 	if active, ok, _ := s.Store.FindActiveRun(ctx, spec.BookID, spec.Kind, spec.UnitID); ok {
-		return active, fmt.Errorf("active run already exists: %s", active.ID)
+		return active, activeRunConflict(active, spec)
 	}
 	snap, err := books.LoadBook(root, readOnly)
 	if err != nil {

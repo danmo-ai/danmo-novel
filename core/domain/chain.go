@@ -82,17 +82,22 @@ type ChainUnitState struct {
 
 // Chain is one 连续单元重写 run: units are processed strictly in order.
 type Chain struct {
-	ID        string           `json:"id"`
-	BookID    string           `json:"bookId"`
-	Volume    int              `json:"volume"`
-	Status    ChainStatus      `json:"status"`
-	Cursor    int              `json:"cursor"` // index into Units
-	Stage     ChainStage       `json:"stage"`
-	Units     []ChainUnitState `json:"units"`
-	Spec      ChainSpec        `json:"spec"`
-	Error     string           `json:"error,omitempty"`
-	CreatedAt time.Time        `json:"createdAt"`
-	UpdatedAt time.Time        `json:"updatedAt"`
+	ID     string           `json:"id"`
+	BookID string           `json:"bookId"`
+	Volume int              `json:"volume"`
+	Status ChainStatus      `json:"status"`
+	Cursor int              `json:"cursor"` // index into Units
+	Stage  ChainStage       `json:"stage"`
+	Units  []ChainUnitState `json:"units"`
+	Spec   ChainSpec        `json:"spec"`
+	Error  string           `json:"error,omitempty"`
+	// PreviousErrors 保留此前的中断原因（最近的在前，最多 3 条）。
+	// Error 只描述"这一次为什么停"，但作者往往是点了几次「继续」才来看的，
+	// 第一次的原因（例如"门禁未通过：连续性…"）才是根因，不能被后来的
+	// "单元已被占用"之类的次生错误覆盖掉。
+	PreviousErrors []string  `json:"previousErrors,omitempty"`
+	CreatedAt      time.Time `json:"createdAt"`
+	UpdatedAt      time.Time `json:"updatedAt"`
 }
 
 // Progress returns done/total for display convenience.

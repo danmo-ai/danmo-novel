@@ -83,6 +83,8 @@ export interface Chain {
   units: ChainUnitState[]
   spec: ChainSpec
   error?: string
+  /** 此前的中断原因，最近的在前；首次的根因常在这里。 */
+  previousErrors?: string[]
   createdAt: string
   updatedAt: string
 }
