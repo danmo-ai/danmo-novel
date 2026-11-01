@@ -85,16 +85,18 @@ func (f *fakeLLM) Chat(_ context.Context, req port.LLMChatRequest) (port.LLMChat
 			"obstacle": "体弱与名额争夺", "choice": "用代价换一次爆发",
 			"payoff": "入门资格", "pleasure": "弱者翻盘", "forbidden": "不揭金手指来源",
 			"wordTarget": "2500", "pov": "linchen",
-			"chapterFrom": 1, "chapterTo": 3, "onStage": []string{"linchen"},
+			"chapterFrom": 1, "chapterTo": 3, "onStage": []string{"linchen"}, "sourceSeedId": "v01-U1",
+			"attempt": "用旧刀和基础身法应战", "setback": "体力不足，旧刀反噬", "cost": "身体受伤并暴露旧刀异常",
 			"scenes": []map[string]any{
-				{"id": "S1", "chapter": 1, "beat": "被点名", "who": []string{"linchen"}, "pov": "linchen", "where": "试炼场"},
-				{"id": "S2", "chapter": 1, "beat": "名额只剩一个", "who": []string{"linchen"}, "pov": "linchen", "where": "试炼场"},
-				{"id": "S3", "chapter": 2, "beat": "被迫接战", "who": []string{"linchen"}, "pov": "linchen", "where": "石台"},
-				{"id": "S4", "chapter": 2, "beat": "代价初现", "who": []string{"linchen"}, "pov": "linchen", "where": "石台"},
-				{"id": "S5", "chapter": 3, "beat": "爆发换资格", "who": []string{"linchen"}, "pov": "linchen", "where": "试炼场"},
-				{"id": "S6", "chapter": 3, "beat": "入门", "who": []string{"linchen"}, "pov": "linchen", "where": "山门"},
+				{"id": "S1", "chapter": 1, "beat": "被点名", "who": []string{"linchen"}, "pov": "linchen", "where": "试炼场", "goal": "争取试炼机会", "conflict": "被执事质疑", "turn": "主动应战", "outcome": "获得比试资格", "must_land": []string{"接下名牌"}},
+				{"id": "S2", "chapter": 1, "beat": "名额只剩一个", "who": []string{"linchen"}, "pov": "linchen", "where": "试炼场", "goal": "保住名额", "conflict": "竞争者施压", "turn": "发现对手破绽", "outcome": "进入下一轮", "must_land": []string{"守住名额"}},
+				{"id": "S3", "chapter": 2, "beat": "被迫接战", "who": []string{"linchen"}, "pov": "linchen", "where": "石台", "goal": "撑过比试", "conflict": "体力和经验不足", "turn": "改变打法", "outcome": "扳回一局", "must_land": []string{"避开重击"}},
+				{"id": "S4", "chapter": 2, "beat": "代价初现", "who": []string{"linchen"}, "pov": "linchen", "where": "石台", "goal": "压制伤势", "conflict": "爆发损害身体", "turn": "决定是否继续", "outcome": "承担代价", "must_land": []string{"伤势可见"}},
+				{"id": "S5", "chapter": 3, "beat": "爆发换资格", "who": []string{"linchen"}, "pov": "linchen", "where": "试炼场", "goal": "赢得资格", "conflict": "最后对手阻拦", "turn": "用代价换爆发", "outcome": "对手认输", "must_land": []string{"完成最后一击"}},
+				{"id": "S6", "chapter": 3, "beat": "入门", "who": []string{"linchen"}, "pov": "linchen", "where": "山门", "goal": "完成入门登记", "conflict": "执事复核代价", "turn": "林尘承担责任", "outcome": "取得入门资格", "must_land": []string{"领取身份牌"}},
 			},
-			"storyDay": "1", "gapFromPrev": "开场",
+			"storyDay": "1", "gapFromPrev": "开场", "infoControl": "读者只知旧刀有异常，不知其来源",
+			"stateDeltas": []map[string]any{{"stem": "linchen", "field": "role_title", "from": "外门弟子", "to": "入门弟子"}},
 		}}})
 		return port.LLMChatResponse{Content: string(out), Done: true}, nil
 	case domain.TaskWrite:

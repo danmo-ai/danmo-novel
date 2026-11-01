@@ -13,13 +13,13 @@ func TestAcceptPlanVolumeSeedsUnits(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(root, "outline", "book_outline.md"), []byte("# 总纲\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "outline", "book_outline.md"), []byte(sampleBookOutline()), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	cand := domain.Candidate{
 		Mode: domain.PlanModeVolume, VolumeID: "v01",
 		PlanMarkdown: map[string]string{
-			"volume_outline": "# 第一卷\n\n## 本卷人物\n- lin\n\n## 单元索引\n| unit_id | 章范围 | 一句话功能 | 终局边界 | 下一钩类型 |\n|---|---|---|---|---|\n| v01-U1 | 1-3 | 旧邮袋 | 不揭真相 | 危机 |\n| v01-U2 | 4-6 | 旧识试探 | 不合作 | 身份 |\n",
+			"volume_outline": sampleVolumeOutline(),
 		},
 	}
 	if err := AcceptPlan(root, cand); err != nil {

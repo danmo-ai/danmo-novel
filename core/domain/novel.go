@@ -6,19 +6,20 @@ import "time"
 type TaskKind string
 
 const (
-	TaskInit          TaskKind = "init"
-	TaskPlan          TaskKind = "plan"
-	TaskOutline       TaskKind = "outline"
-	TaskWrite         TaskKind = "write"
-	TaskReview        TaskKind = "review"
-	TaskRevise        TaskKind = "revise"
-	TaskFinalize      TaskKind = "finalize"
-	TaskRewriteEntity TaskKind = "rewrite_entity" // 单实体优化：bible/人物卡/世界规则等
-	TaskLocalEdit     TaskKind = "local_edit"
-	TaskContinue      TaskKind = "continue"
-	TaskExpand        TaskKind = "expand"
-	TaskPolish        TaskKind = "polish"
-	TaskRewriteSel    TaskKind = "rewrite_selection"
+	TaskInit            TaskKind = "init"
+	TaskPlan            TaskKind = "plan"
+	TaskOutline         TaskKind = "outline"
+	TaskWrite           TaskKind = "write"
+	TaskReview          TaskKind = "review"
+	TaskRevise          TaskKind = "revise"
+	TaskFinalize        TaskKind = "finalize"
+	TaskRewriteEntity   TaskKind = "rewrite_entity" // 单实体优化：bible/人物卡/世界规则等
+	TaskLocalEdit       TaskKind = "local_edit"
+	TaskContinue        TaskKind = "continue"
+	TaskExpand          TaskKind = "expand"
+	TaskPolish          TaskKind = "polish"
+	TaskRewriteSel      TaskKind = "rewrite_selection"
+	TaskStructureReview TaskKind = "structure_review"
 )
 
 // Plan modes for TaskPlan (立项 / 重新立项 / 重写卷纲).
@@ -151,29 +152,33 @@ type ChapterDraft struct {
 }
 
 type UnitOutlineDraft struct {
-	UnitID      string           `json:"unitId"`
-	Status      UnitStatus       `json:"status"`
-	Title       string           `json:"title"`
-	Function    string           `json:"function"`
-	Desire      string           `json:"desire"`
-	Obstacle    string           `json:"obstacle"`
-	Choice      string           `json:"choice"`
-	Payoff      string           `json:"payoff"`
-	Pleasure    string           `json:"pleasure"`
-	Forbidden   string           `json:"forbidden"`
-	WordTarget  string           `json:"wordTarget"`
-	OnStage     []string         `json:"onStage"`
-	POV         string           `json:"pov"`
-	ChapterFrom int              `json:"chapterFrom"`
-	ChapterTo   int              `json:"chapterTo"`
-	Scenes      []map[string]any `json:"scenes,omitempty"`
-	NextHook    map[string]any   `json:"nextHook,omitempty"`
-	StoryDay    string           `json:"storyDay,omitempty"`
-	GapFromPrev string           `json:"gapFromPrev,omitempty"`
-	Flashback   bool             `json:"flashback,omitempty"`
-	InfoControl string           `json:"infoControl,omitempty"`
-	StateDeltas any              `json:"stateDeltas,omitempty"`
-	RawYAML     string           `json:"rawYaml,omitempty"`
+	UnitID       string           `json:"unitId"`
+	Status       UnitStatus       `json:"status"`
+	Title        string           `json:"title"`
+	Function     string           `json:"function"`
+	Desire       string           `json:"desire"`
+	Obstacle     string           `json:"obstacle"`
+	Choice       string           `json:"choice"`
+	Payoff       string           `json:"payoff"`
+	Pleasure     string           `json:"pleasure"`
+	Forbidden    string           `json:"forbidden"`
+	WordTarget   string           `json:"wordTarget"`
+	OnStage      []string         `json:"onStage"`
+	POV          string           `json:"pov"`
+	ChapterFrom  int              `json:"chapterFrom"`
+	ChapterTo    int              `json:"chapterTo"`
+	Scenes       []map[string]any `json:"scenes,omitempty"`
+	NextHook     map[string]any   `json:"nextHook,omitempty"`
+	StoryDay     string           `json:"storyDay,omitempty"`
+	GapFromPrev  string           `json:"gapFromPrev,omitempty"`
+	Flashback    bool             `json:"flashback,omitempty"`
+	InfoControl  string           `json:"infoControl,omitempty"`
+	StateDeltas  any              `json:"stateDeltas,omitempty"`
+	RawYAML      string           `json:"rawYaml,omitempty"`
+	SourceSeedID string           `json:"sourceSeedId,omitempty"`
+	Attempt      string           `json:"attempt,omitempty"`
+	Setback      string           `json:"setback,omitempty"`
+	Cost         string           `json:"cost,omitempty"`
 }
 
 type ReviewFinding struct {
@@ -185,6 +190,9 @@ type ReviewFinding struct {
 	Evidence   string `json:"evidence,omitempty"`
 	Chapter    int    `json:"chapter,omitempty"`
 	Suggestion string `json:"suggestion,omitempty"`
+	EntityPath string `json:"entityPath,omitempty"`
+	VolumeID   string `json:"volumeId,omitempty"`
+	UnitID     string `json:"unitId,omitempty"`
 }
 
 type CanonChange struct {
@@ -293,10 +301,11 @@ type BookSummary struct {
 }
 
 type VolumeInfo struct {
-	Volume   int      `json:"volume"`
-	FileName string   `json:"fileName"`
-	Cast     []string `json:"cast"`
-	Raw      string   `json:"raw,omitempty"`
+	Volume     int                 `json:"volume"`
+	FileName   string              `json:"fileName"`
+	Cast       []string            `json:"cast"`
+	Raw        string              `json:"raw,omitempty"`
+	Structured *StructuredMarkdown `json:"structured,omitempty"`
 }
 
 type UnitInfo struct {
@@ -336,6 +345,9 @@ type BookSnapshot struct {
 	// IdentitySegments 人物职务身份时间线（canon/identity-timeline.yaml）。
 	// 按 stem + from_unit 排序；单元内部身份恒定，转换只在单元边界。
 	IdentitySegments []IdentitySegment `json:"identitySegments,omitempty"`
+	// StructuredOutlines are projections of the same Markdown in Files. They
+	// carry no independent state and are safe to discard and reparse.
+	StructuredOutlines map[string]*StructuredMarkdown `json:"structuredOutlines,omitempty"`
 }
 
 // IdentitySegment 一段恒定身份区间（与单元边界对齐）。

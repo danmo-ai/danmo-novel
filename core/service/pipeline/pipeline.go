@@ -31,6 +31,9 @@ type Runner struct {
 	DeslopRules *gates.Ruleset
 	// ModelMaxOut returns the assigned model's catalog max_output (0 = unknown).
 	ModelMaxOut func(modelID string) int
+	// AutoStructureReview enables the bounded editor pass after a structured
+	// plan. Manual structure review is always available without this switch.
+	AutoStructureReview bool
 }
 
 // proseRules returns the effective local-gate rule set.
@@ -142,9 +145,20 @@ func (r *Runner) RunOutline(ctx context.Context, snap domain.BookSnapshot, volum
 		if err != nil {
 			return err
 		}
-		// scene 章号越界会让按章过滤失效：那一章拿不到节拍，写作时等于盲写。
-		if err := validateOutlineScenes(units); err != nil {
+		// 章覆盖只是底线；目标/冲突/转折/结果也必须可被写作阶段消费。
+		if err := ValidateOutlineContract(units, unitIDs); err != nil {
 			return err
+		}
+		if volumeDoc, ok := books.StructuredOutlineFor(snap, fmt.Sprintf("outline/volumes/v%02d.md", volume)); ok && volumeDoc.Valid() {
+			for _, unit := range units {
+				seed, found := volumeDoc.Entity("单元", unit.UnitID)
+				if !found {
+					return contractFail("细纲父子合同", []Violation{{Path: "unitId", Want: "卷纲已有单元种子", Got: unit.UnitID}})
+				}
+				if err := ValidateUnitSeedInheritance(unit, seed); err != nil {
+					return err
+				}
+			}
 		}
 		cand.UnitOutlines = units
 		return nil
@@ -167,10 +181,6 @@ func (r *Runner) RunPlan(ctx context.Context, snap domain.BookSnapshot, volume i
 
 // RunPlanMode runs 立项 / 重新立项 / 重写卷纲.
 func (r *Runner) RunPlanMode(ctx context.Context, snap domain.BookSnapshot, volume int, modelID, mode, instruction string, preservePaths ...[]string) (Result, error) {
-	var preserve []string
-	if len(preservePaths) > 0 {
-		preserve = preservePaths[0]
-	}
 	if mode == "" {
 		if books.HasBookOutline(snap) {
 			mode = domain.PlanModeVolume
@@ -178,119 +188,16 @@ func (r *Runner) RunPlanMode(ctx context.Context, snap domain.BookSnapshot, volu
 			mode = domain.PlanModeInit
 		}
 	}
-	full := mode == domain.PlanModeInit || mode == domain.PlanModeReinit
-	if !full {
-		if volume < 1 {
-			volume = 1
+	if mode == domain.PlanModeVolume {
+		doc, ok := books.StructuredOutlineFor(snap, "outline/book_outline.md")
+		if !ok || doc.Legacy {
+			return Result{}, fmt.Errorf("旧格式总纲不进入生产链路，请先通过 Agent 批量迁移")
 		}
-		if !books.HasBookOutline(snap) {
-			return Result{}, fmt.Errorf("生成卷纲前需先完成立项（缺少 outline/book_outline.md）")
-		}
-	}
-	packet := contextsvc.BuildPlanPacketWithMode(snap, volume, mode, instruction, r.modelMaxOut(modelID))
-	return r.runJSON(ctx, snap, packet, modelID, domain.TaskPlan, "", "", func(raw string, cand *domain.Candidate) error {
-		var parsed struct {
-			Cast                  []map[string]any `json:"cast"`
-			BookOutlineMarkdown   string           `json:"bookOutlineMarkdown"`
-			VolumeOutlineMarkdown string           `json:"volumeOutlineMarkdown"`
-			Settings              *struct {
-				Files map[string]string `json:"files"`
-			} `json:"settings"`
-		}
-		if err := unmarshalJSON(raw, &parsed); err != nil {
-			return err
-		}
-		cand.Mode = mode
-		if mode == domain.PlanModeReinit && len(preserve) > 0 {
-			cand.PreservePaths = append([]string(nil), preserve...)
-		}
-		cand.PlanMarkdown = map[string]string{}
-		if full {
-			if strings.TrimSpace(parsed.BookOutlineMarkdown) == "" {
-				return fmt.Errorf("empty book outline")
-			}
-			cand.PlanMarkdown["book_outline"] = parsed.BookOutlineMarkdown
-			b, _ := json.Marshal(parsed.Cast)
-			cand.PlanMarkdown["cast_json"] = string(b)
-			if parsed.Settings == nil || len(parsed.Settings.Files) == 0 {
-				return fmt.Errorf("立项必须输出 settings.files")
-			}
-			// 人物骨架是后续所有人名引用的根：缺 stem/role 要到写作阶段才显形。
-			normalizePlanCast(parsed.Cast)
-			if err := validatePlanCast(parsed.Cast); err != nil {
-				return err
-			}
-			cand.PlanSettings = map[string]string{}
-			for _, path := range books.PlanSettingsPaths {
-				body := strings.TrimSpace(parsed.Settings.Files[path])
-				if body == "" {
-					return fmt.Errorf("缺少设定文件: %s", path)
-				}
-				cand.PlanSettings[path] = parsed.Settings.Files[path]
-			}
-			for path := range parsed.Settings.Files {
-				if !books.IsPlanSettingsPath(path) {
-					return fmt.Errorf("不允许的设定路径: %s", path)
-				}
-			}
-			// Ignore accidental volume output from init/reinit.
-		} else {
-			if strings.TrimSpace(parsed.VolumeOutlineMarkdown) == "" {
-				return fmt.Errorf("empty volume outline")
-			}
-			if parsed.Settings != nil && len(parsed.Settings.Files) > 0 {
-				return fmt.Errorf("重写卷纲不得输出 settings")
-			}
-			if len(parsed.Cast) > 0 {
-				return fmt.Errorf("重写卷纲不得输出 cast")
-			}
-			if strings.TrimSpace(parsed.BookOutlineMarkdown) != "" {
-				return fmt.Errorf("重写卷纲不得输出 bookOutlineMarkdown")
-			}
-			cand.PlanMarkdown["volume_outline"] = parsed.VolumeOutlineMarkdown
-			cand.VolumeID = packet.VolumeID
-		}
-		return nil
-	}, func(cand domain.Candidate) gates.Report {
-		rep := gates.Report{OK: true, Counts: map[string]int{}}
-		if full {
-			if strings.TrimSpace(cand.PlanMarkdown["book_outline"]) == "" {
-				rep.OK = false
-				rep.Findings = append(rep.Findings, domain.ReviewFinding{ID: "plan-book", Severity: "blocking", Source: "local_gate", Title: "缺少全书总纲"})
-			}
-			for _, path := range books.PlanSettingsPaths {
-				if strings.TrimSpace(cand.PlanSettings[path]) == "" {
-					rep.OK = false
-					rep.Findings = append(rep.Findings, domain.ReviewFinding{ID: "plan-setting-" + path, Severity: "blocking", Source: "local_gate", Title: "缺少设定: " + path})
-				}
-			}
-			if strings.TrimSpace(cand.PlanMarkdown["cast_json"]) == "[]" || strings.TrimSpace(cand.PlanMarkdown["cast_json"]) == "" {
-				rep.OK = false
-				rep.Findings = append(rep.Findings, domain.ReviewFinding{ID: "plan-cast", Severity: "blocking", Source: "local_gate", Title: "未生成人物卡"})
-			} else if !castHasProtagonist(cand.PlanMarkdown["cast_json"]) {
-				rep.OK = false
-				rep.Findings = append(rep.Findings, domain.ReviewFinding{ID: "plan-protagonist", Severity: "blocking", Source: "local_gate", Title: "缺少 protagonist"})
-			}
-		} else if strings.TrimSpace(cand.PlanMarkdown["volume_outline"]) == "" {
-			rep.OK = false
-			rep.Findings = append(rep.Findings, domain.ReviewFinding{ID: "plan-volume", Severity: "blocking", Source: "local_gate", Title: "缺少卷纲"})
-		}
-		return rep
-	})
-}
-
-func castHasProtagonist(castJSON string) bool {
-	var cast []map[string]any
-	if err := json.Unmarshal([]byte(castJSON), &cast); err != nil {
-		return false
-	}
-	for _, c := range cast {
-		role, _ := c["role"].(string)
-		if strings.EqualFold(strings.TrimSpace(role), "protagonist") {
-			return true
+		if !doc.Valid() {
+			return Result{}, fmt.Errorf("总纲结构校验失败：%s", books.FormatOutlineDiagnostics(doc.Diagnostics))
 		}
 	}
-	return false
+	return r.runStructuredPlan(ctx, snap, volume, modelID, mode, instruction, preservePaths...)
 }
 
 func (r *Runner) RunLocalEdit(ctx context.Context, snap domain.BookSnapshot, sel domain.TextSelection, instruction, modelID string) (Result, error) {

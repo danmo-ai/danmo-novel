@@ -23,11 +23,25 @@ type planCast struct {
 }
 
 type unitSeed struct {
-	UnitID   string `json:"unitId"`
-	Title    string `json:"title"`
-	From     int    `json:"from"`
-	To       int    `json:"to"`
-	Function string `json:"function"`
+	UnitID   string                 `json:"unitId"`
+	Title    string                 `json:"title"`
+	From     int                    `json:"from"`
+	To       int                    `json:"to"`
+	Function string                 `json:"function"`
+	Entity   *domain.MarkdownEntity `json:"-"`
+}
+
+func seedsFromStructuredVolume(doc domain.StructuredMarkdown) []unitSeed {
+	out := []unitSeed{}
+	for _, e := range doc.EntitiesOf("单元") {
+		from, to := ChapterWindow(e.Value("chapter_range"))
+		if from <= 0 || to < from {
+			continue
+		}
+		entity := e
+		out = append(out, unitSeed{UnitID: e.ID, Title: e.Value("title"), From: from, To: to, Function: e.Value("objective"), Entity: &entity})
+	}
+	return out
 }
 
 // AcceptPlan writes the approved plan after explicit author acceptance.
@@ -96,7 +110,29 @@ func acceptPlanBook(root string, cand domain.Candidate) error {
 	}
 	writes := map[string][]byte{}
 	if !preserved["outline/book_outline.md"] {
+		doc := ParseStructuredMarkdown(cand.PlanMarkdown["book_outline"], BookOutlineProtocol)
+		if !doc.Valid() {
+			return fmt.Errorf("总纲未通过结构校验：%s", FormatOutlineDiagnostics(doc.Diagnostics))
+		}
+		snap, err := LoadBook(root, false)
+		if err != nil {
+			return err
+		}
+		if snap.Files == nil {
+			snap.Files = map[string]string{}
+		}
+		for path, body := range cand.PlanSettings {
+			snap.Files[path] = body
+		}
+		revealDoc := ParseStructuredMarkdown(cand.PlanSettings["canon/reveal-schedule.md"], "reveal-schedule/v1")
+		snap.StructuredOutlines["canon/reveal-schedule.md"] = &revealDoc
+		if err := ValidateStructuredOutlineFile(snap, "outline/book_outline.md", cand.PlanMarkdown["book_outline"]); err != nil {
+			return err
+		}
 		writes["outline/book_outline.md"] = []byte(cand.PlanMarkdown["book_outline"])
+	}
+	if err := ValidateRevealSchedule(cand.PlanSettings["canon/reveal-schedule.md"]); err != nil {
+		return err
 	}
 	for path, body := range cand.PlanSettings {
 		if preserved[path] {
@@ -105,8 +141,8 @@ func acceptPlanBook(root string, cand domain.Candidate) error {
 		writes[path] = []byte(body)
 	}
 	for _, c := range cast {
-		if c.Stem == "" || c.Name == "" {
-			continue
+		if err := ValidateCastCardContract(domain.CastCard{Stem: c.Stem, Name: strings.TrimSpace(c.Name), Role: c.Role, Status: domain.CastCanon}); err != nil {
+			return err
 		}
 		rel := "canon/cast/" + c.Stem + ".md"
 		if preserved[rel] {
@@ -130,9 +166,20 @@ func acceptPlanVolume(root string, cand domain.Candidate) error {
 	if strings.TrimSpace(outline) == "" {
 		return fmt.Errorf("volume outline is empty")
 	}
-	seeds := ParseUnitSeeds(outline, cand.VolumeID)
+	doc := ParseStructuredMarkdown(outline, VolumeOutlineProtocol)
+	if doc.Legacy {
+		return fmt.Errorf("旧格式卷纲不进入生产链路，请先通过 Agent 批量迁移")
+	}
+	snap, err := LoadBook(root, false)
+	if err != nil {
+		return err
+	}
+	if err := ValidateStructuredOutlineFile(snap, "outline/volumes/"+cand.VolumeID+".md", outline); err != nil {
+		return err
+	}
+	seeds := seedsFromStructuredVolume(doc)
 	if len(seeds) == 0 {
-		return fmt.Errorf("卷纲没有可识别的单元索引；请使用 unit_id / 章范围 / 一句话功能 表")
+		return fmt.Errorf("卷纲没有可识别的单元索引；请使用结构化单元实体或 unit_id 表")
 	}
 
 	writes := map[string][]byte{
@@ -145,14 +192,33 @@ func acceptPlanVolume(root string, cand domain.Candidate) error {
 			// Never overwrite existing unit contracts (prose progress preserved).
 			continue
 		}
-		body, err := yaml.Marshal(map[string]any{
+		contract := map[string]any{
 			"unit_id": s.UnitID, "status": "proposed", "title_working": s.Title,
 			"function": s.Function, "chapter_range": []int{s.From, s.To},
 			"desire": "", "obstacle": "", "choice": "", "payoff": "",
 			"on_stage": []string{}, "pov": "", "scenes": []any{},
 			"next_hook": map[string]any{"type": ""},
 			"story_day": "", "gap_from_prev": "", "info_control": "",
-		})
+		}
+		if s.Entity != nil {
+			contract["source_seed_id"] = s.Entity.ID
+			contract["desire"] = s.Entity.Value("objective")
+			contract["obstacle"] = s.Entity.Value("obstacle")
+			contract["choice"] = s.Entity.Value("choice")
+			contract["payoff"] = s.Entity.Value("outcome")
+			contract["attempt"] = s.Entity.Value("attempt")
+			contract["setback"] = s.Entity.Value("setback")
+			contract["cost"] = s.Entity.Value("cost")
+			contract["entry_cause"] = s.Entity.Value("entry_cause")
+			contract["exit_result"] = s.Entity.Value("exit_result")
+			contract["state_changes"] = s.Entity.Value("state_changes")
+			contract["state_deltas"] = stateDeltasFromMarkdown(s.Entity.Value("state_changes"))
+			contract["thread_ids"] = splitList(s.Entity.Value("thread_ids"))
+			if hook := strings.SplitN(s.Entity.Value("next_hook"), "|", 2); len(hook) == 2 {
+				contract["next_hook"] = map[string]any{"type": strings.TrimSpace(hook[0]), "out": strings.TrimSpace(hook[1])}
+			}
+		}
+		body, err := yaml.Marshal(contract)
 		if err != nil {
 			return err
 		}

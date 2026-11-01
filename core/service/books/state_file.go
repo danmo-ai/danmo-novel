@@ -186,6 +186,13 @@ type stateDelta struct {
 // 兼容两种形态：细纲正文里的 YAML 列表，以及旧版序列化写出的
 // state_deltas_json 字符串。后者曾是生产者/消费者的字段名不一致点。
 func parseStateDeltas(raw string) []stateDelta {
+	// A structured volume seed may be finalized before a separate outline
+	// rewrite. Its compact state_changes must still reach the same ledger.
+	if value := yamlScalarValue(raw, "state_changes"); value != "" {
+		if rows := stateDeltasFromMarkdown(value); len(rows) > 0 {
+			return rowsToDeltas(markdownDeltaRows(rows))
+		}
+	}
 	if block := mdYAMLSection(raw, "state_deltas"); block != "" {
 		var rows []map[string]any
 		if err := yaml.Unmarshal([]byte(block), &rows); err == nil && len(rows) > 0 {
@@ -198,7 +205,26 @@ func parseStateDeltas(raw string) []stateDelta {
 			return rowsToDeltas(rows)
 		}
 	}
+	// Do not silently lose a planned state change just because the current
+	// unit writer used a different YAML spelling. The finalizer must see it.
+	if value := yamlScalarValue(raw, "state_changes"); value != "" {
+		if rows := stateDeltasFromMarkdown(value); len(rows) > 0 {
+			return rowsToDeltas(markdownDeltaRows(rows))
+		}
+	}
 	return nil
+}
+
+func markdownDeltaRows(rows []map[string]string) []map[string]any {
+	out := make([]map[string]any, 0, len(rows))
+	for _, row := range rows {
+		converted := map[string]any{}
+		for key, value := range row {
+			converted[key] = value
+		}
+		out = append(out, converted)
+	}
+	return out
 }
 
 func rowsToDeltas(rows []map[string]any) []stateDelta {

@@ -17,9 +17,10 @@ import (
 )
 
 var (
-	unitOutlineRe = regexp.MustCompile(`(?i)^v(\d+)-U(\d+)\.ya?ml$`)
-	unitProseRe   = regexp.MustCompile(`(?i)^v(\d+)-U(\d+)\.md$`)
-	volumeRe      = regexp.MustCompile(`(?i)^(?:volume|vol|v)0*(\d+)`)
+	unitOutlineRe    = regexp.MustCompile(`(?i)^v(\d+)-U(\d+)\.ya?ml$`)
+	unitProseRe      = regexp.MustCompile(`(?i)^v(\d+)-U(\d+)\.md$`)
+	volumeRe         = regexp.MustCompile(`(?i)^(?:volume|vol|v)0*(\d+)`)
+	volumeTagPattern = regexp.MustCompile(`^v\d{2,}$`)
 	// 人物卡是 Markdown：status/role 必须是行首的纯字段。
 	castStatusRe = regexp.MustCompile("(?m)^\\s*`?status`?\\s*[：:]\\s*([A-Za-z_-]+)")
 	castRoleRe   = regexp.MustCompile("(?m)^\\s*`?role`?\\s*[：:]\\s*([A-Za-z_-]+)")
@@ -109,14 +110,36 @@ func LoadBook(root string, readOnly bool) (domain.BookSnapshot, error) {
 			RootPath:        root,
 			ReadOnly:        readOnly,
 		},
-		StateRaw:         stateRaw,
-		Volumes:          volumes,
-		Units:            units,
-		Cast:             cast,
-		Files:            files,
-		Revision:         computeRevision(files),
-		ImportedAt:       time.Now().UTC(),
-		IdentitySegments: identitySegments,
+		StateRaw:           stateRaw,
+		Volumes:            volumes,
+		Units:              units,
+		Cast:               cast,
+		Files:              files,
+		Revision:           computeRevision(files),
+		ImportedAt:         time.Now().UTC(),
+		IdentitySegments:   identitySegments,
+		StructuredOutlines: map[string]*domain.StructuredMarkdown{},
+	}
+	for path, raw := range files {
+		protocol := ""
+		if path == "outline/book_outline.md" {
+			protocol = BookOutlineProtocol
+		} else if strings.HasPrefix(path, "outline/volumes/") && strings.HasSuffix(path, ".md") {
+			protocol = VolumeOutlineProtocol
+		} else if path == "canon/reveal-schedule.md" {
+			protocol = "reveal-schedule/v1"
+		}
+		if protocol != "" {
+			doc := ParseStructuredMarkdown(raw, protocol)
+			snap.StructuredOutlines[path] = &doc
+			if path != "outline/book_outline.md" && path != "canon/reveal-schedule.md" {
+				for i := range snap.Volumes {
+					if snap.Volumes[i].FileName == filepath.Base(path) {
+						snap.Volumes[i].Structured = &doc
+					}
+				}
+			}
+		}
 	}
 	return snap, nil
 }

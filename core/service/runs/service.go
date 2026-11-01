@@ -251,9 +251,24 @@ func (s *Service) execute(ctx context.Context, run domain.Run, snap domain.BookS
 		} else {
 			res, err = s.Pipeline.RunFinalize(ctx, snap, unit)
 		}
+	case domain.TaskStructureReview:
+		res, err = s.Pipeline.ReviewStructure(ctx, snap, run.Spec, modelID)
 	case domain.TaskRewriteEntity:
 		if run.Spec.TargetPath == "" {
 			err = fmt.Errorf("targetPath required for rewrite_entity")
+		} else if run.Spec.EntityKind == "structure_repair" {
+			var findings []domain.ReviewFinding
+			open, _ := s.Store.ListOpenCandidates(ctx, snap.Summary.ID)
+			for _, c := range open {
+				if c.Kind == domain.TaskStructureReview && c.TargetPath == run.Spec.TargetPath {
+					for _, f := range c.Findings {
+						if len(run.Spec.IssueIDs) == 0 || contains(run.Spec.IssueIDs, f.ID) {
+							findings = append(findings, f)
+						}
+					}
+				}
+			}
+			res, err = s.Pipeline.RepairStructure(ctx, snap, run.Spec, findings, modelID)
 		} else {
 			res, err = s.Pipeline.RunRewriteEntity(ctx, snap, run.Spec, modelID)
 		}
@@ -351,7 +366,8 @@ func (s *Service) PreviewPacket(_ context.Context, spec domain.TaskSpec) (domain
 		} else if mode == domain.PlanModeVolume && len(snap.Volumes) > 0 {
 			vnum = snap.Volumes[len(snap.Volumes)-1].Volume
 		}
-		return contextsvc.BuildPlanPacketWithMode(snap, vnum, mode, spec.Instruction, s.modelMaxOut(s.resolveModel(spec))), nil
+		packet := contextsvc.BuildPlanPacketWithMode(snap, vnum, mode, spec.Instruction, s.modelMaxOut(s.resolveModel(spec)))
+		return s.Pipeline.ResolvePlanPreview(snap, mode, packet)
 	case domain.TaskReview:
 		unit, ok := findUnit(snap, spec.UnitID)
 		if !ok {
@@ -367,7 +383,12 @@ func (s *Service) PreviewPacket(_ context.Context, spec domain.TaskSpec) (domain
 			return domain.ContextPacket{}, fmt.Errorf("单元尚无正文，无法定稿")
 		}
 		return contextsvc.BuildFinalizePacket(snap, unit), nil
+	case domain.TaskStructureReview:
+		return s.Pipeline.PreviewStructuredTask(snap, spec)
 	case domain.TaskRewriteEntity:
+		if spec.EntityKind == "structure_repair" {
+			return s.Pipeline.PreviewStructuredTask(snap, spec)
+		}
 		if spec.TargetPath == "" {
 			return domain.ContextPacket{}, fmt.Errorf("targetPath required")
 		}
@@ -470,7 +491,7 @@ func (s *Service) Accept(ctx context.Context, cmd domain.AcceptCommand) (domain.
 	// 审校候选只是问题清单，接受=归档确认（不写盘）。正文被修订后旧结论仍然可归档，
 	// 所以不校验 baseRevision；否则「定向修订→接受」之后旧审校候选会报过期错误、
 	// 只能靠拒绝清掉，等于分不清「已复核」和「被丢弃」。
-	if cand.Kind != domain.TaskReview {
+	if cand.Kind != domain.TaskReview && cand.Kind != domain.TaskStructureReview {
 		if cmd.BaseRevision != "" && cmd.BaseRevision != snap.Revision {
 			cand.Status = domain.CandidateExpired
 			_ = s.Store.SaveCandidate(ctx, cand)
@@ -523,6 +544,9 @@ func (s *Service) Accept(ctx context.Context, cmd domain.AcceptCommand) (domain.
 				vol = u.Volume
 			}
 		}
+		if err := pipeline.ValidateOutlineInheritance(snap, vol, cand.UnitOutlines); err != nil {
+			return domain.Candidate{}, err
+		}
 		for _, f := range books.ValidateClockContinuity(snap.Units, vol) {
 			if f.Severity == "blocking" && !cmd.ForceRiskAccept {
 				return domain.Candidate{}, fmt.Errorf("剧情时钟冲突：%s（%s）", f.Title, f.Evidence)
@@ -530,6 +554,9 @@ func (s *Service) Accept(ctx context.Context, cmd domain.AcceptCommand) (domain.
 		}
 		// 单元内部身份恒定：合同声明身份转换则必须拆单元。
 		for _, u := range cand.UnitOutlines {
+			if u.StateDeltas == nil {
+				return domain.Candidate{}, fmt.Errorf("单元 %s 缺少结构化 stateDeltas，定稿无法回写状态迁移", u.UnitID)
+			}
 			if blocking := books.ValidateNoIntraUnitChange(u.RawYAML, u.OnStage); len(blocking) > 0 {
 				return domain.Candidate{}, fmt.Errorf("单元 %s 含身份转换，须拆到单元边界：%s", u.UnitID, strings.Join(blocking, "; "))
 			}
@@ -550,6 +577,13 @@ func (s *Service) Accept(ctx context.Context, cmd domain.AcceptCommand) (domain.
 			}
 		}
 	case domain.TaskPlan:
+		if !cmd.ForceRiskAccept {
+			for _, f := range cand.Findings {
+				if f.Severity == "blocking" {
+					return domain.Candidate{}, fmt.Errorf("结构审校仍有阻断项：%s；请先修复", f.Title)
+				}
+			}
+		}
 		if run, rerr := s.Store.GetRun(ctx, cand.RunID); rerr == nil {
 			if cand.Mode == "" {
 				cand.Mode = run.Spec.Mode
@@ -579,9 +613,20 @@ func (s *Service) Accept(ctx context.Context, cmd domain.AcceptCommand) (domain.
 			}
 		}
 	case domain.TaskRewriteEntity:
+		// 结构修复后仍带 blocking 的结果不是可接受候选；作者可另行重写或直改。
+		if !cmd.ForceRiskAccept {
+			for _, f := range cand.Findings {
+				if f.Severity == "blocking" {
+					return domain.Candidate{}, fmt.Errorf("结构审校仍有阻断项：%s；请先修复", f.Title)
+				}
+			}
+		}
 		// 整文件规范化重写，接受才落盘。
 		if cand.TargetPath == "" || strings.TrimSpace(cand.Replacement) == "" {
 			return domain.Candidate{}, fmt.Errorf("missing rewrite content")
+		}
+		if err := books.ValidateStructuredOutlineFile(snap, cand.TargetPath, cand.Replacement); err != nil {
+			return domain.Candidate{}, fmt.Errorf("accept outline: %w", err)
 		}
 		full := filepath.Join(root, cand.TargetPath)
 		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
@@ -590,7 +635,7 @@ func (s *Service) Accept(ctx context.Context, cmd domain.AcceptCommand) (domain.
 		if err := os.WriteFile(full, []byte(cand.Replacement), 0o644); err != nil {
 			return domain.Candidate{}, err
 		}
-	case domain.TaskReview:
+	case domain.TaskReview, domain.TaskStructureReview:
 		// 接受审校候选只做归档：问题清单不外写、不推进单元状态（drafted 不变）。
 		// 真正改正文的是 review → revise → 接受 revise 候选。
 	case domain.TaskFinalize:
@@ -792,6 +837,14 @@ func serializeUnitYAML(u domain.UnitOutlineDraft) string {
 	fmt.Fprintf(&b, "status: accepted\n")
 	fmt.Fprintf(&b, "title_working: %q\n", u.Title)
 	fmt.Fprintf(&b, "function: %q\n", u.Function)
+	if u.SourceSeedID != "" {
+		fmt.Fprintf(&b, "source_seed_id: %s\n", u.SourceSeedID)
+	}
+	for _, pair := range []struct{ key, value string }{{"attempt", u.Attempt}, {"setback", u.Setback}, {"cost", u.Cost}} {
+		if pair.value != "" {
+			fmt.Fprintf(&b, "%s: %q\n", pair.key, pair.value)
+		}
+	}
 	fmt.Fprintf(&b, "desire: %q\n", u.Desire)
 	fmt.Fprintf(&b, "obstacle: %q\n", u.Obstacle)
 	fmt.Fprintf(&b, "choice: %q\n", u.Choice)

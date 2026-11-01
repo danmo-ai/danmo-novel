@@ -3,6 +3,7 @@ package contextsvc
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"regexp"
 	"strings"
@@ -206,6 +207,7 @@ func mergeStyleRules(snap domain.BookSnapshot) string {
 }
 
 var reviewContractDrop = []string{
+	"source_seed_id",
 	"word_target",   // 字数配额由本地硬门判定，审校数不出来
 	"pleasure",      // 爽点设计意图，判正文时用不上
 	"function",      // 卷纲层的功能定位
@@ -228,6 +230,7 @@ var reviewContractDrop = []string{
 // model, and on a long unit they are the bulk of the contract.
 var writeContractDrop = []string{
 	"status",
+	"source_seed_id",
 	"title_working",
 	"function",
 	"chapter_range",
@@ -301,6 +304,11 @@ func BuildOutlinePacket(snap domain.BookSnapshot, volume int, unitIDs []string, 
 	}
 	blocks := []domain.ContextBlock{
 		{ID: "volume", Label: "卷纲", Source: "outline/volumes/" + volTag + ".md", Content: volRaw, Bytes: len(volRaw)},
+	}
+	if doc, ok := books.StructuredOutlineFor(snap, "outline/volumes/"+volTag+".md"); ok && doc.Valid() {
+		if seedRaw, err := json.Marshal(doc.EntitiesOf("单元")); err == nil {
+			blocks = append(blocks, domain.ContextBlock{ID: "unit-seeds", Label: "不可改写的单元种子", Source: "outline/volumes/" + volTag + ".md#units", Content: string(seedRaw), Bytes: len(seedRaw)})
+		}
 	}
 	for _, id := range unitIDs {
 		for _, u := range snap.Units {
@@ -406,6 +414,14 @@ func BuildPlanPacketWithMode(snap domain.BookSnapshot, volume int, mode, instruc
 		volID = fmt.Sprintf("v%02d", volume)
 		bookMeta["volumeId"] = volID
 		addFile("book-outline", "全书总纲", "outline/book_outline.md")
+		if doc, ok := books.StructuredOutlineFor(snap, "outline/book_outline.md"); ok && doc.Valid() {
+			if arc, found := doc.Entity("分卷", volID); found {
+				if arcRaw, err := json.Marshal(arc); err == nil {
+					blocks = append(blocks, domain.ContextBlock{ID: "parent-volume-arc", Label: "不可改写的总纲分卷合同", Source: "outline/book_outline.md#" + volID, Content: string(arcRaw), Bytes: len(arcRaw)})
+					hashes["outline/book_outline.md#"+volID] = shortHash(string(arcRaw))
+				}
+			}
+		}
 		if reveal := clip(snap.Files["canon/reveal-schedule.md"], 900); strings.TrimSpace(reveal) != "" {
 			blocks = append(blocks, domain.ContextBlock{ID: "reveal", Label: "揭示计划", Source: "canon/reveal-schedule.md", Content: reveal, Bytes: len(reveal)})
 			hashes["canon/reveal-schedule.md"] = shortHash(reveal)

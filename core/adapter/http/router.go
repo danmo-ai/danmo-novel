@@ -604,8 +604,66 @@ func registerBooks(api *gin.RouterGroup, app *App) {
 		}
 		c.JSON(200, gin.H{"path": rel, "content": string(b)})
 	})
+	api.PATCH("/books/:id/outline-field", func(c *gin.Context) {
+		var body struct {
+			Path, Kind, EntityID, Field, Value string
+			BaseRevision                       string `json:"baseRevision"`
+		}
+		if err := c.BindJSON(&body); err != nil {
+			c.JSON(400, gin.H{"error": err.Error()})
+			return
+		}
+		root, readOnly, err := app.Store.GetBookRoot(c.Request.Context(), c.Param("id"))
+		if err != nil {
+			c.JSON(404, gin.H{"error": err.Error()})
+			return
+		}
+		if readOnly {
+			c.JSON(403, gin.H{"error": "read-only book"})
+			return
+		}
+		if (body.Path != "outline/book_outline.md" && !strings.HasPrefix(body.Path, "outline/volumes/")) || strings.Contains(body.Path, "..") {
+			c.JSON(400, gin.H{"error": "invalid outline path"})
+			return
+		}
+		raw, err := os.ReadFile(filepath.Join(root, body.Path))
+		if err != nil {
+			c.JSON(404, gin.H{"error": err.Error()})
+			return
+		}
+		protocol := books.BookOutlineProtocol
+		if body.Path != "outline/book_outline.md" {
+			protocol = books.VolumeOutlineProtocol
+		}
+		updated, err := books.ReplaceMarkdownField(string(raw), protocol, body.Kind, body.EntityID, body.Field, body.Value)
+		if err != nil {
+			c.JSON(422, gin.H{"error": err.Error()})
+			return
+		}
+		snap, err := books.LoadBook(root, false)
+		if err != nil {
+			c.JSON(500, gin.H{"error": err.Error()})
+			return
+		}
+		if err := books.ValidateStructuredOutlineFile(snap, body.Path, updated); err != nil {
+			c.JSON(422, gin.H{"error": err.Error()})
+			return
+		}
+		if body.BaseRevision != "" && body.BaseRevision != snap.Revision {
+			c.JSON(409, gin.H{"error": "大纲已被其他修改更新，请重新比较后再保存"})
+			return
+		}
+		if err := os.WriteFile(filepath.Join(root, body.Path), []byte(updated), 0o644); err != nil {
+			c.JSON(500, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(200, gin.H{"ok": true, "content": updated})
+	})
 	api.PUT("/books/:id/file", func(c *gin.Context) {
-		var body struct{ Path, Content string }
+		var body struct {
+			Path, Content string
+			BaseRevision  string `json:"baseRevision"`
+		}
 		if err := c.BindJSON(&body); err != nil {
 			c.JSON(400, gin.H{"error": err.Error()})
 			return
@@ -622,6 +680,26 @@ func registerBooks(api *gin.RouterGroup, app *App) {
 		if readOnly {
 			c.JSON(403, gin.H{"error": "read-only book"})
 			return
+		}
+		if body.Path == "outline/book_outline.md" || strings.HasPrefix(body.Path, "outline/volumes/") {
+			doc := books.ParseStructuredMarkdown(body.Content, books.BookOutlineProtocol)
+			if doc.Legacy {
+				c.JSON(422, gin.H{"error": "旧格式大纲不进入生产链路，请先通过 Agent 批量迁移"})
+				return
+			}
+			snap, loadErr := books.LoadBook(root, false)
+			if loadErr != nil {
+				c.JSON(500, gin.H{"error": loadErr.Error()})
+				return
+			}
+			if err := books.ValidateStructuredOutlineFile(snap, body.Path, body.Content); err != nil {
+				c.JSON(422, gin.H{"error": err.Error()})
+				return
+			}
+			if body.BaseRevision != "" && body.BaseRevision != snap.Revision {
+				c.JSON(409, gin.H{"error": "大纲已被其他修改更新，请重新比较后再保存"})
+				return
+			}
 		}
 		full := filepath.Join(root, body.Path)
 		_ = os.MkdirAll(filepath.Dir(full), 0o755)

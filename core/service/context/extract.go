@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/danmo-ai/danmo-novel/core/domain"
+	"github.com/danmo-ai/danmo-novel/core/service/books"
 )
 
 // Entity extraction is the single source of model-facing canon. No whole-card,
@@ -129,6 +130,9 @@ func ExtractRevealForVolume(raw string, volume int) string {
 	if volume < 1 {
 		volume = 1
 	}
+	if doc := books.ParseStructuredMarkdown(raw, "reveal-schedule/v1"); !doc.Legacy && len(doc.EntitiesOf("揭示")) > 0 {
+		return extractStructuredReveal(doc, volume)
+	}
 	allowed, locked := splitRevealRows(raw, volume)
 	var out []string
 	out = append(out, fmt.Sprintf("揭示约束（当前卷 v%02d）：只写已解锁信息；未解锁内容不得写穿、不得点名真名/真相。", volume))
@@ -142,6 +146,31 @@ func ExtractRevealForVolume(raw string, volume int) string {
 		return clip(raw, 700)
 	}
 	return clip(strings.Join(out, "\n\n"), 1400)
+}
+
+func extractStructuredReveal(doc domain.StructuredMarkdown, volume int) string {
+	var allowed, locked []string
+	for _, e := range doc.EntitiesOf("揭示") {
+		n, _ := strconv.Atoi(strings.TrimPrefix(e.Value("earliest_volume"), "v"))
+		summary := e.ID + "：" + e.Value("public_summary")
+		if terms := e.Value("locked_terms"); terms != "" && terms != "无" {
+			summary += "（锁词：" + terms + "）"
+		}
+		if n <= volume {
+			allowed = append(allowed, "- "+summary)
+		} else {
+			locked = append(locked, "- "+summary)
+		}
+	}
+	var out []string
+	out = append(out, fmt.Sprintf("揭示约束（当前卷 v%02d）：只写已解锁信息；未解锁内容不得写穿、不得点名真名/真相。", volume))
+	if len(allowed) > 0 {
+		out = append(out, "可暗示/可确认：\n"+strings.Join(allowed, "\n"))
+	}
+	if len(locked) > 0 {
+		out = append(out, "禁止写穿（锁后续卷）：\n"+strings.Join(locked, "\n"))
+	}
+	return clip(strings.Join(out, "\n\n"), 1800)
 }
 
 // splitRevealRows best-effort parses reveal rows with a 最早卷/卷号 column.

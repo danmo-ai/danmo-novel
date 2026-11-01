@@ -15,7 +15,18 @@ export interface BookSummary {
   readOnly: boolean
 }
 
-export interface VolumeInfo { volume: number; fileName: string; cast: string[]; raw?: string }
+export interface MarkdownField { name: string; value: string; range: { line: number; column: number; endLine: number; endColumn: number; byteOffset: number; byteEnd: number } }
+export interface MarkdownEntity { kind: string; id: string; fields: MarkdownField[]; range: MarkdownField['range'] }
+export interface StructuredMarkdown {
+  protocol: string
+  version: number
+  title: string
+  root: MarkdownEntity
+  entities: MarkdownEntity[]
+  diagnostics?: { path: string; message: string; severity: string; line?: number }[]
+  legacy: boolean
+}
+export interface VolumeInfo { volume: number; fileName: string; cast: string[]; raw?: string; structured?: StructuredMarkdown }
 export interface UnitInfo {
   unitId: string
   volume: number
@@ -39,6 +50,7 @@ export interface BookSnapshot {
   cast: CastCard[]
   files: Record<string, string>
   revision: string
+  structuredOutlines?: Record<string, StructuredMarkdown>
   chain?: Chain | null
 }
 
@@ -119,6 +131,9 @@ export interface ReviewFinding {
   evidence?: string
   chapter?: number
   suggestion?: string
+  entityPath?: string
+  volumeId?: string
+  unitId?: string
 }
 export interface UnitOutline {
   unitId?: string

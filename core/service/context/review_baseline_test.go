@@ -10,6 +10,47 @@ import (
 	"github.com/danmo-ai/danmo-novel/core/service/books"
 )
 
+func TestOutlinePacketIncludesSeedAndExistingCanon(t *testing.T) {
+	unit := domain.UnitInfo{UnitID: "v01-U1", Volume: 1, OutlinePath: "outline/units/v01-U1.yaml", OutlineRaw: "unit_id: v01-U1\nstatus: proposed\non_stage: [lin]\npov: lin\nstory_day: 3\ngap_from_prev: 次日\n"}
+	volumeRaw := "# 卷纲 · v01\n- schema_version: 1\n- volume_id: v01\n\n## 单元 · v01-U1\n- title: 入门\n- chapter_range: 1-3\n- objective: 立足\n- obstacle: 质疑\n- attempt: 复查\n- setback: 证据不足\n- choice: 承担复核\n- cost: 责任\n- outcome: 获得许可\n- entry_cause: 开卷\n- exit_result: 获得许可\n- state_changes: lin.role_title=新人->复核人\n- thread_ids: main\n- event_ids: event-1\n- next_hook: 信息缺口 | 签名不合\n"
+	doc := books.ParseStructuredMarkdown(volumeRaw, books.VolumeOutlineProtocol)
+	snap := domain.BookSnapshot{Summary: domain.BookSummary{ID: "b"}, Volumes: []domain.VolumeInfo{{Volume: 1, Raw: volumeRaw, Cast: []string{"lin"}, Structured: &doc}}, Units: []domain.UnitInfo{unit}, Cast: []domain.CastCard{{Stem: "lin", Name: "林晚", Raw: "# 林晚\n"}}, Files: map[string]string{"outline/volumes/v01.md": volumeRaw, "canon/reveal-schedule.md": "# 揭示计划\n- schema_version: 1\n\n## 揭示 · R1\n- public_summary: 可公开线索\n- earliest_volume: v01\n- hint_unit_ids: v01-U1\n- confirm_unit_id: v01-U1\n- status: planted\n- locked_terms: 无\n"}}
+	packet := BuildOutlinePacket(snap, 1, []string{"v01-U1"}, "", 0)
+	for _, want := range []string{"不可改写的单元种子", "objective", "state_changes", "人物·林晚", "story_day", "可公开线索"} {
+		if !strings.Contains(packet.UserPrompt, want) {
+			t.Fatalf("outline packet lost %q", want)
+		}
+	}
+}
+
+func TestStructuredCanonRetainsIdentityClockAndReveal(t *testing.T) {
+	unit := domain.UnitInfo{UnitID: "v02-U1", Volume: 2, ChapterFrom: 4, ChapterTo: 4, OutlinePath: "outline/units/v02-U1.yaml", ProsePath: "units/v02-U1.md", ProseRaw: "正文", OutlineRaw: "unit_id: v02-U1\nsource_seed_id: v02-U1\ndesire: 立足\nobstacle: 质疑\nchoice: 复查\npayoff: 获得许可\nforbidden: 禁揭\non_stage: [lin]\npov: lin\nstory_day: 12\ngap_from_prev: 三天后\nscenes:\n  - id: S1\n    chapter: 4\n    goal: 复查\n"}
+	snap := domain.BookSnapshot{Summary: domain.BookSummary{ID: "b", Genre: "悬疑"}, Cast: []domain.CastCard{{Stem: "lin", Name: "林晚", Raw: "# 林晚\n\n## 三锚点\n- 视觉：先看手\n\n## 知识边界\n- 不知未来\n\n## 台词\n- 先复核。\n"}}, IdentitySegments: []domain.IdentitySegment{{Stem: "lin", RoleTitle: "重案队试用", Org: "分局", FromUnit: "v02-U1"}}, Files: map[string]string{
+		"canon/reveal-schedule.md": "# 揭示计划\n- schema_version: 1\n\n## 揭示 · R-ORIGIN\n- public_summary: 旧刀来源\n- earliest_volume: v03\n- hint_unit_ids: v03-U1\n- confirm_unit_id: v03-U2\n- status: locked\n- locked_terms: 原主\n",
+		"canon/author-lore.md":     "未来真相禁止注入",
+	}}
+	for name, packet := range map[string]domain.ContextPacket{"write": BuildWritePacket(snap, unit, "", 0), "review": BuildReviewPacket(snap, unit, nil, 0, "")} {
+		if !strings.Contains(packet.UserPrompt, "重案队试用") || !strings.Contains(packet.UserPrompt, "先看手") {
+			t.Fatalf("%s lost cast/identity: %s", name, packet.UserPrompt)
+		}
+		if !strings.Contains(packet.UserPrompt, "旧刀来源") || !strings.Contains(packet.UserPrompt, "禁止写穿") {
+			t.Fatalf("%s lost structured reveal: %s", name, packet.UserPrompt)
+		}
+		if strings.Contains(packet.UserPrompt, "未来真相禁止注入") {
+			t.Fatalf("%s leaked author lore", name)
+		}
+	}
+	write := BuildWritePacket(snap, unit, "", 0)
+	if !strings.Contains(write.UserPrompt, "第 12 天") || !strings.Contains(write.UserPrompt, "三天后") {
+		t.Fatal("story clock guidance was dropped")
+	}
+	baseline := BuildReviewBaseline(snap, unit, nil, "")
+	revise := BuildReviseChapterPacket(snap, unit, domain.ChapterDraft{Chapter: 4, Body: "正文"}, nil, baseline, 0)
+	if !strings.Contains(revise.UserPrompt, "重案队试用") || !strings.Contains(revise.UserPrompt, "旧刀来源") {
+		t.Fatal("revise lost identity or reveal constraints")
+	}
+}
+
 // 每章只带本章正文 + 上一章末；全局基线共享但不含整份卷摘要。
 // 卷摘要可达数万字，整份塞进首章会让那一次调用比别的章贵三倍。
 func TestChapterReviewPacketClipsSummaryAndScopesProse(t *testing.T) {

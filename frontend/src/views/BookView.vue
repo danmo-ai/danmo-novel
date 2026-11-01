@@ -8,6 +8,7 @@ import OutlineWorkspace from '@/components/book/OutlineWorkspace.vue'
 import BibleWorkspace from '@/components/book/BibleWorkspace.vue'
 import ReviewWorkspace from '@/components/book/ReviewWorkspace.vue'
 import ChapterDiff from '@/components/book/ChapterDiff.vue'
+import StructuredOutline from '@/components/book/StructuredOutline.vue'
 import UnitProse from '@/components/book/UnitProse.vue'
 import UnitContract from '@/components/book/UnitContract.vue'
 import UnitFlowActions from '@/components/book/UnitFlowActions.vue'
@@ -15,6 +16,7 @@ import RunConfirmDialog from '@/components/book/RunConfirmDialog.vue'
 import ChainPanel from '@/components/book/ChainPanel.vue'
 import { planModeLabel as sharedPlanModeLabel, runKindLabel } from '@/utils/runLabels'
 import { cacheStat, callCacheText, hitRateText } from '@/utils/tokenStats'
+import { parseStructuredMarkdown } from '@/utils/structuredMarkdown'
 import type { Chain, ChainSpec } from '@/types'
 
 const route = useRoute()
@@ -35,7 +37,7 @@ const customInstruction = ref('')
 const editingProse = ref(false)
 const editingOutline = ref(false)
 const isProseUnit = computed(() => Boolean(selectedUnit.value?.hasProse && selectedUnit.value.prosePath === editorPath.value))
-const stageLabels: Record<string, string> = { plan: '立项', outline: '细纲', write: '写作', review: '审校', finalize: '定稿', revise: '修订', local_edit: '局部编辑', rewrite_entity: '重写设定' }
+const stageLabels: Record<string, string> = { plan: '立项', outline: '细纲', write: '写作', review: '审校', structure_review: '结构审校', finalize: '定稿', revise: '修订', local_edit: '局部编辑', rewrite_entity: '重写设定' }
 const hasBookOutline = computed(() => Boolean((store.currentBook?.files?.['outline/book_outline.md'] || '').trim()))
 const hasVolumes = computed(() => (store.currentBook?.volumes?.length || 0) > 0)
 // 单元驱动工作流：proposed→细纲 → accepted→正文 → drafted→审校 → reviewed→定稿。
@@ -149,10 +151,39 @@ async function saveFile(path = editorPath.value, content = editorContent.value) 
   if (!path) return
   saving.value = true
   try {
-    await api.put(`/api/books/${bookId.value}/file`, { path, content })
+    await api.put(`/api/books/${bookId.value}/file`, { path, content, baseRevision: store.currentBook?.revision })
     store.note('已保存')
     await reload()
   } catch (e) { store.fail(e) } finally { saving.value = false }
+}
+
+async function saveOutlineField(payload: { path: string; kind: string; entityId: string; field: string; value: string }, done: (ok: boolean) => void) {
+  saving.value = true
+  try {
+    await api.patch(`/api/books/${bookId.value}/outline-field`, { ...payload, baseRevision: store.currentBook?.revision })
+    store.note('已保存字段，Markdown 其他内容保持不变')
+    await reload()
+    done(true)
+  } catch (e) { store.fail(e); done(false) } finally { saving.value = false }
+}
+
+function reviewStructure(path: string) {
+  const book = store.currentBook
+  if (!book || busy.value) return
+  start('structure_review', { title: `结构审校 · ${path}` })
+  if (confirmSpec.value) confirmSpec.value.targetPath = path
+}
+
+function repairStructure(c: Candidate) {
+  const book = store.currentBook
+  if (!book || !c.targetPath) return
+  start('rewrite_entity', { title: `按结构意见修复 · ${c.targetPath}` })
+  if (confirmSpec.value) {
+    confirmSpec.value.targetPath = c.targetPath
+    confirmSpec.value.entityKind = 'structure_repair'
+    confirmSpec.value.volumeId = c.volumeId
+    confirmSpec.value.issueIds = c.findings?.filter((f) => f.severity === 'blocking').map((f) => f.id) || []
+  }
 }
 
 const confirmSpec = ref<Record<string, any> | null>(null)
@@ -312,6 +343,12 @@ function candidateTarget(c: Candidate): string {
   if (units.length === 1 && units[0]?.unitId) return units[0].unitId as string
   if (units.length > 1) return `${c.volumeId || ''} · ${units.length} 个单元`
   return c.volumeId || ''
+}
+
+function candidateStructure(c: Candidate, kind: 'book' | 'volume') {
+  const raw = kind === 'book' ? c.planMarkdown?.book_outline : c.planMarkdown?.volume_outline
+  if (!raw) return null
+  return parseStructuredMarkdown(raw, kind === 'book' ? 'book-outline/v1' : 'volume-outline/v1')
 }
 
 function planCastPreview(c: Candidate) {
@@ -668,6 +705,8 @@ function roleLabel(role?: string) {
         @open-unit="selectedUnit = $event; view = 'write'"
         @save="saveFile"
         @generate="start"
+        @save-field="saveOutlineField"
+        @structure-review="reviewStructure"
         @plan="startPlan"
       />
       <BibleWorkspace
@@ -821,12 +860,14 @@ function roleLabel(role?: string) {
           </div>
           <div>
             <button v-if="c.kind === 'review' && c.unitId" class="primary" @click="focusUnit(c.unitId); view = 'review'">去修订</button>
+            <button v-if="c.kind === 'structure_review' && c.findings?.some((f) => f.severity === 'blocking')" class="primary" @click="repairStructure(c)">按问题修复</button>
             <button @click="reject(c)">拒绝</button>
             <button v-if="c.kind !== 'review'" class="primary" @click="accept(c)">{{ c.kind === 'revise' ? '确认落盘' : '接受' }}</button>
           </div>
         </header>
         <!-- 审校候选没有"归档"：清单只有两条路——去修订，或拒绝后自己重新审校。 -->
         <p v-if="c.kind === 'review'" class="muted">审校结论只能二选一：点「去修订」勾选问题让系统改写；或「拒绝」丢弃这份清单，之后自己重新审校。</p>
+        <p v-if="c.kind === 'structure_review'" class="muted">结构编辑只审查父级继承、因果、兑现和状态。按问题修复会生成新的文档候选，接受后才会写回 Markdown。</p>
         <!-- 修订候选：先看 diff 再落盘，接受不能是盲签。 -->
         <template v-else-if="c.kind === 'revise'">
           <p class="muted">下面是相对现有正文的改动。确认无误后点「确认落盘」覆盖正文；接受后会自动复审。</p>
@@ -838,11 +879,11 @@ function roleLabel(role?: string) {
         <div v-else-if="c.planMarkdown || c.planSettings" class="plan-candidate">
           <p class="plan-mode"><strong>{{ planModeLabel(c.mode) }}</strong><span class="muted"> · 接受后写入 {{ planCandidateFiles(c).length }} 个文件</span></p>
           <template v-if="c.mode === 'volume'">
-            <details v-if="c.planMarkdown?.volume_outline" open><summary>卷纲 · {{ c.volumeId }}</summary><pre class="candidate-prose">{{ c.planMarkdown.volume_outline }}</pre></details>
+            <details v-if="c.planMarkdown?.volume_outline" open><summary>卷纲 · {{ c.volumeId }}</summary><StructuredOutline v-if="candidateStructure(c, 'volume') && !candidateStructure(c, 'volume')!.legacy" :document="candidateStructure(c, 'volume')!" compact read-only /><pre v-else class="candidate-prose">{{ c.planMarkdown.volume_outline }}</pre></details>
             <p class="muted">只写当前卷纲，并播种索引中尚不存在的单元；总纲/设定/人物/正文不变。</p>
           </template>
           <template v-else>
-            <details v-if="c.planMarkdown?.book_outline" open><summary>总纲</summary><pre class="candidate-prose">{{ c.planMarkdown.book_outline }}</pre></details>
+            <details v-if="c.planMarkdown?.book_outline" open><summary>总纲</summary><StructuredOutline v-if="candidateStructure(c, 'book') && !candidateStructure(c, 'book')!.legacy" :document="candidateStructure(c, 'book')!" compact read-only /><pre v-else class="candidate-prose">{{ c.planMarkdown.book_outline }}</pre></details>
             <details v-if="c.planSettings && Object.keys(c.planSettings).length"><summary>设定 · {{ Object.keys(c.planSettings).length }} 项</summary>
               <ul class="plan-files"><li v-for="p in Object.keys(c.planSettings)" :key="p">{{ p }}</li></ul>
             </details>

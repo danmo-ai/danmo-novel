@@ -15,20 +15,105 @@ func sampleSettings() map[string]string {
 		out[p] = "# " + p + "\ncontent\n"
 	}
 	out["canon/locked-terms.yaml"] = "locked_until: {}\ncompliance: []\naliases: {}\n"
+	out["canon/reveal-schedule.md"] = "# 揭示计划\n- schema_version: 1\n\n## 揭示 · R1\n- public_summary: 可公开信息\n- earliest_volume: v01\n- hint_unit_ids: v01-U1\n- confirm_unit_id: v01-U2\n- status: locked\n- locked_terms: 无\n\n## 揭示 · R2\n- public_summary: 暂缓公开信息\n- earliest_volume: v02\n- hint_unit_ids: v02-U1\n- confirm_unit_id: v02-U2\n- status: locked\n- locked_terms: 无\n"
 	return out
 }
 
+func sampleBookOutline() string {
+	return `# 全书总纲 · 测试
+- schema_version: 1
+- book_id: test
+- title: 测试
+- logline: 主角在困境中选择行动
+
+## 故事线 · main
+- kind: main
+- description: 主线
+- opening_state: 未开始
+- ending_state: 已完成
+
+## 分卷 · v01
+- arc_id: arc-v01
+- title: 第一卷
+- chapter_range: 1-6
+- purpose: 建立目标
+- dramatic_question: 能否完成目标
+- central_conflict: 目标与阻碍
+- stakes: 失败代价
+- entry_state: 未开始
+- exit_state: 已完成
+- thread_moves: main=未开始->已完成
+- deliverables: 完成第一次行动
+- open_questions: 下一步是什么
+- reveal_ids: R1
+- forbidden_reveal_ids: R2
+- next_volume_entry: 继续行动
+
+### 转折 · event-1
+- event: 主角采取行动
+- cause: 目标受到阻碍
+- effect: 获得新的位置
+- chapter_window: 1-6
+`
+}
+
 func sampleVolumeOutline() string {
-	return `# 第一卷
+	return `# 卷纲 · v01
+- schema_version: 1
+- volume_id: v01
+- title: 第一卷
+- source_arc_id: arc-v01
+- chapter_range: 1-6
+- goal: 能否完成目标
+- central_conflict: 目标与阻碍
+- stakes: 失败代价
+- entry_state: 未开始
+- exit_state: 已完成
+- cast: lin
 
-## 本卷人物
-- lin
+## 节拍 · event-1
+- event: 主角采取行动
+- cause: 目标受到阻碍
+- effect: 获得新的位置
+- chapter_window: 1-6
 
-## 单元索引
-| unit_id | 章范围 | 一句话功能 | 终局边界 | 下一钩类型 |
-|---|---|---|---|---|
-| v01-U1 | 1-3 | 旧邮袋 | 不揭真相 | 危机 |
-| v01-U2 | 4-6 | 旧识试探 | 不合作 | 身份 |
+## 单元 · v01-U1
+- title: 旧邮袋
+- chapter_range: 1-3
+- objective: 获得行动资格
+- obstacle: 尚未获得许可
+- attempt: 查找旧材料
+- setback: 材料不足
+- choice: 按程序申请复核
+- cost: 承担复核责任
+- outcome: 获得三天复核许可
+- entry_cause: 开卷目标受阻
+- exit_result: 获得许可
+- state_changes: lin.role=新人->复核人
+- thread_ids: main
+- event_ids: event-1
+- reveal_ids: R1
+- forbidden_reveal_ids: R2
+- next_hook: 信息缺口 | 签名不一致
+
+## 单元 · v01-U2
+- title: 旧识试探
+- chapter_range: 4-6
+- objective: 核实材料来源
+- obstacle: 旧识拒绝合作
+- attempt: 比对旧记录
+- setback: 记录相互矛盾
+- choice: 承担压力继续核查
+- cost: 暴露调查方向
+- outcome: 固定第一份实证
+- entry_cause: v01-U1.next_hook
+- exit_result: 获得实证
+- state_changes: lin.evidence=疑点->实证
+- thread_ids: main
+- event_ids: event-1
+- reveal_ids: R1
+- forbidden_reveal_ids: R2
+- next_hook: 信息缺口 | 实证指向旧识
 `
 }
 
@@ -40,7 +125,7 @@ func TestAcceptPlanInitWritesSettingsAndCastOnly(t *testing.T) {
 	cand := domain.Candidate{
 		Mode: domain.PlanModeInit,
 		PlanMarkdown: map[string]string{
-			"book_outline": "# 总纲\n",
+			"book_outline": sampleBookOutline(),
 			"cast_json":    `[{"stem":"lin","name":"林晚","role":"protagonist","tagline":"痕迹检验","cardMarkdown":"# 林晚\n"}]`,
 		},
 		PlanSettings: sampleSettings(),
@@ -114,7 +199,7 @@ func TestAcceptPlanReinitPreservesVolumeUnitsProse(t *testing.T) {
 	cand := domain.Candidate{
 		Mode: domain.PlanModeReinit,
 		PlanMarkdown: map[string]string{
-			"book_outline": "# 新总纲\n",
+			"book_outline": sampleBookOutline(),
 			"cast_json":    `[{"stem":"lin","name":"林晚","role":"protagonist","cardMarkdown":"# 林晚\n"}]`,
 		},
 		PlanSettings: sampleSettings(),
@@ -170,7 +255,7 @@ func TestAcceptPlanReinitPreservePathsKeepsFiles(t *testing.T) {
 		Mode:          domain.PlanModeReinit,
 		PreservePaths: []string{"canon/cast/lin.md", "canon/world.md"},
 		PlanMarkdown: map[string]string{
-			"book_outline": "# 新总纲\n",
+			"book_outline": sampleBookOutline(),
 			"cast_json":    `[{"stem":"lin","name":"林晚","role":"protagonist","cardMarkdown":"# 林晚 覆盖版\n"}]`,
 		},
 		PlanSettings: sampleSettings(),
@@ -187,7 +272,7 @@ func TestAcceptPlanReinitPreservePathsKeepsFiles(t *testing.T) {
 		t.Fatalf("preserved world overwritten: %s", world)
 	}
 	book, _ := os.ReadFile(filepath.Join(root, "outline", "book_outline.md"))
-	if !strings.Contains(string(book), "新总纲") {
+	if !strings.Contains(string(book), "全书总纲") {
 		t.Fatalf("book outline should be replaced: %s", book)
 	}
 }
@@ -197,7 +282,7 @@ func TestAcceptPlanVolumeDoesNotWriteSettingsCastOrBook(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(root, "outline", "book_outline.md"), []byte("# 既有总纲\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "outline", "book_outline.md"), []byte(sampleBookOutline()), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	before, err := os.ReadFile(filepath.Join(root, "book-bible.md"))

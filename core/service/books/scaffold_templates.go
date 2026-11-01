@@ -143,13 +143,17 @@ aliases: {}
 - 开篇承诺：
 - 内容红线：
 `,
-		"canon/reveal-schedule.md": `# Reveal schedule
+		"canon/reveal-schedule.md": `# 揭示计划
+- schema_version: 1
 
-只登记揭示节奏，不写作者真相细节。真相在 canon/author-lore.md。
-
-| 信息 / FS-id | 现象层可先写 | 最早确认卷 | 当前状态 |
-|--------------|--------------|------------|----------|
-| | | v | locked |
+# 只登记公开信息释放节奏，不写作者真相细节；真相在 canon/author-lore.md。
+# 示例：## 揭示 · R-SECRET
+# - public_summary: 可公开的信息概述
+# - earliest_volume: v01
+# - hint_unit_ids: v01-U1
+# - confirm_unit_id: v01-U2
+# - status: locked
+# - locked_terms: 暂不可公开的关键词
 `,
 		"continuity/state.yaml": `# 连续性状态账本（机器可读，按单元段）
 # 每个已定稿单元追加一段；读取时取目标单元之前最近的一段。
