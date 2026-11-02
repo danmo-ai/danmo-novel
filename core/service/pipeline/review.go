@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -22,6 +23,18 @@ type ReviewOptions struct {
 	SplitByChapter bool
 	// Concurrency bounds how many chapter calls run in parallel (default 3).
 	Concurrency int
+	// Rounds is how many independent review passes each chapter gets (default 3).
+	//
+	// 单轮覆盖约 31%，是抽样不确定性而不是审校深度：同一份正文跑 4 轮，并集
+	// 128 处里 0 处被四轮全中。多轮取并集是唯一能提覆盖率的办法。轮内串行以
+	// 复用前缀缓存，跨章仍并行。
+	Rounds int
+	// ScopedChapters 限定「复审只看改动区间」：章号 → 改动句（含前后各一句）。
+	//
+	// 非空时，落在这些句子之外的 finding 会被标成 OutOfScope：仍然如实保留
+	// 给作者看，但不参与阻断判定。实测整章重审时 96%+ 的"新问题"落在这次没
+	// 改过的原文上，它们是旧欠账而不是修复引入的回归——不区分就会永远关不掉。
+	ScopedChapters map[int][]string
 }
 
 type reviewOutcome struct {
@@ -68,7 +81,16 @@ func (r *Runner) RunReviewByChapter(ctx context.Context, snap domain.BookSnapsho
 				prevTail = tailOf(chapters[idx-1].Body, 800)
 			}
 			packet := contextsvc.BuildChapterReviewPacket(snap, unit, ch, prevTail, baseline, r.modelMaxOut(modelID))
-			fs, calls, err := r.reviewChapter(ctx, modelID, packet, ch.Chapter)
+			// 复审时把「改动区间」告诉模型：它据此知道这次该看什么，但即使它
+			// 报了范围外的问题，我们也不会丢——后面的 markOutOfScope 会标出来。
+			if scoped, ok := opts.ScopedChapters[ch.Chapter]; ok && len(scoped) > 0 {
+				packet.UserPrompt = contextsvc.MergeExtraIntoUserPayload(packet.UserPrompt, map[string]any{
+					"revisionChangedSentences": scoped,
+					"revisionScopeRule":        "本单元刚做过一次修订，只改了上面这些句子（含前后各一句）。优先判断这些位置是否被改坏；发现其它位置的问题也可以报，但会归入历史欠账。",
+				})
+				packet.EstPromptTokens = (len([]rune(packet.SystemPrompt)) + len([]rune(packet.UserPrompt))) / 2
+			}
+			fs, calls, err := r.reviewChapter(ctx, modelID, packet, ch.Chapter, opts.Rounds, ch.Body)
 			results[idx].findings = fs
 			results[idx].calls = calls
 			results[idx].err = err
@@ -98,14 +120,24 @@ func (r *Runner) RunReviewByChapter(ctx context.Context, snap domain.BookSnapsho
 		}
 		cand.Findings = append(cand.Findings, out.findings...)
 	}
+	// 复审时把改动区间之外的发现标成 outOfScope：保留给作者看，但不阻断通过。
+	// 不标记就会把「上几轮没扫到的旧问题」当成这次修复引入的回归，清单永不收敛。
+	if len(opts.ScopedChapters) > 0 {
+		cand.Findings = markOutOfScope(cand.Findings, opts.ScopedChapters)
+	}
 	sort.SliceStable(allCalls, func(i, j int) bool { return allCalls[i].Index < allCalls[j].Index })
 
 	res := Result{Candidate: cand, Calls: allCalls, LocalGate: local}
 	// 让 run.Policy / ContextSummary 有真实值，否则 UI 显示"调用预算 0 次"。
 	res.Packet = contextsvc.BuildChapterReviewPacket(snap, unit, chapters[0], baseline.PrevTail, baseline, r.modelMaxOut(modelID))
-	// 分章预算是"每章最多 2 次"（生成 + 一次结构修复），不是单章的 2 次总和；
-	// 按章数记会让 UI 出现 6/2、7/3 这种越界数字。
-	res.Packet.Policy.MaxCalls = len(chapters) * 2
+	// 预算是"每章 × 每轮最多 2 次"（一次审校 + 一次结构修复），不是单章的总和；
+	// 按章数记会让 UI 出现 6/2、7/3 这种越界数字。多轮时也必须乘上去，否则
+	// 3 轮跑完的调用数会显示成严重越界。
+	rounds := opts.Rounds
+	if rounds < 1 {
+		rounds = 1
+	}
+	res.Packet.Policy.MaxCalls = len(chapters) * rounds * 2
 
 	if len(failed) > 0 {
 		cand.Findings = append(cand.Findings, domain.ReviewFinding{
@@ -123,9 +155,60 @@ func (r *Runner) RunReviewByChapter(ctx context.Context, snap domain.BookSnapsho
 	return res, nil
 }
 
-// reviewChapter reviews a single chapter, returning its findings and the real
-// call records (token usage, latency) so the run keeps accurate accounting.
-func (r *Runner) reviewChapter(ctx context.Context, modelID string, packet domain.ContextPacket, chapter int) ([]domain.ReviewFinding, []domain.CallRecord, error) {
+// reviewChapter reviews a single chapter across Rounds independent rounds and
+// returns the union of their findings.
+//
+// 多轮是必须的，不是保险：实测同一份正文跑 4 轮，并集 128 处里单轮平均只看到
+// 25.4%，0 处被四轮全部抓到；3 轮并集能到约 75%。这不是审校深度问题，而是
+// 每轮注意力落点不同（temperature=0 也固定不住）。
+//
+// 串行而不是并行：每轮拿到的是同一份 blocks + 同一个 system，只有 instruction
+// 里的轮次说明不同，所以第 2 轮起几乎全部命中前缀缓存。并行会让每轮都冷启动，
+// 成本从 +35% 变成 +97%。
+func (r *Runner) reviewChapter(ctx context.Context, modelID string, packet domain.ContextPacket, chapter int, rounds int, body string) ([]domain.ReviewFinding, []domain.CallRecord, error) {
+	if rounds < 1 {
+		rounds = 1
+	}
+	var perRound [][]domain.ReviewFinding
+	var calls []domain.CallRecord
+	var lastErr error
+
+	for round := 1; round <= rounds; round++ {
+		// 单轮的包复制一份改 instruction：除这一句外与审校基准包逐字相同，
+		// 缓存前缀因此仍然有效。
+		p := packet
+		if rounds > 1 {
+			p.UserPrompt = withRoundInstruction(packet.UserPrompt, round, rounds)
+			p.EstPromptTokens = (len([]rune(p.SystemPrompt)) + len([]rune(p.UserPrompt))) / 2
+		}
+		fs, cs, err := r.reviewChapterOnce(ctx, modelID, p, chapter, round, rounds)
+		calls = append(calls, cs...)
+		if err != nil {
+			lastErr = err
+			// 某轮失败不放弃其余轮：并集的目的是覆盖率，少一轮仍比整章丢失好。
+			// 但如果一轮都没成功，调用方必须知道这次审校没有产出结论。
+			continue
+		}
+		perRound = append(perRound, fs)
+	}
+
+	if len(perRound) == 0 {
+		if lastErr != nil {
+			return nil, calls, lastErr
+		}
+		return nil, calls, fmt.Errorf("审校未产出任何结论")
+	}
+	if lastErr != nil {
+		// 部分轮次失败：结论仍然可用，但要让下游知道这份清单不完整，
+		// 否则"少跑一轮"会被读成"这一章没问题"。
+		merged := rankFindings(unionFindings(perRound, body))
+		return append(merged, incompleteRoundFinding(chapter, rounds, len(perRound))), calls, nil
+	}
+	return rankFindings(unionFindings(perRound, body)), calls, nil
+}
+
+// reviewChapterOnce runs one review round through runJSON.
+func (r *Runner) reviewChapterOnce(ctx context.Context, modelID string, packet domain.ContextPacket, chapter, round, rounds int) ([]domain.ReviewFinding, []domain.CallRecord, error) {
 	var findings []domain.ReviewFinding
 	// 抢救路径能解析出"半份结论"，但那不是结论：第一次截断必须交给 runJSON
 	// 用「更紧凑输出」重试，第二次仍截断才收下，并保留 budget advisory 让下游
@@ -149,9 +232,45 @@ func (r *Runner) reviewChapter(ctx context.Context, modelID string, packet domai
 			return gates.Report{OK: true, Counts: map[string]int{}}
 		})
 	for i := range res.Calls {
-		res.Calls[i].Step = fmt.Sprintf("chapter-%d", chapter)
+		step := fmt.Sprintf("chapter-%d", chapter)
+		if rounds > 1 {
+			// 多轮时按轮次打标，否则三次调用的成本无从归属。
+			step = fmt.Sprintf("chapter-%d-r%d", chapter, round)
+		}
+		res.Calls[i].Step = step
 	}
 	return findings, res.Calls, err
+}
+
+// withRoundInstruction appends the round marker to the payload's instruction.
+//
+// 只动 instruction 这一个字段（它排在 documents 之后），所以前几轮的字节前缀
+// 不变，缓存照常命中。同时明确告诉模型"这是第几轮"，避免它以为在重试同一个
+// 失败的输出而收敛到上一次的结论。
+func withRoundInstruction(userPrompt string, round, rounds int) string {
+	p, err := contextsvc.DecodeUserPayload(userPrompt)
+	if err != nil {
+		return userPrompt
+	}
+	note := fmt.Sprintf("\n\n这是本章独立审校的第 %d/%d 轮：请按你自己的判断从头审一遍。", round, rounds)
+	if !strings.Contains(p.Instruction, note) {
+		p.Instruction += note
+	}
+	return contextsvc.EncodeUserPayload(p)
+}
+
+// incompleteRoundFinding marks a review whose rounds did not all succeed.
+//
+// 必须把它当成"审校不完整"而不是"没有更多问题"：少跑的那一轮里可能有硬伤，
+// 沉默不是证据。
+func incompleteRoundFinding(chapter, rounds, ok int) domain.ReviewFinding {
+	return domain.ReviewFinding{
+		ID: domain.FindingReviewIncomplete, Severity: severityAdvisory, Source: "local_gate", Lens: "coverage",
+		Chapter:    chapter,
+		Title:      fmt.Sprintf("第 %d 章有 %d/%d 轮审校失败", chapter, rounds-ok, rounds),
+		Evidence:   fmt.Sprintf("只合并了 %d 轮的结论，缺的那几轮可能还有问题。", ok),
+		Suggestion: "重跑本章审校，或检查是否个别轮次撞到输出上限。",
+	}
 }
 
 // hasTruncationFinding reports whether the salvaged conclusions carry the

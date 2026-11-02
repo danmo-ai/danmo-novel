@@ -29,6 +29,14 @@ type openaiCompatibleUsage struct {
 	InputTokensDetails struct {
 		CachedTokens int `json:"cached_tokens"`
 	} `json:"input_tokens_details"`
+	// CompletionTokensDetails carries the思考 portion on Chat Completions;
+	// Responses reports the same number under output_tokens_details.
+	CompletionTokensDetails struct {
+		ReasoningTokens int `json:"reasoning_tokens"`
+	} `json:"completion_tokens_details"`
+	OutputTokensDetails struct {
+		ReasoningTokens int `json:"reasoning_tokens"`
+	} `json:"output_tokens_details"`
 }
 
 func (u openaiCompatibleUsage) toLLMUsage() *port.LLMUsage {
@@ -43,6 +51,7 @@ func (u openaiCompatibleUsage) toLLMUsage() *port.LLMUsage {
 	out := &port.LLMUsage{
 		PromptTokens:        prompt,
 		CompletionTokens:    completion,
+		ReasoningTokens:     firstPositive(u.CompletionTokensDetails.ReasoningTokens, u.OutputTokensDetails.ReasoningTokens),
 		TotalTokens:         u.TotalTokens,
 		CacheReadTokens:     u.cacheRead(),
 		CacheCreationTokens: u.cacheCreation(),

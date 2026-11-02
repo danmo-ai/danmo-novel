@@ -25,17 +25,24 @@ type UserRef struct {
 
 // UserPayload is the only content of the user message for controlled LLM calls.
 //
-// 字段顺序即序列化顺序，而 provider 的前缀缓存按字节比对 prompt 前缀。
-// Repair 必须留在最后：重试时前面全部字节不变，只有尾部这块是新的，
-// 于是前缀缓存能命中几乎整份上下文（正文/文档动辄数万 token）。把它插在
-// 中间（例如 Extra 之前）会让它后面的一切整体后移，缓存全部失效。
+// **字段顺序即序列化顺序，而 provider 的前缀缓存按字节比对 prompt 前缀。**
+// 这决定了整个结构必须满足两条硬约束：
+//
+//  1. 所有「这一章都一样」的东西排在前面：mode/book/documents/references。
+//     审校与修订拿到的是同一份正文与同一批上下文块，这一段逐字相同。
+//  2. 所有「每任务/每次尝试才不同」的东西排在后面：task/instruction/extra/repair。
+//     它们一旦插在中间，后面的一切整体后移，缓存全部失效。
+//
+// 曾经 task 与 instruction 排在最前面（第 3、4 个字段），而它们恰恰是审校
+// （"review"）与修订（"revise_patch"）第一个就不同的地方——于是 13819 字的
+// 共享正文一个 token 都没命中。Repair 同理必须留在最后（见 MergeRepairIntoUserPayload）。
 type UserPayload struct {
-	Task        string         `json:"task"`
 	Mode        string         `json:"mode,omitempty"`
 	Book        map[string]any `json:"book"`
-	Instruction string         `json:"instruction,omitempty"`
 	Documents   []UserDoc      `json:"documents,omitempty"`
 	References  []UserRef      `json:"references,omitempty"`
+	Task        string         `json:"task"`
+	Instruction string         `json:"instruction,omitempty"`
 	Extra       map[string]any `json:"extra,omitempty"`
 	Repair      map[string]any `json:"repair,omitempty"`
 }

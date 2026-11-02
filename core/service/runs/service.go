@@ -227,6 +227,8 @@ func (s *Service) execute(ctx context.Context, run domain.Run, snap domain.BookS
 			res, err = runner.RunReviewByChapter(ctx, snap, unit, modelID, pipeline.ReviewOptions{
 				SplitByChapter: true,
 				Concurrency:    s.Settings.Get().Review.Concurrency,
+				Rounds:         s.Settings.Get().Review.Rounds,
+				ScopedChapters: run.Spec.ScopedChapters,
 			})
 		} else {
 			res, err = runner.RunReview(ctx, snap, unit, modelID)
@@ -727,8 +729,16 @@ func (s *Service) Accept(ctx context.Context, cmd domain.AcceptCommand) (domain.
 		_ = s.Store.SaveRun(ctx, run)
 	}
 
-	// 闭环一：接受修订候选后归档该单元已处理的审校清单，并自动分章复审一次。
-	// 先 SaveCandidate 再赋值，保证 FollowUpRunID 只出现在响应里，不写进 SQLite。
+	// FollowUpReview 是显式 opt-in，默认不触发：交付流程走「审校 → 勾选 → 一次修订
+	// → diff → 落盘」就结束了，落盘之后不再自动起审校。
+	//
+	// 曾经前端每次接受修订都会传 true，于是接受后必然再起一轮。实测（同一单元连续
+	// 6 轮）复审报出的"新问题"有 96%+ 落在这次根本没改过的原文上——它们是前几轮
+	// 注意力没扫到的旧账，不是修复引入的回归。自动复审只会让作者分不清"修好了"和
+	// "又发现一批旧的"，并把调用成本翻倍。想再查就手动点「重审」，那是一次显式的
+	// 新审校，作者自己知道自己在做什么。
+	//
+	// 保留这个分支：外部客户端（MCP 等）仍可显式请求一次范围受限的复审。
 	if cmd.FollowUpReview && cand.Kind == domain.TaskRevise {
 		cand.FollowUpRunID = s.startFollowUpReview(ctx, cand, root)
 	}
@@ -741,6 +751,15 @@ func (s *Service) Accept(ctx context.Context, cmd domain.AcceptCommand) (domain.
 // 唯一判定口径：spec 可以强制开启（审校页的「重审该单元」按章跑），作者在设置里
 // 开关决定其余情况。预览必须走同一个函数，否则确认弹窗会展示一份与实际调用
 // 不同的上下文和预算（曾经固定展示整单元那一份）。
+//
+// 刻意不做「按单元规模自动切换」。实测 3 章 / 8k 字单元、各 3 轮：
+//
+//	整单元  3 次调用  $0.0335  16 条 findings
+//	分章    9 次调用  $0.0452  27 条 findings
+//
+// 成本只差 1.35 倍，但两者检出的问题**一条都不重合**——换粒度约等于换一次采样，
+// 不是「覆盖 vs 不覆盖」。既然差异在召回而非成本，就该由作者按自己对这一单元的
+// 判断来选，而不是被一个规模阈值替他决定。
 func (s *Service) reviewSplit(spec domain.TaskSpec) bool {
 	if spec.SplitByChapter {
 		return true
@@ -864,10 +883,19 @@ func (s *Service) CloseUnitReview(ctx context.Context, bookID, unitID string, fo
 	return res, nil
 }
 
-// startFollowUpReview closes the manual review loop after a revision is accepted:
-// the handled findings are archived and one automatic split review is started so
-// the author sees what is still open instead of a stale list.
+// startFollowUpReview archives the handled review lists and starts one scoped
+// re-review of only what the revision actually changed.
+//
+// 只由 AcceptCommand.FollowUpReview 显式触发（默认 false）。产品默认流程在落盘
+// 就结束：实测同一单元连续 6 轮审校，复审报出的"新问题"有 96%+ 落在这次没改过
+// 的原文上，是前几轮没扫到的旧账而不是修复引入的回归。自动复审会让作者分不清
+// "修好了"和"又发现一批旧的"。这里保留能力给外部客户端显式请求。
 // 任何一步失败都只是跳过：接受本身已经成功，不能让复审把已写盘的修订退回。
+//
+// 为什么要限定范围：实测（mindvoice-cop / v01-U2，连续 6 轮）复审报出的
+// "新问题"有 96%+ 落在这次没改过的原文上——它们是上几轮注意力没扫到的旧问题，
+// 不是修复引入的。整单元重审会把它们当成新结论不停报，清单于是永远收敛不了。
+// 只审改动区间，改动之外发现的仍保留（标 outOfScope，进「历史欠账」）。
 func (s *Service) startFollowUpReview(ctx context.Context, revised domain.Candidate, root string) string {
 	// 1. 归档该单元所有 open 的审校清单：这一轮已处理。
 	// 必须走 Accept 而不是直接改状态：Accept 会顺带把对应 run 收尾，
@@ -886,7 +914,7 @@ func (s *Service) startFollowUpReview(ctx context.Context, revised domain.Candid
 		_, _ = s.Accept(ctx, domain.AcceptCommand{CandidateID: c.ID})
 	}
 
-	// 2. 正文已变，用新 revision 起一次分章复审。
+	// 2. 正文已变，用新 revision 起一次分章复审，范围限定在改动区间。
 	snap, err := books.LoadBook(root, false)
 	if err != nil {
 		return ""
@@ -894,6 +922,7 @@ func (s *Service) startFollowUpReview(ctx context.Context, revised domain.Candid
 	run, err := s.Start(ctx, domain.TaskSpec{
 		Kind: domain.TaskReview, BookID: revised.BookID, UnitID: revised.UnitID,
 		BaseRevision: snap.Revision, SplitByChapter: true,
+		ScopedChapters: ChangedSpans(revised.BaseChapters, revised.Chapters),
 	})
 	if err != nil {
 		return "" // 已有复审在跑：不覆盖，也不影响本次接受

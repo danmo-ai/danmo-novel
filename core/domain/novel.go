@@ -121,6 +121,13 @@ type TaskSpec struct {
 	// 让新审校能启动。重审就是用新结论替换旧结论，不放行就只能靠作者先手动处置，
 	// 而审校清单的"处置"按钮（通过/强制通过）在旧方案里根本不存在——所以会打死结。
 	SupersedeReview bool `json:"supersedeReview,omitempty"`
+	// ScopedChapters 限定审校只覆盖指定章节（章号 → 改动句子）。
+	//
+	// 只用于「修订后复审」：实测 96%+ 的复审"新问题"落在这次根本没改过的原文上，
+	// 它们不是修复引入的，而是上几轮没看见的旧问题。整单元重审会把它们当成
+	// 新结论不停报出来，清单永远关不掉。限定到改动区间后，落在区间外的发现
+	// 仍会被保留，但标成 outOfScope，不参与阻断判定。
+	ScopedChapters map[int][]string `json:"scopedChapters,omitempty"`
 }
 
 type TextSelection struct {
@@ -226,17 +233,34 @@ type UnitOutlineDraft struct {
 }
 
 type ReviewFinding struct {
-	ID         string `json:"id"`
-	Severity   string `json:"severity"` // blocking | advisory
-	Source     string `json:"source"`   // local_gate | ai_review
-	Lens       string `json:"lens,omitempty"`
-	Title      string `json:"title"`
-	Evidence   string `json:"evidence,omitempty"`
+	ID       string `json:"id"`
+	Severity string `json:"severity"` // blocking | advisory
+	Source   string `json:"source"`   // local_gate | ai_review
+	Lens     string `json:"lens,omitempty"`
+	Title    string `json:"title"`
+	Evidence string `json:"evidence,omitempty"`
+	// Anchor 是问题所在处的逐字原文（10–40 字），用于跨轮去重与定位。
+	//
+	// 与 Evidence 分工不同：Evidence 是给作者看的说明，允许转述；Anchor 必须
+	// 逐字可命中，否则无法把两轮指同一处的意见合并。实测单轮审校只覆盖约 31%
+	// 的问题，多轮取并集是唯一提覆盖率的办法，而去重的键就是这个字段。
+	// 它不参与严格校验：审校是诊断，定位失败只降级该条，不重试整轮。
+	Anchor string `json:"anchor,omitempty"`
+	// RoundsHit 是被多少轮审校独立检出的次数（1 = 只有一轮看到）。
+	//
+	// 实测同一份正文跑 4 轮，并集 128 处里只有 19% 被至少两轮抓到、0 处被四轮
+	// 全中。所以命中多次的条目更可能是可复现的硬伤，排序与「是否阻断通过」都
+	// 应该看这个数字，而不是看单轮判定的 severity。
+	RoundsHit  int    `json:"roundsHit,omitempty"`
 	Chapter    int    `json:"chapter,omitempty"`
 	Suggestion string `json:"suggestion,omitempty"`
 	EntityPath string `json:"entityPath,omitempty"`
 	VolumeID   string `json:"volumeId,omitempty"`
 	UnitID     string `json:"unitId,omitempty"`
+	// OutOfScope 标记「复审时发现的、但不在本次改动范围内」的问题。
+	// 它们在清单里如实保留，但不参与阻断判定——否则修完的问题会被上轮漏看
+	// 的旧问题永久拖住，清单永远关不掉。
+	OutOfScope bool `json:"outOfScope,omitempty"`
 }
 
 // 这两条 finding 不是"意见"，是"这一章根本没审完"的标记：输出被预算截断，
@@ -258,6 +282,15 @@ const (
 //
 // blocking 优先于 unfinished：已知的硬伤是可执行的，审校不完整只是一个缺口。
 // 两者都不是 clean，所以"0 条 blocking"不能单独作为放行条件。
+//
+// 单轮审校的判定不稳定，所以 blocking 还要看复现次数：同一章两次调用（同为
+// high effort）曾给出完全不同的 blocking，实测同一份正文跑 4 轮、并集 128 处
+// 里 0 处被四轮全部抓到。若单轮即可阻断，清单会永远关不掉——修完一条又冒出
+// 另一批同样"看起来是 blocking"的新条目。
+//
+// 因此 RoundsHit>=2（至少两轮独立检出的同一处）才阻断；单轮 blocking 记为
+// 待确认，仍留在清单里给作者看，但不卡流程。RoundsHit 为 0 表示这份清单不是
+// 多轮并集产的（比如旧数据或本地硬门），此时按原语义处理，保持兼容。
 func ReviewVerdict(findings []ReviewFinding) string {
 	unfinished := false
 	for _, f := range findings {
@@ -266,7 +299,14 @@ func ReviewVerdict(findings []ReviewFinding) string {
 			unfinished = true
 			continue
 		}
-		if f.Severity == "blocking" {
+		if f.Severity != "blocking" {
+			continue
+		}
+		// 复审范围内的旧问题不阻断：它们是上轮漏看的欠账，不是这次改动引入的。
+		if f.OutOfScope {
+			continue
+		}
+		if f.RoundsHit == 0 || f.RoundsHit >= 2 {
 			return ReviewBlocking
 		}
 	}
@@ -347,10 +387,14 @@ type CallRecord struct {
 	CacheCreationTokens int `json:"cacheCreationTokens,omitempty"`
 	// FinishReason 是 provider 报的停止原因；"length" 表示输出被预算截断。
 	// 记下来才能在日志里分辨"模型答歪了"和"我们给的预算不够"。
-	FinishReason string    `json:"finishReason,omitempty"`
-	DurationMs   int64     `json:"durationMs"`
-	Error        string    `json:"error,omitempty"`
-	StartedAt    time.Time `json:"startedAt"`
+	FinishReason string `json:"finishReason,omitempty"`
+	// ReasoningTokens 是 CompletionTokens 里属于思维链的部分（已包含在
+	// completionTokens 内，不额外相加）。审校这类"答案很短、思考很长"的调用，
+	// 不分开记就无法解释 completion 为什么上万。
+	ReasoningTokens int       `json:"reasoningTokens,omitempty"`
+	DurationMs      int64     `json:"durationMs"`
+	Error           string    `json:"error,omitempty"`
+	StartedAt       time.Time `json:"startedAt"`
 }
 
 type Run struct {

@@ -85,6 +85,19 @@ export interface ReviewFinding {
   lens?: string
   title: string
   evidence?: string
+  /** 问题所在处的逐字原文，用于跨轮去重与定位。 */
+  anchor?: string
+  /**
+   * 被多少轮独立审校检出（1 = 只有一轮看到）。
+   * 实测单轮只覆盖约 31% 的问题，所以命中多次的更可能是可复现的硬伤；
+   * 只有 roundsHit >= 2 的 blocking 才会阻断通过。
+   */
+  roundsHit?: number
+  /**
+   * 复审时发现的、但不在本次改动范围内的旧问题。
+   * 仍显示给作者，但归入「历史欠账」，不阻断。
+   */
+  outOfScope?: boolean
   chapter?: number
   suggestion?: string
   entityPath?: string
@@ -136,6 +149,11 @@ export interface CallRecord {
   step: string
   promptTokens: number
   completionTokens: number
+  /**
+   * completionTokens 里属于思维链的部分（已包含在内，不要重复相加）。
+   * 审校这类"答案很短、思考很长"的调用，靠这两个数才能真正看清成本。
+   */
+  reasoningTokens?: number
   /** 命中 provider 前缀缓存的 prompt token 数（重试的修复调用应接近全量）。 */
   cacheReadTokens?: number
   cacheCreationTokens?: number

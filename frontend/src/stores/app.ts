@@ -72,7 +72,8 @@ export const useAppStore = defineStore('app', () => {
       followUpReview: opts.followUpReview === true,
       forceRiskAccept: opts.forceRiskAccept === true,
     })
-    note(c.followUpRunId ? '已接受修订，正在自动复审' : '已接受候选')
+    // 默认不请求复审：接受修订就是交付终点。只有显式 opt-in 才会拿到 followUpRunId。
+    note(c.followUpRunId ? '已接受修订，已按要求复审' : '已接受候选')
     return c
   }
   /** 审校通过：归档该单元全部待处理清单，并按需直接起定稿。 */

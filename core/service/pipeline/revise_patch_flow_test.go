@@ -73,8 +73,14 @@ func TestReviseFallsBackToWholeChapterAfterTwoPatchFailures(t *testing.T) {
 	if fake.systems[0] != fake.systems[1] {
 		t.Fatal("patch and repair must share one system prompt")
 	}
-	if fake.systems[2] == fake.systems[1] {
-		t.Fatal("the fallback must switch to the whole-chapter contract")
+	// 兜底轮换的是 instruction 里的输出契约，不是 system——换 system 等于整份
+	// 正文重新计费，而兜底恰恰发生在已经失败两次之后，最不该再加一笔冷启动。
+	if fake.systems[2] != fake.systems[1] {
+		t.Fatal("the fallback must keep the same system prompt (prefix cache)")
+	}
+	// payload 是 JSON，契约里的引号会被转义，所以用不会被转义的中文片段判类型。
+	if !strings.Contains(fake.bodies[2], "修订后的完整正文") || strings.Contains(fake.bodies[1], "修订后的完整正文") {
+		t.Fatal("the fallback must switch the output contract to whole-chapter body")
 	}
 	if res.Candidate.Chapters[1].Body != "第2章修订后的正文" {
 		t.Fatalf("chapter 2 body=%q", res.Candidate.Chapters[1].Body)

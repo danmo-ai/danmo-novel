@@ -154,6 +154,7 @@ func NewRouter(app *App) *gin.Engine {
 			var body struct {
 				SplitByChapter bool `json:"splitByChapter"`
 				Concurrency    int  `json:"concurrency"`
+				Rounds         int  `json:"rounds"`
 			}
 			if err := c.BindJSON(&body); err != nil {
 				c.JSON(400, gin.H{"error": err.Error()})
@@ -163,6 +164,11 @@ func NewRouter(app *App) *gin.Engine {
 				s.Review.SplitByChapter = body.SplitByChapter
 				if body.Concurrency > 0 {
 					s.Review.Concurrency = body.Concurrency
+				}
+				// 轮数是覆盖率与成本的唯一旋钮：1 轮退回旧行为，3 轮是默认。
+				// 夹到 1..5，避免 0（等于不审）或离谱值把一次审校变成几十次调用。
+				if body.Rounds > 0 {
+					s.Review.Rounds = clampInt(body.Rounds, 1, 5)
 				}
 			})
 			c.JSON(200, app.Settings.Get())
@@ -949,4 +955,15 @@ func nonNil(in []string) []string {
 		return []string{}
 	}
 	return in
+}
+
+// clampInt bounds a user-supplied numeric setting.
+func clampInt(v, lo, hi int) int {
+	if v < lo {
+		return lo
+	}
+	if v > hi {
+		return hi
+	}
+	return v
 }

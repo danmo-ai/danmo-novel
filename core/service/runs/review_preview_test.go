@@ -147,7 +147,8 @@ func TestReviewSwitchDecidesCallCount(t *testing.T) {
 	unitID := snap.Units[0].UnitID
 	pass := `{"verdict":"pass","findings":[]}`
 
-	// 整单元：一次调用就够。
+	// 整单元：一次调用就够。轮数固定 1，单独测"分章 vs 整单元"这一个变量。
+	_ = settings.Update(func(s *config.Settings) { s.Review.Rounds = 1 })
 	mock := llm.NewMock().AddText(pass)
 	svc := New(db, settings, mock)
 	_ = settings.Update(func(s *config.Settings) { s.Review.SplitByChapter = false })
@@ -183,6 +184,76 @@ func TestReviewSwitchDecidesCallCount(t *testing.T) {
 		t.Fatal("split review did not finish")
 	}
 	if len(mock2.Requests) != 3 {
-		t.Fatalf("split review calls=%d, want 3 (one per chapter)", len(mock2.Requests))
+		t.Fatalf("split review calls=%d, want 3 (one per chapter at rounds=1)", len(mock2.Requests))
+	}
+}
+
+// 轮数必须真的乘上调用数：这是提高覆盖率的代价，也是预算申报的依据。
+//
+// 单轮覆盖率约 31%，是抽样不确定性（同一正文跑 4 轮、并集 128 处、0 处被四轮
+// 全中），所以默认 3 轮。测试固定 2 轮 × 3 章 = 6 次，确保轮数没被忽略。
+func TestReviewRoundsMultiplyCalls(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("NOVEL_HOME", home)
+	settings, err := config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = settings.Update(func(s *config.Settings) {
+		s.ModelAssignments = []domain.ModelAssignment{{Role: domain.StageReview, ModelID: "mock/mock-gpt-4"}}
+	})
+	db, err := sqlite.Open(filepath.Join(home, "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+	root := filepath.Join(home, "book")
+	src, _ := filepath.Abs(filepath.Join("..", "..", "..", "tests", "fixtures", "books", "sample-xuanhuan"))
+	copyBookDir(t, src, root)
+	prose := "## 第1章 夜\n\n正文一\n\n## 第2章 门\n\n正文二\n\n## 第3章 影\n\n正文三"
+	if err := os.MkdirAll(filepath.Join(root, "units"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "units", "v01-U1.md"), []byte(prose), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	snap, err := books.LoadBook(root, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.UpsertBook(ctx, snap.Summary.ID, root, snap.Summary.Title, snap.Revision, false); err != nil {
+		t.Fatal(err)
+	}
+
+	_ = settings.Update(func(s *config.Settings) {
+		s.Review.SplitByChapter = true
+		s.Review.Rounds = 2
+	})
+	mock := llm.NewMock()
+	for i := 0; i < 6; i++ {
+		mock.AddText(`{"verdict":"pass","findings":[]}`)
+	}
+	svc := New(db, settings, mock)
+	run, err := svc.Start(ctx, domain.TaskSpec{
+		Kind: domain.TaskReview, BookID: snap.Summary.ID, UnitID: snap.Units[0].UnitID, BaseRevision: snap.Revision,
+	})
+	if err != nil {
+		t.Fatalf("start review: %v", err)
+	}
+	if !waitRunSettled(t, db, run.ID, 10*time.Second) {
+		t.Fatal("review did not finish")
+	}
+	if len(mock.Requests) != 6 {
+		t.Fatalf("calls=%d, want 6 (3 chapters × 2 rounds)", len(mock.Requests))
+	}
+	// 预算按「章数 × 轮数 × 2（审校 + 一次结构修复）」申报，否则 UI 会显示越界。
+	got, err := db.GetRun(ctx, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Policy.MaxCalls != 3*2*2 {
+		t.Fatalf("maxCalls=%d, want 12 (3 chapters × 2 rounds × 2)", got.Policy.MaxCalls)
 	}
 }

@@ -13,7 +13,16 @@ export function isUnfinishedFinding(f: ReviewFinding) {
   return UNFINISHED_IDS.has(f.id)
 }
 
-/** blocking 优先于 unfinished：已知硬伤可执行，审校不完整只是缺口。 */
+/**
+ * blocking 优先于 unfinished：已知硬伤可执行，审校不完整只是缺口。
+ *
+ * 判据必须与后端 domain.ReviewVerdict 完全一致，否则 UI 说"可通过"、服务端
+ * 却拒绝通过，作者会卡在没有解释的报错上：
+ *  - 复审范围内标记的历史欠账（outOfScope）不算阻断；
+ *  - 单轮检出的 blocking 不算阻断（同一章两次调用给出的 blocking 完全不同，
+ *    单轮即可阻断会让清单永远关不掉），要 2 轮以上；
+ *  - roundsHit 缺省（旧数据、本地硬门）按原语义阻断，避免历史清单突然放行。
+ */
 export function reviewVerdict(findings: ReviewFinding[] = []): ReviewVerdict {
   let unfinished = false
   for (const f of findings) {
@@ -21,7 +30,8 @@ export function reviewVerdict(findings: ReviewFinding[] = []): ReviewVerdict {
       unfinished = true
       continue
     }
-    if (f.severity === 'blocking') return 'blocking'
+    if (f.severity !== 'blocking' || f.outOfScope) continue
+    if (!f.roundsHit || f.roundsHit >= 2) return 'blocking'
   }
   return unfinished ? 'unfinished' : 'clean'
 }

@@ -467,6 +467,120 @@ func TestAcceptReviseArchivesFindingsAndStartsFollowUpReview(t *testing.T) {
 	}
 }
 
+// 默认（前端不传 followUpReview）接受修订就是交付终点：落盘、归档，不再起审校。
+//
+// 实测同一单元连续 6 轮审校，复审报出的"新问题"有 96%+ 落在这次没改过的原文上，
+// 是前几轮没扫到的旧账。自动复审会让作者分不清"修好了"和"又发现一批旧的"，
+// 并把调用成本翻倍。想再查请手动点「重审」。
+func TestAcceptReviseStopsAtWritebackByDefault(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("NOVEL_HOME", home)
+	settings, err := config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = settings.Update(func(s *config.Settings) {
+		s.ModelAssignments = []domain.ModelAssignment{{Role: domain.StageReview, ModelID: "mock/mock-gpt-4"}}
+	})
+	db, err := sqlite.Open(filepath.Join(home, "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+	root := filepath.Join(home, "book")
+	src, _ := filepath.Abs(filepath.Join("..", "..", "..", "tests", "fixtures", "books", "sample-xuanhuan"))
+	copyBookDir(t, src, root)
+	snap, err := books.LoadBook(root, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unitID := snap.Units[0].UnitID
+	if err := db.UpsertBook(ctx, snap.Summary.ID, root, snap.Summary.Title, snap.Revision, false); err != nil {
+		t.Fatal(err)
+	}
+
+	reviewRun := domain.Run{
+		ID: "run-review-author", BookID: snap.Summary.ID, Kind: domain.TaskReview, Status: domain.RunWaiting,
+		Spec: domain.TaskSpec{Kind: domain.TaskReview, BookID: snap.Summary.ID, UnitID: unitID},
+	}
+	if err := db.SaveRun(ctx, reviewRun); err != nil {
+		t.Fatal(err)
+	}
+	review := domain.Candidate{
+		ID: "review-author", RunID: reviewRun.ID, BookID: snap.Summary.ID, Kind: domain.TaskReview,
+		Status: domain.CandidateOpen, BaseRevision: snap.Revision, UnitID: unitID,
+		Findings: []domain.ReviewFinding{{ID: "f1", Severity: "blocking", Chapter: 1, Title: "节奏太平"}},
+	}
+	revise := domain.Candidate{
+		ID: "revise-author", BookID: snap.Summary.ID, Kind: domain.TaskRevise, Status: domain.CandidateOpen,
+		BaseRevision: snap.Revision, UnitID: unitID,
+		BaseChapters: []domain.ChapterDraft{{Chapter: 1, Title: "一", Body: "原正文"}},
+		Chapters:     []domain.ChapterDraft{{Chapter: 1, Title: "一", Body: "修订后的正文"}},
+	}
+	for _, c := range []domain.Candidate{review, revise} {
+		if err := db.SaveCandidate(ctx, c); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	mock := llm.NewMock()
+	svc := New(db, settings, mock)
+	got, err := svc.Accept(ctx, domain.AcceptCommand{
+		CandidateID: "revise-author", BaseRevision: snap.Revision,
+		// 不传 FollowUpReview：这就是前端的默认行为。
+	})
+	if err != nil {
+		t.Fatalf("accept revise: %v", err)
+	}
+	if got.Status != domain.CandidateAccepted {
+		t.Fatalf("status=%s", got.Status)
+	}
+	if got.FollowUpRunID != "" {
+		t.Fatalf("no follow-up review must start by default, got run %s", got.FollowUpRunID)
+	}
+	// 一次 LLM 调用都不该发生。
+	if len(mock.Requests) != 0 {
+		t.Fatalf("accepting a revision must not call the model, got %d calls", len(mock.Requests))
+	}
+	// 旧清单必须保持打开，不能归档。
+	//
+	// 作者通常只勾选一部分问题来修（实测一次审校 30+ 条，勾 5 条很常见）。落盘后
+	// 剩下那些仍未修，清单若被归档成「已通过」，就是谎报已处理；留成 open 才能
+	// 继续勾选下一批，最后靠「通过 / 强制通过」显式收尾。
+	stillOpen, err := db.GetCandidate(ctx, "review-author")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stillOpen.Status != domain.CandidateOpen {
+		t.Fatalf("remaining review list status=%s want open (unfixed findings must stay actionable)",
+			stillOpen.Status)
+	}
+	// 正文落盘。
+	after, err := books.LoadBook(root, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(after.Units[0].ProseRaw, "修订后的正文") {
+		t.Fatal("revision was not written back")
+	}
+	// 没有**新增**审校 run：原来那条（产出了仍打开的清单）本来就该继续活跃。
+	runsAfter, err := db.ListRuns(ctx, snap.Summary.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var reviews int
+	for _, r := range runsAfter {
+		if r.Kind == domain.TaskReview {
+			reviews++
+		}
+	}
+	if reviews != 1 {
+		t.Fatalf("review runs=%d want 1 (the original list's run, no new one)", reviews)
+	}
+}
+
 // 审校结案是清单的第三个出口：只有"去修订/拒绝"时，一份 0 阻断的清单既不能
 // 归档也不能前进，单元会永远停在 drafted。
 func TestCloseUnitReviewRefusesBlockingThenForces(t *testing.T) {

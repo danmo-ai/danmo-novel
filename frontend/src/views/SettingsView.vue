@@ -281,6 +281,14 @@ async function saveAssignments() {
 // 否则同一个单元在不同入口下会得到不同粒度的 findings。
 const reviewSplit = ref(true)
 const reviewConcurrency = ref(3)
+/**
+ * 每章独立审校的轮数（1–5，默认 3），多轮结果取并集。
+ *
+ * 单轮覆盖率有硬上限：同一份正文跑 4 轮，并集 128 处里单轮平均只看到 25%，
+ * 3 轮能到约 75%。这是抽样不确定性（temperature=0 也固定不住），不是审校深度，
+ * 所以只能靠多轮补。代价几乎是线性的：多一轮就多一份思维链输出。
+ */
+const reviewRounds = ref(3)
 const reviewSaved = ref(false)
 async function loadReviewSettings() {
   try {
@@ -288,6 +296,7 @@ async function loadReviewSettings() {
     if (res?.review) {
       reviewSplit.value = Boolean(res.review.splitByChapter)
       reviewConcurrency.value = res.review.concurrency || 3
+      reviewRounds.value = res.review.rounds || 3
     }
   } catch { /* 读取失败保持默认 */ }
 }
@@ -296,10 +305,12 @@ async function saveReviewSettings() {
     const res = await api.put<any>('/api/settings/review', {
       splitByChapter: reviewSplit.value,
       concurrency: reviewConcurrency.value,
+      rounds: reviewRounds.value,
     })
     if (res?.review) {
       reviewSplit.value = Boolean(res.review.splitByChapter)
       reviewConcurrency.value = res.review.concurrency || 3
+      reviewRounds.value = res.review.rounds || 3
     }
     reviewSaved.value = true
     store.note('审校设置已保存；所有审校入口同时生效')
@@ -425,6 +436,24 @@ async function saveReviewSettings() {
           <p class="assign-hint">
             所有审校入口读取同一个开关：开启时按章并行、prompt 更小、不会被整单元结论挤爆输出预算；
             关闭时一次看完整单元，跨章连续性问题更容易被一起发现，但长单元可能截断。
+          </p>
+          <p class="assign-hint">
+            实测提醒：同样 3 轮下整单元更省（3 次调用 vs 章数×3 次），但两种粒度检出的问题几乎不重合
+            ——换粒度约等于换一次采样。省成本选整单元，想多捞一批问题选按章。
+          </p>
+        </div>
+        <div class="assign-block">
+          <div class="assign-row">
+            <span class="assign-label">审校轮数</span>
+            <div class="assign-controls">
+              <select :value="String(reviewRounds)" @change="reviewRounds = Number(($event.target as HTMLSelectElement).value)">
+                <option v-for="n in [1, 2, 3, 4, 5]" :key="n" :value="String(n)">{{ n }} 轮</option>
+              </select>
+            </div>
+          </div>
+          <p class="assign-hint">
+            每章独立审多少轮，结果取并集。单轮只能看到约 25% 的问题（抽样随机，temperature=0 也固定不住），
+            3 轮约 75%。轮数只增加「输出」成本（思维链），输入靠前缀缓存几乎不变。
           </p>
         </div>
         <div class="assign-block">

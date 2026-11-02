@@ -45,17 +45,17 @@ func TestStructuredCanonRetainsIdentityClockAndReveal(t *testing.T) {
 		t.Fatal("story clock guidance was dropped")
 	}
 	baseline := BuildReviewBaseline(snap, unit, nil, "")
-	revise := BuildReviseChapterPacket(snap, unit, domain.ChapterDraft{Chapter: 4, Body: "正文"}, nil, baseline, 0)
+	revise := BuildReviseChapterPacket(snap, unit, domain.ChapterDraft{Chapter: 4, Body: "正文"}, nil, "", baseline, 0)
 	if !strings.Contains(revise.UserPrompt, "重案队试用") || !strings.Contains(revise.UserPrompt, "旧刀来源") {
 		t.Fatal("revise lost identity or reveal constraints")
 	}
 }
 
-// 补丁包与兜底包必须看到完全一样的依据，只差输出契约。
+// 补丁包与兜底包必须看到完全一样的依据，只差 instruction 里的输出契约。
 //
 // 如果两者上下文不同，"补丁失败后兜底"写出来的正文会因为少了某块约束而与
-// 前一次不同，作者面对两个互斥结果无从判断；预算也必须按三段申报（补丁 →
-// 补丁修复 → 整章兜底），否则 UI 会出现 3/2 这种越界数字。
+// 前一次不同，作者面对两个互斥结果无从判断。system 也必须相同——换了 system
+// 就等于整份正文重新计费，而兜底恰恰发生在已经失败两次之后。
 func TestRevisePacketsDifferOnlyInOutputContract(t *testing.T) {
 	unit := domain.UnitInfo{
 		UnitID: "v02-U1", Volume: 2, ChapterFrom: 4, ChapterTo: 4,
@@ -70,8 +70,8 @@ func TestRevisePacketsDifferOnlyInOutputContract(t *testing.T) {
 	baseline := BuildReviewBaseline(snap, unit, nil, "")
 	ch := domain.ChapterDraft{Chapter: 4, Title: "门", Body: "第4章正文"}
 
-	patch := BuildReviseChapterPacket(snap, unit, ch, nil, baseline, 0)
-	fallback := BuildReviseChapterFallbackPacket(snap, unit, ch, nil, baseline, 0)
+	patch := BuildReviseChapterPacket(snap, unit, ch, nil, "", baseline, 0)
+	fallback := BuildReviseChapterFallbackPacket(snap, unit, ch, nil, "", baseline, 0)
 
 	if len(patch.Blocks) != len(fallback.Blocks) {
 		t.Fatalf("block count differs: patch=%d fallback=%d", len(patch.Blocks), len(fallback.Blocks))
@@ -82,17 +82,25 @@ func TestRevisePacketsDifferOnlyInOutputContract(t *testing.T) {
 				i, patch.Blocks[i].ID, fallback.Blocks[i].ID)
 		}
 	}
-	if patch.SystemPrompt == fallback.SystemPrompt {
-		t.Fatal("patch and fallback must use different output contracts")
+	// system 必须逐字相同：兜底轮换的只是 instruction 里的契约，不是整个提示词。
+	if patch.SystemPrompt != fallback.SystemPrompt {
+		t.Fatal("patch and fallback must share one system prompt (prefix cache)")
 	}
-	if !strings.Contains(patch.SystemPrompt, "edits") || !strings.Contains(patch.SystemPrompt, "find") {
+	if !strings.Contains(patch.UserPrompt, "edits") || !strings.Contains(patch.UserPrompt, "find") {
 		t.Fatal("patch contract must describe the edits/find format")
 	}
-	if !strings.Contains(patch.SystemPrompt, "这一章") && !strings.Contains(patch.SystemPrompt, "本章") {
+	if !strings.Contains(patch.UserPrompt, "本章内") {
 		t.Fatal("patch contract must state that uniqueness holds inside this chapter")
 	}
-	if !strings.Contains(fallback.SystemPrompt, "body") {
+	// payload 是 JSON，契约里的引号会被转义，所以用不会被转义的中文片段判类型。
+	if !strings.Contains(fallback.UserPrompt, "修订后的完整正文") {
 		t.Fatal("fallback contract must ask for the whole chapter body")
+	}
+	if strings.Contains(patch.UserPrompt, "修订后的完整正文") {
+		t.Fatal("patch contract must not ask for the whole chapter body")
+	}
+	if patch.UserPrompt == fallback.UserPrompt {
+		t.Fatal("patch and fallback must differ in their output contract")
 	}
 	// 每章 3 次：补丁、补丁修复、整章兜底。
 	for name, p := range map[string]domain.ContextPacket{"patch": patch, "fallback": fallback} {
@@ -104,6 +112,119 @@ func TestRevisePacketsDifferOnlyInOutputContract(t *testing.T) {
 	if !strings.Contains(patch.UserPrompt, "第4章正文") {
 		t.Fatal("patch packet lost the chapter body")
 	}
+}
+
+// 审校包与修订包的前缀必须逐字相同：这是勾选后那次修订复用缓存的前提。
+//
+// 缓存只认最长公共前缀，而 system 是 Messages[0]、blocks 紧随其后。两者任何
+// 一处不同（system 措辞、块顺序、块内容），后面数万字的共享正文就全部重新计费。
+func TestChapterReviewAndReviseShareTheSamePrefix(t *testing.T) {
+	unit := domain.UnitInfo{
+		UnitID: "v02-U1", Volume: 2, ChapterFrom: 4, ChapterTo: 4,
+		OutlinePath: "outline/units/v02-U1.yaml", ProsePath: "units/v02-U1.md",
+		OutlineRaw: "unit_id: v02-U1\ndesire: 立足\nobstacle: 质疑\nchoice: 复查\npayoff: 获得许可\non_stage: [lin]\npov: lin\nstory_day: 12\n",
+	}
+	snap := domain.BookSnapshot{
+		Summary: domain.BookSummary{ID: "b", Genre: "悬疑"},
+		Cast:    []domain.CastCard{{Stem: "lin", Name: "林晚", Raw: "# 林晚\n\n## 三锚点\n- 视觉：先看手\n"}},
+		Files:   map[string]string{"canon/writing-rules.md": "少用破折号"},
+	}
+	baseline := BuildReviewBaseline(snap, unit, nil, "")
+	ch := domain.ChapterDraft{Chapter: 4, Title: "门", Body: "第4章正文"}
+	prevTail := "上一章末尾的一段。"
+
+	review := BuildChapterReviewPacket(snap, unit, ch, prevTail, baseline, 0)
+	revise := BuildReviseChapterPacket(snap, unit, ch, nil, prevTail, baseline, 0)
+
+	if review.SystemPrompt != revise.SystemPrompt {
+		t.Fatal("review and revise must share one system prompt; otherwise the whole payload re-bills")
+	}
+	if len(review.Blocks) != len(revise.Blocks) {
+		t.Fatalf("block count differs: review=%d revise=%d", len(review.Blocks), len(revise.Blocks))
+	}
+	for i := range review.Blocks {
+		if review.Blocks[i].ID != revise.Blocks[i].ID || review.Blocks[i].Content != revise.Blocks[i].Content {
+			t.Fatalf("block %d differs (%q vs %q); prefix cache would miss",
+				i, review.Blocks[i].ID, revise.Blocks[i].ID)
+		}
+	}
+	// 正文必须是同一块且内容相同——它占 prompt 的绝大部分。
+	var reviewProse, reviseProse string
+	for _, b := range review.Blocks {
+		if b.ID == "prose" {
+			reviewProse = b.Content
+		}
+	}
+	for _, b := range revise.Blocks {
+		if b.ID == "prose" {
+			reviseProse = b.Content
+		}
+	}
+	if reviewProse == "" || reviewProse != reviseProse {
+		t.Fatalf("prose block must be identical: review=%q revise=%q", reviewProse, reviseProse)
+	}
+}
+
+// 同一单元相邻两章必须共享绝大部分请求字节。
+//
+// 这是前缀缓存在分章审校上的唯一意义：卡在一起的两章只有 unit-beats 与 prose
+// 不同，其余 9 个基线块（审校清单 2600 字、揭示约束 1100 字、在场人物 800 字…）
+// 完全相同。曾经 unit-beats 排第 2 块，于是相邻两章的公共前缀只有 19 字节
+// （0.1%），基线每章按全价重算。
+//
+// 这里用真实字节比对，而不是看块是否「存在」：缓存认的是序列化后的最长公共前缀。
+func TestAdjacentChapterPacketsShareMostOfTheirBytes(t *testing.T) {
+	unit := domain.UnitInfo{
+		UnitID: "v02-U1", Volume: 2, ChapterFrom: 4, ChapterTo: 5,
+		OutlinePath: "outline/units/v02-U1.yaml", ProsePath: "units/v02-U1.md",
+		OutlineRaw: "unit_id: v02-U1\ndesire: 立足\nobstacle: 质疑\nchoice: 复查\npayoff: 获得许可\non_stage: [lin]\npov: lin\nstory_day: 12\n",
+	}
+	snap := domain.BookSnapshot{
+		Summary: domain.BookSummary{ID: "b", Genre: "悬疑"},
+		Cast:    []domain.CastCard{{Stem: "lin", Name: "林晚", Raw: "# 林晚\n\n## 三锚点\n- 视觉：先看手\n"}},
+		Files: map[string]string{
+			"canon/writing-rules.md":      "少用破折号",
+			"canon/reveal-schedule.md":    "# 揭示\n- public: 旧刀来源\n",
+			"continuity/summaries/v02.md": "# 摘要\n| 章 | 事件 |\n|---|---|\n| 1 | 甲 |\n",
+		},
+	}
+	baseline := BuildReviewBaseline(snap, unit, nil, "")
+	ch4 := domain.ChapterDraft{Chapter: 4, Title: "门", Body: "第四章的正文内容，写得足够长以便占比明显。"}
+	ch5 := domain.ChapterDraft{Chapter: 5, Title: "影", Body: "第五章的正文内容，与第四章完全不同。"}
+
+	p4 := BuildChapterReviewPacket(snap, unit, ch4, baseline.PrevTail, baseline, 0)
+	p5 := BuildChapterReviewPacket(snap, unit, ch5, ch4.Body, baseline, 0)
+
+	// 章号不得出现在 payload 的最前面：book 是第一个字段，章号放进去会让
+	// 相邻两章从第 19 字节就分叉。
+	if a, b := []byte(p4.UserPrompt), []byte(p5.UserPrompt); commonPrefixLen(a, b) < 12 {
+		t.Fatalf("adjacent chapters diverge at byte %d; chapter number leaked into book",
+			commonPrefixLen(a, b))
+	}
+
+	a, b := []byte(p4.UserPrompt), []byte(p5.UserPrompt)
+	n := commonPrefixLen(a, b)
+	// 共享前缀至少要覆盖除「上一章末 + 场面节拍 + 正文」之外的所有基线。
+	if ratio := float64(n) / float64(len(a)); ratio < 0.35 {
+		t.Fatalf("shared prefix only %.1f%% of the payload (%d/%d bytes); baseline is re-billed per chapter",
+			ratio*100, n, len(a))
+	}
+	// 每章不同块必须排在最后。
+	if lastTwo := p4.Blocks[len(p4.Blocks)-2].ID + "," + p4.Blocks[len(p4.Blocks)-1].ID; lastTwo != "unit-beats,prose" {
+		t.Fatalf("per-chapter blocks must be last, got %q", lastTwo)
+	}
+}
+
+func commonPrefixLen(a, b []byte) int {
+	n := len(a)
+	if len(b) < n {
+		n = len(b)
+	}
+	i := 0
+	for i < n && a[i] == b[i] {
+		i++
+	}
+	return i
 }
 
 // 每章只带本章正文 + 上一章末；全局基线共享但不含整份卷摘要。

@@ -54,8 +54,15 @@ type ModelGenParams struct {
 }
 
 type LLMUsage struct {
-	PromptTokens        int
-	CompletionTokens    int
+	PromptTokens     int
+	CompletionTokens int
+	// ReasoningTokens is the思考 portion of CompletionTokens.
+	//
+	// 它已经包含在 CompletionTokens 里，provider 计费也按 completion 计。单独
+	// 记一份是因为两者的量级差得离谱：实测一次单章审校 completion=4997，
+	// findings JSON 只占约 530，其余 4460 全是思维链。不分开记，作者会以为
+	// "审校输出的问题清单很贵"，从而去压缩本来就已很小的 findings 规模。
+	ReasoningTokens     int
 	TotalTokens         int
 	CacheReadTokens     int
 	CacheCreationTokens int
@@ -66,7 +73,7 @@ func (u *LLMUsage) Empty() bool {
 		return true
 	}
 	return u.PromptTokens == 0 && u.CompletionTokens == 0 && u.TotalTokens == 0 &&
-		u.CacheReadTokens == 0 && u.CacheCreationTokens == 0
+		u.ReasoningTokens == 0 && u.CacheReadTokens == 0 && u.CacheCreationTokens == 0
 }
 
 type LLMChatResponse struct {

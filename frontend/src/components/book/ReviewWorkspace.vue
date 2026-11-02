@@ -187,7 +187,7 @@ function archivedAt(c: Candidate) {
       <div>
         <p class="eyebrow">Quality</p>
         <h2>审校与定稿</h2>
-        <p>审校只出问题清单，出口有三个：勾选后「自动修复」看 diff 再确认落盘；清单干净（无阻断、每章都审完）时「通过」；明知还有问题仍要往前推时「强制通过」。</p>
+        <p>审校只出问题清单，出口有三个：勾选后「自动修复」看 diff 再确认落盘（落盘即完成这一轮修订，不自动复审，清单里没勾的仍留着可继续修）；清单干净（无阻断、每章都审完）时「通过」；明知还有问题仍要往前推时「强制通过」。</p>
       </div>
       <div class="review-totals">
         <span><strong>{{ totalBlocking }}</strong> 阻断</span>
@@ -320,6 +320,10 @@ function archivedAt(c: Candidate) {
             <span>{{ f.source === 'local_gate' ? '本地硬门' : 'AI 审校' }}</span>
             <span v-if="f.chapter">第 {{ f.chapter }} 章</span>
             <span v-if="f.lens">{{ f.lens }}</span>
+            <!-- 多轮并集：命中次数越高越可能是可复现的硬伤，单轮命中的更可能是注意力偏好。 -->
+            <span v-if="(f.roundsHit || 0) > 1" class="hits" :title="`多轮审校中有 ${f.roundsHit} 轮独立检出同一处，可复现性高`">×{{ f.roundsHit }}</span>
+            <!-- 复审只审改动区间；区间外的旧问题不阻断通过。 -->
+            <span v-if="f.outOfScope" class="scope" title="这次修订没有改动到这里，属于之前就存在的欠账，不影响本次通过">历史欠账</span>
             <span class="sev" :data-severity="isUnfinishedFinding(f) ? 'unfinished' : f.severity">
               {{ isUnfinishedFinding(f) ? '不完整' : (f.severity === 'blocking' ? '阻断' : '建议') }}
             </span>
@@ -413,6 +417,10 @@ function archivedAt(c: Candidate) {
 .finding-meta .sev { font-weight: 600; }
 .finding-meta .sev[data-severity='blocking'] { color: var(--bad); }
 .finding-meta .sev[data-severity='unfinished'] { color: var(--warn, #8a5a00); }
+/* 多轮并集命中次数：越高越可复现，所以给一点视觉权重。 */
+.finding-meta .hits { padding: 0 6px; border-radius: 999px; background: rgba(163,59,50,.1); color: var(--bad); font-weight: 600; }
+/* 复审范围外的旧问题：留在清单里但明确标注不阻断。 */
+.finding-meta .scope { padding: 0 6px; border-radius: 999px; background: rgba(0,0,0,.06); color: var(--ink-soft); }
 .finding h4 { margin: 6px 0; font-size: 14px; }
 .finding.blocking h4 { color: var(--bad); }
 .finding p { margin: 4px 0; color: var(--ink-soft); font-size: 13px; line-height: 1.7; }

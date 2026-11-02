@@ -536,6 +536,9 @@ func (r *Runner) chat(ctx context.Context, modelID, system, user string, policy 
 	if resp.Usage != nil {
 		rec.PromptTokens = resp.Usage.PromptTokens
 		rec.CompletionTokens = resp.Usage.CompletionTokens
+		// 思维链单独记一份：它已经算在 completion 里，但两者量级差一个数量级，
+		// 不分开记就解释不了"审校的答案只有几百 token，completion 却上万"。
+		rec.ReasoningTokens = resp.Usage.ReasoningTokens
 		// 缓存命中量是重试成本的直接指标：repair 追加在 payload 末尾时，
 		// 第二次调用应命中首轮 prompt 的绝大部分（各家自动前缀缓存）。
 		rec.CacheReadTokens = resp.Usage.CacheReadTokens

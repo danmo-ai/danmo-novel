@@ -355,9 +355,13 @@ function runFlowStep(key: string) {
 
 async function accept(c: Candidate, force = false) {
   try {
-    // 修订候选被接受时请求服务端归档旧清单并自动复审：闭环一的最后一步。
-    const accepted = await store.acceptCandidate(c.id, c.baseRevision, {
-      followUpReview: c.kind === 'revise',
+    // 接受修订就是交付终点：正文落盘、清单归档，不再自动起一轮复审。
+    //
+    // 实测（同单元连续 6 轮）复审报出的"新问题"有 96%+ 落在这次没改过的原文上——
+    // 是前几轮没扫到的旧账，不是修复引入的回归。自动复审会把这个循环无限延长，
+    // 作者也分不清"修好了"和"又发现一批旧的"。想再查就用「重审」，那是显式操作。
+    await store.acceptCandidate(c.id, c.baseRevision, {
+      followUpReview: false,
       forceRiskAccept: force,
     })
     if (c.kind === 'review') view.value = 'review'
@@ -365,7 +369,6 @@ async function accept(c: Candidate, force = false) {
     await reload()
     // 归档后清单从「待审候选」消失，必须在历史里还能回看。
     await Promise.all([store.loadRuns(bookId.value), store.loadCandidateHistory(bookId.value)])
-    if (accepted?.followUpRunId) startRunPoll(accepted.followUpRunId)
   } catch (e: any) {
     const msg = e?.message || String(e)
     // 定稿候选自带本地门禁阻断时，接受会被服务端拒绝。"通过并定稿"若没有这一手，
@@ -430,7 +433,7 @@ async function closeReview(unitId: string, force: boolean) {
   }
 }
 
-/** 轮询一个已在服务端跑起来的 run（接受后的自动复审）。 */
+/** 轮询一个已在服务端跑起来的 run（例如「通过并定稿」起的定稿）。 */
 function startRunPoll(runId: string) {
   if (pollTimer.value) clearInterval(pollTimer.value)
   runDrawer.value = true
@@ -871,7 +874,7 @@ function roleLabel(role?: string) {
         <p v-if="c.kind === 'structure_review'" class="muted">结构编辑只审查父级继承、因果、兑现和状态。按问题修复会生成新的文档候选，接受后才会写回 Markdown。</p>
         <!-- 修订候选：先看 diff 再落盘，接受不能是盲签。 -->
         <template v-else-if="c.kind === 'revise'">
-          <p class="muted">下面是相对现有正文的改动。确认无误后点「确认落盘」覆盖正文；接受后会自动复审。</p>
+          <p class="muted">下面是相对现有正文的改动。确认无误后点「确认落盘」覆盖正文，这次修订即告完成；落盘后不会自动再跑审校，要复查请回审校页点「重审」。</p>
           <ChapterDiff :base="c.baseChapters" :revised="c.chapters || []" />
         </template>
         <pre v-else-if="c.chapters" class="candidate-prose">{{ chapterText(c) }}</pre>

@@ -90,7 +90,7 @@ func (r *Runner) RunReviseWithOptions(ctx context.Context, snap domain.BookSnaps
 	// 预算在任何调用之前就定下来：run 失败时也要能看到"上限是几次"，
 	// 否则 UI 显示"调用预算 0 次"，成本无从判断。补丁 → 补丁修复 → 整章兜底，
 	// 每章最多 3 次，按实际要修的章数申报。
-	packet := contextsvc.BuildReviseChapterPacket(snap, unit, chapters[0], findings, baseline, r.modelMaxOut(modelID))
+	packet := contextsvc.BuildReviseChapterPacket(snap, unit, chapters[0], findings, chapterPrevTail(chapters, 0, baseline), baseline, r.modelMaxOut(modelID))
 	touched := 0
 	for _, ch := range chapters {
 		if len(byChapter[ch.Chapter]) > 0 {
@@ -113,7 +113,7 @@ func (r *Runner) RunReviseWithOptions(ctx context.Context, snap domain.BookSnaps
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
-			fixed, calls, err := r.reviseChapter(ctx, modelID, snap, unit, ch, byChapter[ch.Chapter], baseline)
+			fixed, calls, err := r.reviseChapter(ctx, modelID, snap, unit, ch, byChapter[ch.Chapter], chapterPrevTail(chapters, idx, baseline), baseline)
 			results[idx].fixed = fixed
 			results[idx].calls = calls
 			results[idx].err = err
@@ -162,16 +162,31 @@ func (r *Runner) RunReviseWithOptions(ctx context.Context, snap domain.BookSnaps
 	return res, nil
 }
 
+// chapterPrevTail returns the "previous chapter tail" a chapter's packet carries.
+//
+// 审校与修订必须用同一个值：blocks 里「上一章末 / 最近章摘要」的选择依赖它，
+// 两处不一致就会让同一章的两份包在那一块分叉，前缀缓存白丢。逻辑与审校路径
+// 逐字相同（首章退到 baseline.PrevTail，其余带上一章末 800 字）。
+func chapterPrevTail(chapters []domain.ChapterDraft, idx int, baseline contextsvc.ReviewBaseline) string {
+	if idx <= 0 {
+		return baseline.PrevTail
+	}
+	if idx >= len(chapters) {
+		return baseline.PrevTail
+	}
+	return tailOf(chapters[idx-1].Body, 800)
+}
+
 // reviseChapter revises a single chapter against the given findings.
 //
 // 三段一条线：补丁 → 补丁修复 → 整章兜底。
 //
-// 前两次共用同一个 patch system prompt，repair 只追加在 user payload 末尾，
-// 所以第二次能命中首轮 prompt 的前缀缓存——重试几乎免费。第三次换整章契约，
-// 那是唯一一次缓存 miss，也是最后一条能必然落盘的路。
-func (r *Runner) reviseChapter(ctx context.Context, modelID string, snap domain.BookSnapshot, unit domain.UnitInfo, ch domain.ChapterDraft, findings []domain.ReviewFinding, baseline contextsvc.ReviewBaseline) (domain.ChapterDraft, []domain.CallRecord, error) {
-	patchPacket := contextsvc.BuildReviseChapterPacket(snap, unit, ch, findings, baseline, r.modelMaxOut(modelID))
-	fallbackPacket := contextsvc.BuildReviseChapterFallbackPacket(snap, unit, ch, findings, baseline, r.modelMaxOut(modelID))
+// 三次调用共用同一个 system prompt 与同一批 blocks，只有 instruction 里的输出
+// 契约与尾部 repair 不同，所以三次都命中审校留下的前缀缓存——包括最后的整章
+// 兜底。prevTail 必须与审校那条路径传同一个值，否则那边块选择一变，前缀就散了。
+func (r *Runner) reviseChapter(ctx context.Context, modelID string, snap domain.BookSnapshot, unit domain.UnitInfo, ch domain.ChapterDraft, findings []domain.ReviewFinding, prevTail string, baseline contextsvc.ReviewBaseline) (domain.ChapterDraft, []domain.CallRecord, error) {
+	patchPacket := contextsvc.BuildReviseChapterPacket(snap, unit, ch, findings, prevTail, baseline, r.modelMaxOut(modelID))
+	fallbackPacket := contextsvc.BuildReviseChapterFallbackPacket(snap, unit, ch, findings, prevTail, baseline, r.modelMaxOut(modelID))
 
 	max := patchPacket.Policy.MaxCalls
 	if max < 1 {

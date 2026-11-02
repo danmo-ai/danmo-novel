@@ -114,12 +114,16 @@ func localGateForChapter(findings []domain.ReviewFinding, chapter int) string {
 	return fb.String()
 }
 
-// BuildChapterReviewPacket assembles the per-chapter packet.
-// Baseline blocks are identical across chapters; the only variable parts are
-// the chapter's own prose and the previous chapter's tail (both static).
-func BuildChapterReviewPacket(snap domain.BookSnapshot, unit domain.UnitInfo, ch domain.ChapterDraft, prevTail string, baseline ReviewBaseline, modelMaxOut int) domain.ContextPacket {
-	policy := DefaultPolicy(domain.TaskReview, 1)
-
+// chapterContextBlocks is the single block list both审校 and 修订 build on.
+//
+// 两份调用必须产出**逐字节相同**的 blocks，前缀缓存才可能命中：审校与修订看到
+// 的是同一章正文、同一份合同、同一批在场人物与约束，本就该共用一份上下文。
+// 曾经两边各写一套：修订只有 8 块、审校 12 块，第 5 块顺序还不同——结果就是
+// 13819 字的共享正文一个 token 都没命中。
+//
+// 修订用不到的块（审校清单、上一章末）照带：它们已在前缀里，边际成本近零，
+// 而少带一块就多一处前缀分叉。
+func chapterContextBlocks(snap domain.BookSnapshot, unit domain.UnitInfo, ch domain.ChapterDraft, prevTail string, baseline ReviewBaseline) []domain.ContextBlock {
 	blocks := []domain.ContextBlock{}
 	add := func(id, label, source, content string) {
 		content = strings.TrimSpace(content)
@@ -130,10 +134,6 @@ func BuildChapterReviewPacket(snap domain.BookSnapshot, unit domain.UnitInfo, ch
 	}
 
 	add("unit-contract", "单元合同", unit.OutlinePath, baseline.Contract)
-	// 只带本章的场面节拍。审校按章调用，整单元 20+ 个场面逐章重复注入
-	// 是最大的单项浪费；Contract 里的 scenes 已被 ContractWithoutBeats 剥掉，
-	// 这里是唯一的场面来源，缺了它就等于让模型盲审。
-	add("unit-beats", "本章场面节拍", unit.OutlinePath, BeatsForChapter(unit.OutlineRaw, ch.Chapter))
 	add("continuity", "连续性状态", books.StatePath, ExtractContinuity(snap, unit, extractOnStage(unit.OutlineRaw), ContinuityForReview))
 	add("relations", "在场关系", "canon/cast", baseline.Relations)
 	add("reveal", "揭示约束", "canon/reveal-schedule.md", baseline.Reveal)
@@ -156,22 +156,46 @@ func BuildChapterReviewPacket(snap domain.BookSnapshot, unit domain.UnitInfo, ch
 	} else if prevTail != "" {
 		add("prev-tail", "上一章末", unit.ProsePath, prevTail)
 	}
+	// 以下两块是**每章都不同**的，必须排在最后。
+	//
+	// 前缀缓存按字节比对最长公共前缀：卡在一起的两章只有这两块不一样，只要把
+	// 它们压到尾部，前面 9 个共享基线块（审校清单 2600 字、揭示约束 1100 字、
+	// 在场人物 800 字…）就能逐字复用。曾经 unit-beats 排第 2，于是相邻两章的
+	// 公共前缀只有 19 字节（0.1%），基线每章按全价重算。
+	add("unit-beats", "本章场面节拍", unit.OutlinePath, BeatsForChapter(unit.OutlineRaw, ch.Chapter))
 	add("prose", "本章正文", unit.ProsePath, ch.Body)
+	return blocks
+}
 
+// BuildChapterReviewPacket assembles the per-chapter packet.
+// Baseline blocks are identical across chapters; the only variable parts are
+// the chapter's own prose and the previous chapter's tail (both static).
+func BuildChapterReviewPacket(snap domain.BookSnapshot, unit domain.UnitInfo, ch domain.ChapterDraft, prevTail string, baseline ReviewBaseline, modelMaxOut int) domain.ContextPacket {
+	policy := DefaultPolicy(domain.TaskReview, 1)
+
+	blocks := chapterContextBlocks(snap, unit, ch, prevTail, baseline)
 	hashes := map[string]string{unit.ProsePath: shortHash(ch.Body)}
 	for _, b := range blocks {
 		hashes[b.Source] = shortHash(b.Content)
 	}
 
-	system := novel.ReviewSystemPrompt()
+	// system 只放两种任务都成立的规则，契约随 instruction 下发——这样审校与
+	// 修订的 system 逐字相同，user payload 的正文段也相同，前缀才可能复用。
+	system := novel.ChapterStageSystemPrompt()
 	extra := map[string]any{}
 	// 只注入本章的本地硬门结论：整单元的塞进来会被模型当成"这一章的问题"重报。
 	if fb := localGateForChapter(baseline.LocalFindings, ch.Chapter); fb != "" {
 		extra["localFindings"] = fb
 	}
+	instruction := fmt.Sprintf("只审第 %d 章（%s），按审校清单逐条执行。\n\n%s",
+		ch.Chapter, ch.Title, novel.ReviewOutputContract())
+	// book 只放整本书恒定的字段。章号必须挪到 extra（排在 documents 之后）：
+	// book 是 payload 的第一个字段，章号放进去会让相邻两章的请求从第 19 字节
+	// 就分叉，前面所有共享基线块全部失效。
+	extra["reviewChapter"] = ch.Chapter
 	user := BuildUserPrompt("review", "", map[string]any{
-		"id": snap.Summary.ID, "unitId": unit.UnitID, "chapter": ch.Chapter,
-	}, fmt.Sprintf("只审第 %d 章（%s），按审校清单逐条执行，输出 JSON。", ch.Chapter, ch.Title), blocks, extra)
+		"id": snap.Summary.ID, "unitId": unit.UnitID,
+	}, instruction, blocks, extra)
 
 	packet := domain.ContextPacket{
 		ContractVersion: ContractVersion, TaskKind: domain.TaskReview, BookID: snap.Summary.ID, UnitID: unit.UnitID,
@@ -185,40 +209,18 @@ func BuildChapterReviewPacket(snap domain.BookSnapshot, unit domain.UnitInfo, ch
 	return packet
 }
 
-// reviseChapterBlocks is the block set both revise packets share.
+// revisePacket assembles a revise packet from the shared block set plus one contract.
 //
-// 补丁包与兜底包必须看到完全一样的东西：只差输出契约。否则"补丁失败后兜底"
-// 会因为少了某块约束而写出与前一次不同的结果，作者面对两个互斥的正文无从判断。
-func reviseChapterBlocks(snap domain.BookSnapshot, unit domain.UnitInfo, ch domain.ChapterDraft, baseline ReviewBaseline) []domain.ContextBlock {
-	blocks := []domain.ContextBlock{}
-	add := func(id, label, source, content string) {
-		content = strings.TrimSpace(content)
-		if content == "" {
-			return
-		}
-		blocks = append(blocks, domain.ContextBlock{ID: id, Label: label, Source: source, Content: content, Bytes: len(content)})
-	}
-
-	add("unit-contract", "单元合同", unit.OutlinePath, baseline.Contract)
-	// 修订同样按章进行：只带本章节拍，避免整单元 scenes 重复。
-	add("unit-beats", "本章场面节拍", unit.OutlinePath, BeatsForChapter(unit.OutlineRaw, ch.Chapter))
-	add("continuity", "连续性状态", books.StatePath, ExtractContinuity(snap, unit, extractOnStage(unit.OutlineRaw), ContinuityForReview))
-	add("relations", "在场关系", "canon/cast", baseline.Relations)
-	add("cast", "在场人物", "canon/cast", baseline.CastCards)
-	add("reveal", "揭示约束", "canon/reveal-schedule.md", baseline.Reveal)
-	add("style", "风格与写作规则", "canon/style-fingerprint.md", baseline.Style)
-	add("prose", "本章正文", unit.ProsePath, ch.Body)
-	return blocks
-}
-
-// revisePacket assembles a revise packet from a shared block set plus one contract.
-func revisePacket(snap domain.BookSnapshot, unit domain.UnitInfo, ch domain.ChapterDraft, findings []domain.ReviewFinding, blocks []domain.ContextBlock, system, task, instruction string) domain.ContextPacket {
+// prevTail 必须与审校那条路径传同一个值：blocks 里「上一章末 / 最近章摘要」
+// 的选择依赖它，选错会让同一章的两份包在那一块分叉，前缀缓存白丢。
+func revisePacket(snap domain.BookSnapshot, unit domain.UnitInfo, ch domain.ChapterDraft, findings []domain.ReviewFinding, prevTail string, baseline ReviewBaseline, system, task, instruction string) domain.ContextPacket {
 	policy := DefaultPolicy(domain.TaskRevise, 0)
 	// 每章最多 3 次：补丁 → 补丁修复 → 整章兜底。三次互相独立（锚点错、
 	// 修完仍然套不上、只能在正文层面重写），所以必须是三段而不是两段的加长。
 	policy.MaxCalls = 3
 	policy.AllowOneRepair = true
 
+	blocks := chapterContextBlocks(snap, unit, ch, prevTail, baseline)
 	hashes := map[string]string{unit.ProsePath: shortHash(ch.Body)}
 	for _, b := range blocks {
 		hashes[b.Source] = shortHash(b.Content)
@@ -228,8 +230,11 @@ func revisePacket(snap domain.BookSnapshot, unit domain.UnitInfo, ch domain.Chap
 		"reviseChapter":  ch.Chapter,
 		"reviseFindings": reviseFindingRows(findings),
 	}
+	// book 只放整本书恒定的字段。章号必须挪到 extra（排在 documents 之后）：
+	// book 是 payload 的第一个字段，章号放进去会让相邻两章的请求从第 19 字节
+	// 就分叉，前面所有共享基线块全部失效。
 	user := BuildUserPrompt(task, "", map[string]any{
-		"id": snap.Summary.ID, "unitId": unit.UnitID, "chapter": ch.Chapter,
+		"id": snap.Summary.ID, "unitId": unit.UnitID,
 	}, instruction, blocks, extra)
 
 	packet := domain.ContextPacket{
@@ -245,23 +250,28 @@ func revisePacket(snap domain.BookSnapshot, unit domain.UnitInfo, ch domain.Chap
 }
 
 // BuildReviseChapterPacket assembles the per-chapter revise patch packet.
-// Scope is hard-bounded to one chapter: the system prompt says so and the
-// caller verifies the returned chapter matches. Output is a find/replace patch,
-// not the whole chapter — see applyChapterEdits for how it is materialized.
-func BuildReviseChapterPacket(snap domain.BookSnapshot, unit domain.UnitInfo, ch domain.ChapterDraft, findings []domain.ReviewFinding, baseline ReviewBaseline, modelMaxOut int) domain.ContextPacket {
-	blocks := reviseChapterBlocks(snap, unit, ch, baseline)
-	return revisePacket(snap, unit, ch, findings, blocks,
-		novel.ReviseChapterPatchPrompt(ch.Chapter), "revise_patch",
-		fmt.Sprintf("只修订第 %d 章：针对列出的问题给出最小改动的补丁，输出单章补丁 JSON。", ch.Chapter))
+// Scope is hard-bounded to one chapter: the caller verifies the returned chapter
+// matches. Output is a find/replace patch, not the whole chapter — see
+// applyChapterEdits for how it is materialized.
+//
+// system 与审校逐字相同（ChapterStageSystemPrompt），契约走 instruction：
+// 这样勾选后这次修订的 prompt 前缀几乎全部命中审校留下的缓存。
+func BuildReviseChapterPacket(snap domain.BookSnapshot, unit domain.UnitInfo, ch domain.ChapterDraft, findings []domain.ReviewFinding, prevTail string, baseline ReviewBaseline, modelMaxOut int) domain.ContextPacket {
+	return revisePacket(snap, unit, ch, findings, prevTail, baseline,
+		novel.ChapterStageSystemPrompt(), "revise_patch",
+		fmt.Sprintf("只修订第 %d 章，针对 reviseFindings 列出的问题给出最小改动。\n\n%s",
+			ch.Chapter, novel.RevisePatchOutputContract(ch.Chapter)))
 }
 
 // BuildReviseChapterFallbackPacket is the whole-chapter contract used only after
 // the patch path has failed: it is the last attempt before the run errors out.
-func BuildReviseChapterFallbackPacket(snap domain.BookSnapshot, unit domain.UnitInfo, ch domain.ChapterDraft, findings []domain.ReviewFinding, baseline ReviewBaseline, modelMaxOut int) domain.ContextPacket {
-	blocks := reviseChapterBlocks(snap, unit, ch, baseline)
-	return revisePacket(snap, unit, ch, findings, blocks,
-		novel.ReviseChapterSystemPrompt(ch.Chapter), "revise",
-		fmt.Sprintf("只修订第 %d 章，针对列出的问题最小改动，输出单章正文 JSON。", ch.Chapter))
+// Blocks 与 system 都与补丁包相同，只有 instruction 里的契约不同——所以前两次
+// 失败不会把这次也变成冷启动。
+func BuildReviseChapterFallbackPacket(snap domain.BookSnapshot, unit domain.UnitInfo, ch domain.ChapterDraft, findings []domain.ReviewFinding, prevTail string, baseline ReviewBaseline, modelMaxOut int) domain.ContextPacket {
+	return revisePacket(snap, unit, ch, findings, prevTail, baseline,
+		novel.ChapterStageSystemPrompt(), "revise",
+		fmt.Sprintf("只修订第 %d 章，针对 reviseFindings 列出的问题最小改动。\n\n%s",
+			ch.Chapter, novel.ReviseBodyOutputContract(ch.Chapter)))
 }
 
 // reviseFindingRows renders author-selected findings for the revision prompt.
