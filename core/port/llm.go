@@ -77,7 +77,15 @@ type LLMChatResponse struct {
 	ToolCalls          []ChatToolCall
 	Usage              *LLMUsage
 	Done               bool
+	// FinishReason 是 provider 自己说的「为什么停」：stop / length / tool_calls /
+	// content_filter，未提供时为空。以前这里没有任何停止原因，于是"输出被截断"
+	// 只能靠 completion_tokens 是否恰好等于预算来间接猜——实测报 8191 / 8192
+	// 的差别就决定了一次重试能不能拿到更大的预算。
+	FinishReason string
 }
+
+// FinishReasonLength 是所有方言对「撞到输出上限」的统一取值。
+const FinishReasonLength = "length"
 
 // LLMProvider is the only LLM surface domain code may call.
 type LLMProvider interface {

@@ -51,6 +51,61 @@ func TestStructuredCanonRetainsIdentityClockAndReveal(t *testing.T) {
 	}
 }
 
+// 补丁包与兜底包必须看到完全一样的依据，只差输出契约。
+//
+// 如果两者上下文不同，"补丁失败后兜底"写出来的正文会因为少了某块约束而与
+// 前一次不同，作者面对两个互斥结果无从判断；预算也必须按三段申报（补丁 →
+// 补丁修复 → 整章兜底），否则 UI 会出现 3/2 这种越界数字。
+func TestRevisePacketsDifferOnlyInOutputContract(t *testing.T) {
+	unit := domain.UnitInfo{
+		UnitID: "v02-U1", Volume: 2, ChapterFrom: 4, ChapterTo: 4,
+		OutlinePath: "outline/units/v02-U1.yaml", ProsePath: "units/v02-U1.md",
+		OutlineRaw: "unit_id: v02-U1\ndesire: 立足\nobstacle: 质疑\nchoice: 复查\npayoff: 获得许可\non_stage: [lin]\npov: lin\nstory_day: 12\n",
+	}
+	snap := domain.BookSnapshot{
+		Summary: domain.BookSummary{ID: "b", Genre: "悬疑"},
+		Cast:    []domain.CastCard{{Stem: "lin", Name: "林晚", Raw: "# 林晚\n\n## 三锚点\n- 视觉：先看手\n"}},
+		Files:   map[string]string{"canon/writing-rules.md": "少用破折号"},
+	}
+	baseline := BuildReviewBaseline(snap, unit, nil, "")
+	ch := domain.ChapterDraft{Chapter: 4, Title: "门", Body: "第4章正文"}
+
+	patch := BuildReviseChapterPacket(snap, unit, ch, nil, baseline, 0)
+	fallback := BuildReviseChapterFallbackPacket(snap, unit, ch, nil, baseline, 0)
+
+	if len(patch.Blocks) != len(fallback.Blocks) {
+		t.Fatalf("block count differs: patch=%d fallback=%d", len(patch.Blocks), len(fallback.Blocks))
+	}
+	for i := range patch.Blocks {
+		if patch.Blocks[i].ID != fallback.Blocks[i].ID || patch.Blocks[i].Content != fallback.Blocks[i].Content {
+			t.Fatalf("block %d differs between patch and fallback: %q vs %q",
+				i, patch.Blocks[i].ID, fallback.Blocks[i].ID)
+		}
+	}
+	if patch.SystemPrompt == fallback.SystemPrompt {
+		t.Fatal("patch and fallback must use different output contracts")
+	}
+	if !strings.Contains(patch.SystemPrompt, "edits") || !strings.Contains(patch.SystemPrompt, "find") {
+		t.Fatal("patch contract must describe the edits/find format")
+	}
+	if !strings.Contains(patch.SystemPrompt, "这一章") && !strings.Contains(patch.SystemPrompt, "本章") {
+		t.Fatal("patch contract must state that uniqueness holds inside this chapter")
+	}
+	if !strings.Contains(fallback.SystemPrompt, "body") {
+		t.Fatal("fallback contract must ask for the whole chapter body")
+	}
+	// 每章 3 次：补丁、补丁修复、整章兜底。
+	for name, p := range map[string]domain.ContextPacket{"patch": patch, "fallback": fallback} {
+		if p.Policy.MaxCalls != 3 {
+			t.Fatalf("%s maxCalls=%d want 3", name, p.Policy.MaxCalls)
+		}
+	}
+	// 本章正文是锚点定位的唯一依据，两块包都必须带。
+	if !strings.Contains(patch.UserPrompt, "第4章正文") {
+		t.Fatal("patch packet lost the chapter body")
+	}
+}
+
 // 每章只带本章正文 + 上一章末；全局基线共享但不含整份卷摘要。
 // 卷摘要可达数万字，整份塞进首章会让那一次调用比别的章贵三倍。
 func TestChapterReviewPacketClipsSummaryAndScopesProse(t *testing.T) {
@@ -98,11 +153,11 @@ func TestChapterReviewPacketClipsSummaryAndScopesProse(t *testing.T) {
 	if contract == "" {
 		t.Fatal("unit contract missing from baseline")
 	}
-	// 单章预算不能比整单元更窄：思考链与答案共用 max_tokens，而思维链开销由
-	// 正文长度与 reasoning effort 决定，与 findings 条数无关。12288 曾在 high
-	// 强度下被思维链吃满，输出正好停在预算处只剩 1 条结论。
-	if packet.Policy.MaxOutputTokens < 32768 {
-		t.Fatalf("per-chapter budget=%d must not be below the unit-wide 32768", packet.Policy.MaxOutputTokens)
+	// 单章审校不再由上层定上限：maxOutputTokens=0 表示交给 client 按模型配置
+	// 决定。曾经这里必须给到 32768，因为思考链与答案共用那份预算，思维链开销
+	// 由正文长度与 reasoning effort 决定，和 findings 条数无关。
+	if packet.Policy.MaxOutputTokens != 0 {
+		t.Fatalf("per-chapter budget=%d, want 0 (defer to model config)", packet.Policy.MaxOutputTokens)
 	}
 }
 

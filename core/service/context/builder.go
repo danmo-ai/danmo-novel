@@ -15,35 +15,26 @@ import (
 
 const ContractVersion = "novel-v1"
 
-// Plan init/reinit emits book outline + settings.files + cast JSON in one shot.
-// 整本书重新立项要一次吐出「总纲 + 全部设定文件 + 全部人物卡」，实测这份书
-// （8.8k 字符总纲 + 19 张卡 + 9 个设定）已经需要约 44k tokens：32768 只够
-// 走到 JSON 中途，重试翻倍才能收尾。所以首轮预算直接给 65536，让正常规模的
-// 全书 reinit 一次成功；CapMaxOutput 仍把值钳到该模型目录里的 max_output。
-const planInitMaxOutputTokens = 65536
-
-// CapMaxOutput returns desired budget, never above modelMax when modelMax > 0.
-func CapMaxOutput(desired, modelMax int) int {
-	if desired <= 0 {
-		desired = 8192
-	}
-	if modelMax > 0 && desired > modelMax {
-		return modelMax
-	}
-	return desired
-}
-
+// 输出 token 上限不由上层决定。
+//
+// 曾经每类任务都在这里写死一个数（写 8192、审校 32768、立项 65536、局部改写
+// 4096），client 里那套「按模型目录 max_output 决定」的逻辑永远轮不到生效。
+// 结果是一个 max_output 声明 384000 的模型被按 8k 用，思考 tokens 和答案共用
+// 那份预算，一个正常章节就从 JSON 中间被切断，报出来的还是"没有 JSON"。
+//
+// 现在一律传 0 = 交给 LLM client 按模型配置处理：目录里有 max_output 就用它，
+// 没有就不发这个字段、由 provider 用自己默认值。是否被截断改看响应协议里的
+// finish_reason，而不是猜"有没有正好用满某个数"。
 func DefaultPolicy(kind domain.TaskKind, chapterCount int) domain.CallPolicy {
 	p := domain.CallPolicy{
-		MaxCalls:        2, // generate + optional one structure repair
-		MaxOutputTokens: 8192,
-		TimeoutSec:      600,
-		AllowOneRepair:  true,
+		MaxCalls:       2, // generate + optional one structure repair
+		TimeoutSec:     600,
+		AllowOneRepair: true,
 	}
 	switch kind {
 	case domain.TaskWrite:
-		// 单章上限决定「一次调用能写完几章」：超过这个总量就必须按章写，
-		// 否则输出预算必然截断。这里的 3500 来自 domain，不再是另一份口径。
+		// 一次调用写不下整单元时改按章写：这是调用次数与话题切分的问题，
+		// 与单次输出上限无关（上限由模型决定）。
 		if chapterCount > 0 && chapterCount*domain.ChapterCharsMax > 6000 {
 			p.SplitByChapter = true
 			// 每章最坏 3 次调用：生成 + 一次结构修复 + 一次硬门修复。
@@ -53,24 +44,14 @@ func DefaultPolicy(kind domain.TaskKind, chapterCount int) domain.CallPolicy {
 			p.AllowOneRepair = true
 		}
 	case domain.TaskReview:
-		// 审校输出是结构化 JSON，但思考型模型（deepseek/kimi/glm 等）的 reasoning
-		// token 与答案共用 max_tokens：正文越长、强度越高，思维链吃得越多。答案本身
-		// 已由 ReviewSystemPrompt 的硬上限（findings<=8、每个字段<=40字）压到 O(1)，
-		// 这里留出的余量全部给思维链；仍不够时 runJSON 会在重试时翻倍预算。
 		p.MaxCalls = 2
 		p.AllowOneRepair = true
-		p.MaxOutputTokens = 32768
-	case domain.TaskOutline:
-		// 重写长单元时输出与既有细纲头同量级（数万字 YAML 的 JSON 镜像），
-		// 8192 会在 JSON 中途截断；与立项同级给 32768，仍受模型 max_output clamp。
-		p.MaxOutputTokens = 32768
 	case domain.TaskRevise, domain.TaskFinalize:
 		p.MaxCalls = 1
 		p.AllowOneRepair = false
 	case domain.TaskLocalEdit, domain.TaskContinue, domain.TaskExpand, domain.TaskPolish, domain.TaskRewriteSel:
 		p.MaxCalls = 1
 		p.AllowOneRepair = false
-		p.MaxOutputTokens = 4096
 	}
 	return p
 }
@@ -89,12 +70,13 @@ func withUserInstruction(base, instruction string) string {
 
 func BuildWritePacket(snap domain.BookSnapshot, unit domain.UnitInfo, instruction string, modelMaxOut int) domain.ContextPacket {
 	policy := DefaultPolicy(domain.TaskWrite, unit.ChapterTo-unit.ChapterFrom+1)
-	policy.MaxOutputTokens = CapMaxOutput(policy.MaxOutputTokens, modelMaxOut)
+	// 模型一次答案装不下整单元时改按章写：这是调用切分，与输出上限无关。
 	if modelMaxOut > 0 && modelMaxOut < 4000 && !policy.SplitByChapter && unit.ChapterTo > unit.ChapterFrom {
 		policy.SplitByChapter = true
 		policy.MaxCalls = (unit.ChapterTo - unit.ChapterFrom + 1) * 3
 		policy.AllowOneRepair = true
 	}
+	// 输出上限不在这里定：保持 0，让 LLM client 按模型目录的 max_output 决定。
 
 	blocks := []domain.ContextBlock{}
 	add := func(id, label, source, content string) {
@@ -158,7 +140,6 @@ func BuildWritePacket(snap domain.BookSnapshot, unit domain.UnitInfo, instructio
 
 	genreKB := novel.GenreBullets(snap.Summary.Genre, snap.Summary.Subgenre)
 	add("genre-kb", "题材写时约束", "knowledge:"+snap.Summary.Genre, genreKB)
-
 	// 时间书写规范：把 story_day/gap 转成正文可执行的时间锚点指令。
 	add("time-guidance", "时间书写规范", "knowledge:time", buildTimeGuidance(snap, unit))
 
@@ -171,7 +152,7 @@ func BuildWritePacket(snap domain.BookSnapshot, unit domain.UnitInfo, instructio
 		hashes[b.Source] = shortHash(b.Content)
 	}
 
-	system := novel.WriteSystemPrompt()
+	system := novel.WriteSystemPromptFor(books.ChapterTarget(unit))
 	user := BuildUserPrompt("write", "", map[string]any{
 		"id": snap.Summary.ID, "unitId": unit.UnitID, "volumeId": volumeID,
 	}, withUserInstruction("请按单元合同与场面节拍一次写出全部章节正文。章与章之间不要输出 ---；body 内是纯散文。", instruction), blocks, nil)
@@ -299,7 +280,6 @@ func dropTopLevelKeys(raw string, keys []string) string {
 
 func BuildOutlinePacket(snap domain.BookSnapshot, volume int, unitIDs []string, instruction string, modelMaxOut int) domain.ContextPacket {
 	policy := DefaultPolicy(domain.TaskOutline, 0)
-	policy.MaxOutputTokens = CapMaxOutput(policy.MaxOutputTokens, modelMaxOut)
 	volTag := fmt.Sprintf("v%02d", volume)
 	var volRaw string
 	var cast []string
@@ -381,9 +361,7 @@ func BuildPlanPacketWithMode(snap domain.BookSnapshot, volume int, mode, instruc
 	policy := DefaultPolicy(domain.TaskPlan, 0)
 	full := mode == domain.PlanModeInit || mode == domain.PlanModeReinit
 	if full {
-		policy.MaxOutputTokens = CapMaxOutput(planInitMaxOutputTokens, modelMaxOut)
 	} else {
-		policy.MaxOutputTokens = CapMaxOutput(policy.MaxOutputTokens, modelMaxOut)
 	}
 
 	blocks := []domain.ContextBlock{}
@@ -549,7 +527,6 @@ func BuildFinalizePacket(snap domain.BookSnapshot, unit domain.UnitInfo) domain.
 // 意见会莫名消失，同时作者台账（continuity_risks / observations）漏进提示词。
 func BuildReviewPacket(snap domain.BookSnapshot, unit domain.UnitInfo, localFindings []domain.ReviewFinding, modelMaxOut int, libraryRules string) domain.ContextPacket {
 	policy := DefaultPolicy(domain.TaskReview, 0)
-	policy.MaxOutputTokens = CapMaxOutput(policy.MaxOutputTokens, modelMaxOut)
 
 	baseline := BuildReviewBaseline(snap, unit, localFindings, libraryRules)
 	onStage := extractOnStage(unit.OutlineRaw)
@@ -623,7 +600,6 @@ func BuildRewriteEntityPacket(snap domain.BookSnapshot, spec domain.TaskSpec, mo
 	policy := DefaultPolicy(domain.TaskRevise, 0)
 	policy.MaxCalls = 2
 	policy.AllowOneRepair = true
-	policy.MaxOutputTokens = CapMaxOutput(policy.MaxOutputTokens, modelMaxOut)
 	target := spec.TargetPath
 	raw := snap.Files[target]
 	blocks := []domain.ContextBlock{
@@ -774,18 +750,47 @@ func buildTimeGuidance(snap domain.BookSnapshot, unit domain.UnitInfo) string {
 
 // chapterLengthGuidance 把「这一章写多长」写成可执行的指令。
 //
-// 数字全部来自 domain 常量与 books.ChapterTarget，与硬门是同一个来源：
-// 模型看到的目标和事后判它的阈值不可能不一致。
+// 只讲单章长度，不折算单元总量：一个单元几章并不固定（3–10 章都可能），
+// 把"整单元应该多少字"塞给模型只会分散注意力——它一次只写一章。
+// 数字来自 domain 常量与 books.ChapterTarget，与硬门同源。
 func chapterLengthGuidance(unit domain.UnitInfo) string {
 	target := books.ChapterTarget(unit)
 	floor, ceil := domain.ChapterBand(target)
-	chapters := books.ChapterCount(unit)
+	scenes := estimatedScenes(unit, books.ChapterCount(unit))
 	var b strings.Builder
-	b.WriteString("字数规则：\n")
-	fmt.Fprintf(&b, "- 本单元共 %d 章，单元目标约 %d 字；每章目标 %d 字。\n", chapters, target*chapters, target)
-	fmt.Fprintf(&b, "- 单章落在 %d–%d 字之间：少于 %d 字判 blocking（要重写这一章），多于 %d 字会有超长告警。\n", floor, ceil, floor, ceil)
-	b.WriteString("- 章节按目标写足，不注水也不压缩：该有的场面写透，不为凑字加天气/回忆/复述。")
+	b.WriteString("本章字数（合同值，不是参考值）：\n")
+	fmt.Fprintf(&b, "- 目标 %d 字，允许 %d–%d 字。\n", target, floor, ceil)
+	if scenes > 0 {
+		fmt.Fprintf(&b, "- 把目标拆到本章约 %d 个主线场面上，每场约 %d 字；写完一场再进下一场，不额外加场。\n",
+			scenes, target/scenes)
+	} else {
+		fmt.Fprintf(&b, "- 把目标拆到本章 2–3 个主线场面上，每场约 %d 字；写完一场再进下一场，不额外加场。\n", target/3)
+	}
+	fmt.Fprintf(&b, "- 少于 %d 字会被退回重写；超过 %d 字会判为不合格并计入审校。到目标就收。\n", floor, ceil)
+	b.WriteString("- 控字数的唯一正当办法是砍冗余（同类复述、重复解释、可省的过渡），不是砍场面结果、人物关系变化或章末钩子。")
 	return b.String()
+}
+
+// estimatedScenes 估一下本章该有几个主线场面，用来把字数拆成可执行的单位。
+// 细纲里的场面有两种写法：`- id: S1`（旧）与 `id: v01-U2-C5-S1`（新）。
+// 都没有就不猜，直接省略这一行。
+func estimatedScenes(unit domain.UnitInfo, chapters int) int {
+	total := 0
+	for _, line := range strings.Split(unit.OutlineRaw, "\n") {
+		t := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "- "))
+		if !strings.HasPrefix(t, "id:") {
+			continue
+		}
+		id := strings.TrimSpace(strings.TrimPrefix(t, "id:"))
+		// 场面 id 形如 S1 / v01-U2-C5-S1；章 id 是 chapter:，不会走到这里。
+		if strings.Contains(id, "S") || strings.HasPrefix(id, "scene-") {
+			total++
+		}
+	}
+	if chapters <= 0 || total < chapters {
+		return 0
+	}
+	return total / chapters
 }
 
 func yamlScalarLocal(raw, key string) string {

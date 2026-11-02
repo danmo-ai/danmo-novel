@@ -60,7 +60,7 @@ func (r *Runner) reviewStructureDocument(ctx context.Context, snap domain.BookSn
 	payload := contextsvc.UserPayload{Task: "review_structure", Book: map[string]any{"id": snap.Summary.ID}, Documents: contextsvc.DocumentsFromBlocks(blocks), Instruction: spec.Instruction}
 	res, err := ExecuteTask(ctx, &TaskRunner{LLM: r.LLM, ModelMaxOut: r.modelMaxOut}, Invocation[[]domain.ReviewFinding]{
 		TaskID: "review_structure", StaticPrompt: tmpl.Text, DynamicPayload: payload, OutputContract: structureEditorContract,
-		Policy: domain.CallPolicy{MaxCalls: 2, AllowOneRepair: true, MaxOutputTokens: 8192, TimeoutSec: 600}, ModelID: modelID,
+		Policy: domain.CallPolicy{MaxCalls: 2, AllowOneRepair: true, TimeoutSec: 600}, ModelID: modelID,
 		Definition: TaskDefinition[[]domain.ReviewFinding]{ID: "review_structure", Version: 1, Codec: structureReviewCodec{contract: structureEditorContract}, Candidate: func(findings []domain.ReviewFinding, in TaskInput) domain.Candidate {
 			return domain.Candidate{ID: uuid.NewString(), Kind: domain.TaskStructureReview, Status: domain.CandidateOpen, TargetPath: in.Spec.TargetPath, VolumeID: in.Spec.VolumeID, Findings: findings, CreatedAt: time.Now().UTC()}
 		}}, Input: TaskInput{Snapshot: snap, Spec: spec},
@@ -149,7 +149,7 @@ func (r *Runner) RepairStructure(ctx context.Context, snap domain.BookSnapshot, 
 	payload := contextsvc.UserPayload{Task: "repair_structure", Book: map[string]any{"id": snap.Summary.ID}, Documents: contextsvc.DocumentsFromBlocks(blocks), Instruction: spec.Instruction, Extra: map[string]any{"findings": feedback.String()}}
 	res, err := ExecuteTask(ctx, &TaskRunner{LLM: r.LLM, ModelMaxOut: r.modelMaxOut}, Invocation[string]{
 		TaskID: "repair_structure", StaticPrompt: tmpl.Text, DynamicPayload: payload, OutputContract: contract,
-		Policy: domain.CallPolicy{MaxCalls: 2, AllowOneRepair: true, MaxOutputTokens: 32768, TimeoutSec: 600}, ModelID: modelID,
+		Policy: domain.CallPolicy{MaxCalls: 2, AllowOneRepair: true, TimeoutSec: 600}, ModelID: modelID,
 		Definition: TaskDefinition[string]{ID: "repair_structure", Version: 1, Codec: structureRepairCodec{contract: contract}, Validate: func(body string, in TaskInput) []Violation {
 			doc := books.ParseStructuredMarkdown(body, contract.ID)
 			if contract.ID == books.VolumeOutlineProtocol {

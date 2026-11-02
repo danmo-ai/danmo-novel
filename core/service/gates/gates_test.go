@@ -202,3 +202,30 @@ func TestCheckUnitOutlineRejectsOutOfRangeWordTarget(t *testing.T) {
 		t.Fatalf("rounded legacy word_target should pass: %+v", rep.Findings)
 	}
 }
+
+// 超长只报 advisory：审校页没法对整章做大幅度缩写，做成 blocking 只会
+// 把作者卡在修复一步（重写一遍大概率还是那么长）。真正的约束在写作提示词里。
+func TestOverLengthIsAdvisoryNotBlocking(t *testing.T) {
+	body := strings.Repeat("字", 4000) // 2500 × 1.4 = 3500 以上
+	rep := CheckProseWithRules([]domain.ChapterDraft{{Chapter: 1, Body: body}}, 2500, nil)
+	if !rep.OK {
+		t.Fatalf("over-length must not block: %+v", rep.Findings)
+	}
+	var found bool
+	for _, f := range rep.Findings {
+		if f.Title == "字数超出目标区间" {
+			found = true
+			if f.Severity != "advisory" {
+				t.Fatalf("severity=%q want advisory", f.Severity)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("over-length must still be reported: %+v", rep.Findings)
+	}
+	// 字数不足仍然是 blocking：那是能靠补写修掉的问题。
+	short := CheckProseWithRules([]domain.ChapterDraft{{Chapter: 1, Body: strings.Repeat("字", 800)}}, 2500, nil)
+	if short.OK {
+		t.Fatal("short chapter must still block")
+	}
+}

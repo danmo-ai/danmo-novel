@@ -114,22 +114,11 @@ func localGateForChapter(findings []domain.ReviewFinding, chapter int) string {
 	return fb.String()
 }
 
-// chapterReviewMaxOutputTokens bounds a single-chapter review.
-//
-// 不能按"一章只需要 1-3 条 findings，JSON 很小"来给预算：思考型模型的 reasoning
-// token 与答案共用 max_tokens，思维链的开销由正文长度和 reasoning effort 决定，
-// 与 findings 条数无关。12288 在 high 强度下会被思维链吃满——实测第 2 章输出
-// 正好停在 12288 处、只剩 1 条结论，却被读成"这章没问题"。
-// 所以与整单元审校同级给 32768，仍受模型 max_output clamp；真截断时 runJSON
-// 还会在重试里翻倍（见 reviewChapter 的 truncation 重试）。
-const chapterReviewMaxOutputTokens = 32768
-
 // BuildChapterReviewPacket assembles the per-chapter packet.
 // Baseline blocks are identical across chapters; the only variable parts are
 // the chapter's own prose and the previous chapter's tail (both static).
 func BuildChapterReviewPacket(snap domain.BookSnapshot, unit domain.UnitInfo, ch domain.ChapterDraft, prevTail string, baseline ReviewBaseline, modelMaxOut int) domain.ContextPacket {
 	policy := DefaultPolicy(domain.TaskReview, 1)
-	policy.MaxOutputTokens = CapMaxOutput(chapterReviewMaxOutputTokens, modelMaxOut)
 
 	blocks := []domain.ContextBlock{}
 	add := func(id, label, source, content string) {
@@ -196,20 +185,11 @@ func BuildChapterReviewPacket(snap domain.BookSnapshot, unit domain.UnitInfo, ch
 	return packet
 }
 
-// chapterReviseMaxOutputTokens bounds a single-chapter revision. The answer is
-// one full chapter (2-4k 汉字 ≈ 3-6k tokens) plus the thinking chain, so the
-// 8192 default truncates and forces a wasted retry.
-const chapterReviseMaxOutputTokens = 16384
-
-// BuildReviseChapterPacket assembles the per-chapter revise packet.
-// Scope is hard-bounded to one chapter: the system prompt says so and the
-// caller verifies the returned chapter matches.
-func BuildReviseChapterPacket(snap domain.BookSnapshot, unit domain.UnitInfo, ch domain.ChapterDraft, findings []domain.ReviewFinding, baseline ReviewBaseline, modelMaxOut int) domain.ContextPacket {
-	policy := DefaultPolicy(domain.TaskRevise, 0)
-	policy.MaxCalls = 2
-	policy.AllowOneRepair = true
-	policy.MaxOutputTokens = CapMaxOutput(chapterReviseMaxOutputTokens, modelMaxOut)
-
+// reviseChapterBlocks is the block set both revise packets share.
+//
+// 补丁包与兜底包必须看到完全一样的东西：只差输出契约。否则"补丁失败后兜底"
+// 会因为少了某块约束而写出与前一次不同的结果，作者面对两个互斥的正文无从判断。
+func reviseChapterBlocks(snap domain.BookSnapshot, unit domain.UnitInfo, ch domain.ChapterDraft, baseline ReviewBaseline) []domain.ContextBlock {
 	blocks := []domain.ContextBlock{}
 	add := func(id, label, source, content string) {
 		content = strings.TrimSpace(content)
@@ -228,20 +208,29 @@ func BuildReviseChapterPacket(snap domain.BookSnapshot, unit domain.UnitInfo, ch
 	add("reveal", "揭示约束", "canon/reveal-schedule.md", baseline.Reveal)
 	add("style", "风格与写作规则", "canon/style-fingerprint.md", baseline.Style)
 	add("prose", "本章正文", unit.ProsePath, ch.Body)
+	return blocks
+}
+
+// revisePacket assembles a revise packet from a shared block set plus one contract.
+func revisePacket(snap domain.BookSnapshot, unit domain.UnitInfo, ch domain.ChapterDraft, findings []domain.ReviewFinding, blocks []domain.ContextBlock, system, task, instruction string) domain.ContextPacket {
+	policy := DefaultPolicy(domain.TaskRevise, 0)
+	// 每章最多 3 次：补丁 → 补丁修复 → 整章兜底。三次互相独立（锚点错、
+	// 修完仍然套不上、只能在正文层面重写），所以必须是三段而不是两段的加长。
+	policy.MaxCalls = 3
+	policy.AllowOneRepair = true
 
 	hashes := map[string]string{unit.ProsePath: shortHash(ch.Body)}
 	for _, b := range blocks {
 		hashes[b.Source] = shortHash(b.Content)
 	}
 
-	system := novel.ReviseChapterSystemPrompt(ch.Chapter)
 	extra := map[string]any{
 		"reviseChapter":  ch.Chapter,
 		"reviseFindings": reviseFindingRows(findings),
 	}
-	user := BuildUserPrompt("revise", "", map[string]any{
+	user := BuildUserPrompt(task, "", map[string]any{
 		"id": snap.Summary.ID, "unitId": unit.UnitID, "chapter": ch.Chapter,
-	}, fmt.Sprintf("只修订第 %d 章，针对列出的问题最小改动，输出单章 JSON。", ch.Chapter), blocks, extra)
+	}, instruction, blocks, extra)
 
 	packet := domain.ContextPacket{
 		ContractVersion: ContractVersion, TaskKind: domain.TaskRevise, BookID: snap.Summary.ID, UnitID: unit.UnitID,
@@ -253,6 +242,26 @@ func BuildReviseChapterPacket(snap domain.BookSnapshot, unit domain.UnitInfo, ch
 		panic(err)
 	}
 	return packet
+}
+
+// BuildReviseChapterPacket assembles the per-chapter revise patch packet.
+// Scope is hard-bounded to one chapter: the system prompt says so and the
+// caller verifies the returned chapter matches. Output is a find/replace patch,
+// not the whole chapter — see applyChapterEdits for how it is materialized.
+func BuildReviseChapterPacket(snap domain.BookSnapshot, unit domain.UnitInfo, ch domain.ChapterDraft, findings []domain.ReviewFinding, baseline ReviewBaseline, modelMaxOut int) domain.ContextPacket {
+	blocks := reviseChapterBlocks(snap, unit, ch, baseline)
+	return revisePacket(snap, unit, ch, findings, blocks,
+		novel.ReviseChapterPatchPrompt(ch.Chapter), "revise_patch",
+		fmt.Sprintf("只修订第 %d 章：针对列出的问题给出最小改动的补丁，输出单章补丁 JSON。", ch.Chapter))
+}
+
+// BuildReviseChapterFallbackPacket is the whole-chapter contract used only after
+// the patch path has failed: it is the last attempt before the run errors out.
+func BuildReviseChapterFallbackPacket(snap domain.BookSnapshot, unit domain.UnitInfo, ch domain.ChapterDraft, findings []domain.ReviewFinding, baseline ReviewBaseline, modelMaxOut int) domain.ContextPacket {
+	blocks := reviseChapterBlocks(snap, unit, ch, baseline)
+	return revisePacket(snap, unit, ch, findings, blocks,
+		novel.ReviseChapterSystemPrompt(ch.Chapter), "revise",
+		fmt.Sprintf("只修订第 %d 章，针对列出的问题最小改动，输出单章正文 JSON。", ch.Chapter))
 }
 
 // reviseFindingRows renders author-selected findings for the revision prompt.

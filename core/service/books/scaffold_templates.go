@@ -113,7 +113,7 @@ aliases: {}
 		"canon/writing-rules.md": fmt.Sprintf(`# Writing rules
 
 - 单元 3–8 章（硬上限 10）
-- 单章 %d–%d 字，目标 %d 字：在细纲写 `+"`chapter_chars`"+`，别写单元总字数
+- 单章 %d–%d 字，目标 %d 字：在细纲写 `+"`chapter_chars`"+`
 - 正文只写 prose，章间单独一行 ---
 - 不用 AI 套话，不提前打光终局底牌
 `, domain.ChapterCharsMin, domain.ChapterCharsMax, domain.ChapterCharsDefault),

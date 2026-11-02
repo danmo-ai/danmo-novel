@@ -10,6 +10,19 @@ import (
 
 var thinkTagRe = regexp.MustCompile(`(?is)<think>(.*?)</think>`)
 
+// normalizeFinishReason maps provider stop reasons onto the small set the
+// pipeline reasons about. "length"（撞到输出上限）是唯一值得改预算重试的
+// 原因；其余保留原值，方便在调用记录里看到 provider 的原始说法。
+func normalizeFinishReason(raw string) string {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "length", "max_tokens", "max_output_tokens", "max_completion_tokens":
+		return port.FinishReasonLength
+	case "":
+		return ""
+	}
+	return strings.ToLower(strings.TrimSpace(raw))
+}
+
 // resolveProtocolDialect returns a concrete protocol dialect for Chat Completions.
 func resolveProtocolDialect(gp *port.ModelGenParams, model string) string {
 	if gp != nil && gp.ProtocolDialect != "" {

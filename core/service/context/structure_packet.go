@@ -23,5 +23,5 @@ func BuildStructureReviewPacket(snap domain.BookSnapshot, spec domain.TaskSpec) 
 		hashes[b.Source] = shortHash(b.Content)
 	}
 	user := BuildUserPrompt("review_structure", "", map[string]any{"id": snap.Summary.ID}, spec.Instruction, blocks, nil)
-	return domain.ContextPacket{ContractVersion: "structure-editor/v1", TaskKind: domain.TaskStructureReview, BookID: snap.Summary.ID, VolumeID: spec.VolumeID, InputHashes: hashes, Blocks: blocks, Policy: domain.CallPolicy{MaxCalls: 2, AllowOneRepair: true, MaxOutputTokens: 8192, TimeoutSec: 600}, UserPrompt: user, EstPromptTokens: len([]rune(user)) / 2, SystemPrompt: fmt.Sprintf("任务 review_structure；协议由 PromptStore 注入。")}
+	return domain.ContextPacket{ContractVersion: "structure-editor/v1", TaskKind: domain.TaskStructureReview, BookID: snap.Summary.ID, VolumeID: spec.VolumeID, InputHashes: hashes, Blocks: blocks, Policy: domain.CallPolicy{MaxCalls: 2, AllowOneRepair: true, TimeoutSec: 600}, UserPrompt: user, EstPromptTokens: len([]rune(user)) / 2, SystemPrompt: fmt.Sprintf("任务 review_structure；协议由 PromptStore 注入。")}
 }

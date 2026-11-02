@@ -7,62 +7,34 @@ import (
 	"github.com/danmo-ai/danmo-novel/core/domain"
 )
 
-func TestCapMaxOutput(t *testing.T) {
-	if CapMaxOutput(32768, 0) != 32768 {
-		t.Fatal("unknown model max should keep desired")
-	}
-	if CapMaxOutput(32768, 128000) != 32768 {
-		t.Fatal("desired under model max should keep desired")
-	}
-	if CapMaxOutput(32768, 8192) != 8192 {
-		t.Fatal("desired above model max should clamp")
-	}
-	if CapMaxOutput(0, 4096) != 4096 {
-		t.Fatal("zero desired should default then clamp")
-	}
-}
-
-func TestBuildPlanPacketInitOutputBudget(t *testing.T) {
+// 输出上限不由上层决定：所有 packet 都传 0，交给 LLM client 按模型配置处理。
+// 这里把这条约定钉死——任何一处又把数字写回 packet，就会在这里红。
+func TestPacketsDeferOutputBudgetToModelConfig(t *testing.T) {
 	snap := domain.BookSnapshot{Summary: domain.BookSummary{ID: "demo"}}
-	full := BuildPlanPacketWithMode(snap, 1, domain.PlanModeInit, "", 0)
-	if full.Policy.MaxOutputTokens != planInitMaxOutputTokens {
-		t.Fatalf("init budget=%d want %d", full.Policy.MaxOutputTokens, planInitMaxOutputTokens)
+	packets := map[string]domain.ContextPacket{
+		"plan-init":   BuildPlanPacketWithMode(snap, 1, domain.PlanModeInit, "", 0),
+		"plan-reinit": BuildPlanPacketWithMode(snap, 1, domain.PlanModeReinit, "", 0),
+		"plan-volume": BuildPlanPacketWithMode(snap, 1, domain.PlanModeVolume, "", 0),
+		"outline":     BuildOutlinePacket(snap, 1, nil, "", 0),
+		"review":      BuildReviewPacket(snap, domain.UnitInfo{UnitID: "v01-U1", ChapterFrom: 1, ChapterTo: 1}, nil, 0, ""),
+		"local-edit":  BuildLocalEditPacket(snap, domain.TextSelection{Text: "原文"}, "改一下"),
 	}
-	clamped := BuildPlanPacketWithMode(snap, 1, domain.PlanModeReinit, "", 8192)
-	if clamped.Policy.MaxOutputTokens != 8192 {
-		t.Fatalf("reinit clamped=%d", clamped.Policy.MaxOutputTokens)
+	for name, p := range packets {
+		if p.Policy.MaxOutputTokens != 0 {
+			t.Errorf("%s: maxOutputTokens=%d, want 0 (client reads the model catalog)", name, p.Policy.MaxOutputTokens)
+		}
 	}
-	vol := BuildPlanPacketWithMode(snap, 1, domain.PlanModeVolume, "", 4096)
-	if vol.Policy.MaxOutputTokens != 4096 {
-		t.Fatalf("volume clamped=%d", vol.Policy.MaxOutputTokens)
+	// 未知模型容量时同样不设上限：宁可让 provider 用自己的默认值。
+	if p := BuildOutlinePacket(snap, 1, nil, "", 8192); p.Policy.MaxOutputTokens != 0 {
+		t.Fatalf("outline must not clamp to an upstream budget, got %d", p.Policy.MaxOutputTokens)
 	}
-}
-
-// 整本书 reinit 要一次写完总纲＋全部设定＋全部人物卡。实测一本书（8.8k 字符
-// 总纲、19 张人物卡、9 个设定文件）需要约 44k tokens：32768 只能写到 JSON 中途，
-// 首轮必截断、重试才收尾。预算必须够一次成功，别把正常规模当成异常路径。
-func TestPlanReinitOutputBudgetFitsWholeBook(t *testing.T) {
-	snap := domain.BookSnapshot{Summary: domain.BookSummary{ID: "demo"}}
-	reinit := BuildPlanPacketWithMode(snap, 1, domain.PlanModeReinit, "", 0)
-	if reinit.Policy.MaxOutputTokens < 65536 {
-		t.Fatalf("reinit budget=%d want >= 65536", reinit.Policy.MaxOutputTokens)
+	if p := BuildPlanPacketWithMode(snap, 1, domain.PlanModeReinit, "", 8192); p.Policy.MaxOutputTokens != 0 {
+		t.Fatalf("plan must not clamp to an upstream budget, got %d", p.Policy.MaxOutputTokens)
 	}
+	// 调用预算仍然受控：这是固定任务契约的一部分。
+	reinit := packets["plan-reinit"]
 	if reinit.Policy.MaxCalls < 2 || !reinit.Policy.AllowOneRepair {
 		t.Fatalf("reinit still needs one structure repair: %+v", reinit.Policy)
-	}
-}
-
-func TestBuildOutlinePacketOutputBudget(t *testing.T) {
-	snap := domain.BookSnapshot{Summary: domain.BookSummary{ID: "demo"}}
-	// 未知模型容量时用 outline 的固定预算（需容纳与细纲头同量级的输出）。
-	p := BuildOutlinePacket(snap, 1, nil, "", 0)
-	if p.Policy.MaxOutputTokens != 32768 {
-		t.Fatalf("outline budget=%d want 32768", p.Policy.MaxOutputTokens)
-	}
-	// 仍受模型 max_output 约束。
-	small := BuildOutlinePacket(snap, 1, nil, "", 8192)
-	if small.Policy.MaxOutputTokens != 8192 {
-		t.Fatalf("outline clamped=%d want 8192", small.Policy.MaxOutputTokens)
 	}
 }
 

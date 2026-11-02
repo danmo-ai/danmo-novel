@@ -24,6 +24,8 @@ func chatLLM(ctx context.Context, llm port.LLMProvider, modelID, system, user st
 		GenParams: &port.ModelGenParams{MaxTokens: policy.MaxOutputTokens},
 	})
 	rec.DurationMs = time.Since(start).Milliseconds()
+	// 停止原因先记下来：截断判定只看这个字段，不看我们发出去的额度。
+	rec.FinishReason = resp.FinishReason
 	if resp.Usage != nil {
 		rec.PromptTokens = resp.Usage.PromptTokens
 		rec.CompletionTokens = resp.Usage.CompletionTokens

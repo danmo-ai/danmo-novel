@@ -128,8 +128,8 @@ func (r *Runner) RunReviewByChapter(ctx context.Context, snap domain.BookSnapsho
 func (r *Runner) reviewChapter(ctx context.Context, modelID string, packet domain.ContextPacket, chapter int) ([]domain.ReviewFinding, []domain.CallRecord, error) {
 	var findings []domain.ReviewFinding
 	// 抢救路径能解析出"半份结论"，但那不是结论：第一次截断必须交给 runJSON
-	// 用翻倍预算重试（截断是唯一能靠改预算修掉的失败），第二次仍截断才收下，
-	// 并保留 budget advisory 让下游判成"审校不完整"而不是"没有问题"。
+	// 用「更紧凑输出」重试，第二次仍截断才收下，并保留 budget advisory 让下游
+	// 判成"审校不完整"而不是"没有问题"。输出上限本身由模型配置决定。
 	attempt := 0
 	res, err := r.runJSON(ctx, domain.BookSnapshot{}, packet, modelID, domain.TaskReview, packet.UnitID, packet.UnitID+"#"+fmt.Sprint(chapter),
 		func(raw string, cand *domain.Candidate) error {
@@ -139,7 +139,7 @@ func (r *Runner) reviewChapter(ctx context.Context, modelID string, packet domai
 				return err
 			}
 			if attempt == 1 && hasTruncationFinding(fs) {
-				return fmt.Errorf("审校输出在 %d tokens 预算处被截断", packet.Policy.MaxOutputTokens)
+				return fmt.Errorf("审校输出达到模型的最大输出上限被截断，只返回了部分结论")
 			}
 			findings = fs
 			return nil

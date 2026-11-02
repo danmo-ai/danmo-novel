@@ -10,21 +10,36 @@ import (
 const KnowledgeVersion = "kb-novel-2026.10.1"
 
 func WriteSystemPrompt() string {
-	return `你是长篇网文写手。只根据 CONTEXT 写单元正文，不要工具调用，不要解释。
+	return WriteSystemPromptFor(domain.ChapterCharsDefault)
+}
+
+// WriteSystemPromptFor 把本章字数额度写进系统提示词。
+//
+// 字数规则以前只出现在 user payload 的一个小段落里，而且措辞是「多于 3500 字
+// 会有超长告警」——等于告诉模型超了也没事。实测一本目标 2500 字/章的书，六章
+// 写出 3160–6210 字，超长项全是 advisory，没有任何一章被重写。硬规则放在系统
+// 提示词里、并且给出确切目标，模型才会真的按它写。
+func WriteSystemPromptFor(chapterTarget int) string {
+	floor, ceil := domain.ChapterBand(chapterTarget)
+	scenes := 3
+	return fmt.Sprintf(`你是长篇网文写手。只根据 CONTEXT 写单元正文，不要工具调用，不要解释。
 硬规则：
 1. 输出严格 JSON：{"chapters":[{"chapter":N,"title":"...","body":"..."}]}
 2. 覆盖单元章范围内全部章节；body 为纯散文，不用 markdown 标题。
 3. 遵守细纲合同：desire/obstacle/choice/payoff/forbidden；on_stage 人物声音可区分。
 4. 不得写穿 state_deltas 终局身份到开场；承接上章钩子。
 5. 少用破折号与 AI 套话；中文正文避免英文泄漏。
-章标题规范：2–6 字的短意象或动作，取自本章具体物件、地点、动作或一句话（如「雪夜」「脚印会说话」「后山招供」）；不写「第X章」字样，不用「危机」「高潮」「转折」「揭秘」这类空泛词，不剧透未发生的反转，不堆砌形容词。`
+6. 字数：每章 %d 字，允许 %d–%d 字。这是合同值不是参考值——少于 %d 字会被退回重写；超过 %d 字会判为不合格并计入审校。
+7. 动笔前把本章拆成约 %d 个场面，每个场面约 %d 字；写完一个再进下一个，写完最后一个就收尾——不额外加场，不为凑字复述或写过渡，也不为压缩砍掉场面结果与章末钩子。
+章标题规范：2–6 字的短意象或动作，取自本章具体物件、地点、动作或一句话（如「雪夜」「脚印会说话」「后山招供」）；不写「第X章」字样，不用「危机」「高潮」「转折」「揭秘」这类空泛词，不剧透未发生的反转，不堆砌形容词。`,
+		chapterTarget, floor, ceil, floor, ceil, scenes, chapterTarget/scenes)
 }
 
 func OutlineSystemPrompt() string {
 	return fmt.Sprintf(`你是小说编辑。只补全单元细纲合同字段，输出严格 JSON，不要工具调用，不要只输出单个单元对象。
 输出外壳必须是：{"units":[{...},...]}；即使只改 1 个单元，也要放进 units 数组。
 每个单元字段：unitId,title,function,desire,obstacle,choice,payoff,pleasure,forbidden,chapterChars,onStage,pov,chapterFrom,chapterTo,chapters,scenes,stateDeltas,nextHook,storyDay,endDay,gapDays,timelineId,gapFromPrev,infoControl。
-chapterChars 是**单章**目标字数，正整数，只能落在 %d–%d；不写则由系统补默认值。不要输出 wordTarget —— 单元总字数由 chapterChars × 章数派生，多写一份只会出现两套口径。
+chapterChars 是**单章**目标字数，正整数，只能落在 %d–%d；不写则由系统补默认值。只要 chapterChars 这一个数字；不要输出 wordTarget。
 chapters 是逐章轻量合同，每章必须有 {chapter,goal,change,cutHook,dayOffset}；change 必须是可验证的状态/信息/关系/行动变化，不得只写情绪。章范围全部覆盖，day_offset 不超出单元结束日。
 scenes 仅复杂章的可选子项，不要求每章都有；每个 scene 仅含 {chapter,goal,conflict,turn,outcome}，可选 id/mustLand/evidenceIn/evidenceOut/dayOffset。禁止预写台词、动作清单和情绪曲线；mustLand 最多 2 个可见事实。
 存在「不可改写的单元种子」时：sourceSeedId 必须等于单元 ID；chapterFrom/chapterTo、desire/obstacle/choice/payoff 必须逐字继承种子 chapter_range/objective/obstacle/choice/outcome，不得改故事；attempt/setback/cost 也继承种子；storyDay/endDay/gapDays 必须继承 clock_start_day/clock_end_day/clock_gap_days。
@@ -82,7 +97,46 @@ func ReviewSystemPrompt() string {
 6. 按「审校清单」文档逐条执行；每条 finding 的 id 用「lens-章号-序号」格式，如「continuity-7-1」。`
 }
 
+// ReviseChapterPatchPrompt bounds a revise call to a structured patch.
+//
+// 修订只动一两句，回整章正文等于把没变的文字按输出价重抄一遍。补丁契约把输出
+// 压到几条 hunk，代价是定位必须可判定：因此这里把「章内唯一」「逐字照抄」
+// 「不得省略中间内容」写成硬规则，并给出正例——规则说一百遍不如一个例子。
+//
+// find 长度给的是**目标区间**而不是门槛：太短会碰撞，太长等于把省下的 token
+// 又抄回来。唯一性由服务端计数判定，短锚点只要本章真出现一次就放行。
+func ReviseChapterPatchPrompt(chapter int) string {
+	return fmt.Sprintf(`你是小说修订助手。只改第 %d 章，不得改动其它章；保持本章章号不变。
+你不重写正文，只输出补丁：服务端会把 find 这段原文替换成 replace。
+
+返回 JSON：{"chapter":%d,"edits":[{"find":"...","replace":"..."}]}
+规则：
+1. find 必须逐字复制本章正文中的连续原文，不改写、不调整标点。
+   **不得用「……」或「...」省略中间内容**——省略会让服务端定位失败。
+2. find 取一句完整的话即可（目标 10–40 字）。不要超过 60 字：那说明你在整段
+   搬原文，此时应改成整段替换。唯一性只在**本章内**成立，不需要为跨章重复加长。
+3. find 必须在本章内只出现一次。撞车时不要取巧，把 find 向左右各扩一句。
+   短句例外：改动点本身是独立短句（如「好。」）时，照抄该短句并带紧邻的半句；
+   确实无法扩展就只给短句本身——服务端按章内唯一性判定，不因字数少而拒绝。
+4. 一处一改；同一段内的多处修改合并成一条 edit，edits 之间不得重叠。
+5. replace 是替换后的文本，可以为空字符串（表示删除）。find 与 replace 相同
+   的空操作不要输出。
+6. edits 按正文顺序输出即可，顺序不影响套用。
+7. 只修列出的审校问题，保留已经成立的部分、人物关系、伏笔、物件与时间。
+   不要新增自由审稿轮次，不要改未列出的问题。
+8. 只输出这一个 JSON 对象，不要任何分析、前言、代码块或正文引用。
+
+示例。正文含「他把杯子放下，说：「好。」然后转身走了。」
+- 改口吻：{"chapter":%d,"edits":[{"find":"他把杯子放下，说：「好。」","replace":"他把杯子放下，说：「随你。」"}]}
+- 连续两句一起改（合并，不要拆两条）：{"chapter":%d,"edits":[{"find":"他把杯子放下，说：「好。」然后转身走了。","replace":"他把杯子重重搁下：「随你。」转身头也不回地走了。"}]}
+- 不要这样：{"chapter":%d,"edits":[{"find":"好。","replace":"随你。"}]} —— 单句短锚点常在本章重复，也没带上下文，注定定位失败。`,
+		chapter, chapter, chapter, chapter, chapter)
+}
+
 // ReviseChapterSystemPrompt bounds a revise call to exactly one chapter.
+//
+// 这是补丁两次都没套上之后的兜底：整章输出必然能落盘，代价是把没改的文字
+// 按输出价重抄一遍。只在补丁路径失败时使用，不要作为默认契约。
 func ReviseChapterSystemPrompt(chapter int) string {
 	return fmt.Sprintf(`你是小说修订助手。只改第 %d 章，不得改动其它章；保持本章章号不变。
 针对列出的审校问题做最小改动：只修指定问题，保留已经成立的部分、人物关系、伏笔、物件与时间。

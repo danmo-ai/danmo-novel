@@ -100,13 +100,9 @@ func TestRunReviewByChapterKeepsRealCallRecords(t *testing.T) {
 	if res.Packet.Policy.MaxCalls != 6 {
 		t.Fatalf("maxCalls=%d want 6 (two per chapter)", res.Packet.Policy.MaxCalls)
 	}
-	if res.Packet.Policy.MaxOutputTokens == 0 {
-		t.Fatal("policy lost: UI would show 0 budget")
-	}
-	// 单章预算不能比整单元更窄：思考链与答案共用 max_tokens，思维链开销不随
-	// findings 条数缩小。12288 在 high 强度下会被吃满（实测只剩 1 条结论）。
-	if res.Packet.Policy.MaxOutputTokens < 32768 {
-		t.Fatalf("per-chapter budget=%d must not be below the unit-wide 32768", res.Packet.Policy.MaxOutputTokens)
+	// 输出上限交给 client 按模型配置决定：上层传 0，不再自己算一个数。
+	if res.Packet.Policy.MaxOutputTokens != 0 {
+		t.Fatalf("maxOutputTokens=%d, want 0 (defer to model config)", res.Packet.Policy.MaxOutputTokens)
 	}
 	// findings 必须带上章号，作者才能定位。
 	for _, f := range res.Candidate.Findings {
@@ -116,9 +112,9 @@ func TestRunReviewByChapterKeepsRealCallRecords(t *testing.T) {
 	}
 }
 
-// 截断不能被抢救路径静默收下：第一次截断必须触发"翻倍预算"重试，
-// 否则 high 强度下思维链吃满预算时，一章只剩 1 条结论会被读成"这章没问题"。
-func TestChapterReviewRetriesWithBiggerBudgetOnTruncation(t *testing.T) {
+// 截断不能被抢救路径静默收下：第一次截断必须重试一次，
+// 否则一章只剩 1 条结论会被读成"这章没问题"。
+func TestChapterReviewRetriesWhenProtocolSaysTruncated(t *testing.T) {
 	snap, unit, _ := loadFixtureUnit(t)
 	unit.ProseRaw = "## 第1章 夜\n\n" + strings.Repeat("他握紧刀柄，没有退缩，只把呼吸压到最慢。", 110)
 	fake := &truncatingReviewLLM{}
@@ -131,10 +127,13 @@ func TestChapterReviewRetriesWithBiggerBudgetOnTruncation(t *testing.T) {
 		t.Fatal(err)
 	}
 	if fake.count() != 2 {
-		t.Fatalf("requests=%d want 2 (truncated + escalated retry)", fake.count())
+		t.Fatalf("requests=%d want 2 (truncated + retry)", fake.count())
 	}
-	if fake.budgets[1] <= fake.budgets[0] {
-		t.Fatalf("retry budget=%d must exceed first budget=%d", fake.budgets[1], fake.budgets[0])
+	// 上层不再持有预算，重试改的是提示词（要求更紧凑），不是数字。
+	for i, b := range fake.budgets {
+		if b != 0 {
+			t.Fatalf("call %d sent max_tokens=%d; the model config owns that value", i+1, b)
+		}
 	}
 	for _, f := range res.Candidate.Findings {
 		if f.ID == domain.FindingReviewTruncated {
@@ -143,8 +142,8 @@ func TestChapterReviewRetriesWithBiggerBudgetOnTruncation(t *testing.T) {
 	}
 }
 
-// truncatingReviewLLM: 第一次输出被预算截断（usage 打满 + JSON 半截），
-// 第二次返回完整结论。故意带 usage，因为截断判定看的是 completion tokens。
+// truncatingReviewLLM: 第一次输出被模型输出上限截断（finish_reason=length +
+// JSON 半截），第二次返回完整结论。截断判定只看协议字段，不看 usage。
 type truncatingReviewLLM struct {
 	mu      sync.Mutex
 	calls   int
@@ -165,8 +164,10 @@ func (f *truncatingReviewLLM) Chat(_ context.Context, req port.LLMChatRequest) (
 	if n == 1 {
 		return port.LLMChatResponse{
 			Content: `{"verdict":"pass","findings":[{"id":"style-1-1","severity":"advisory","chapter":1,"title":"半条`,
-			Usage:   &port.LLMUsage{PromptTokens: 1200, CompletionTokens: budget},
+			Usage:   &port.LLMUsage{PromptTokens: 1200, CompletionTokens: 8192},
 			Done:    true,
+			// 协议说"撞到上限"，这才是截断的唯一证据。
+			FinishReason: port.FinishReasonLength,
 		}, nil
 	}
 	return port.LLMChatResponse{

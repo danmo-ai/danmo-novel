@@ -187,6 +187,7 @@ func parseChatCompletionsResponse(respBody []byte) (port.LLMChatResponse, error)
 					} `json:"function"`
 				} `json:"tool_calls"`
 			} `json:"message"`
+			FinishReason string `json:"finish_reason"`
 		} `json:"choices"`
 		Usage openaiCompatibleUsage `json:"usage"`
 	}
@@ -200,6 +201,7 @@ func parseChatCompletionsResponse(respBody []byte) (port.LLMChatResponse, error)
 	usage := result.Usage.toLLMUsage()
 
 	choice := result.Choices[0].Message
+	finish := normalizeFinishReason(result.Choices[0].FinishReason)
 	reasoning := choice.ReasoningContent
 	if reasoning == "" {
 		reasoning = choice.Reasoning
@@ -222,6 +224,7 @@ func parseChatCompletionsResponse(respBody []byte) (port.LLMChatResponse, error)
 			ToolCalls:        tcs,
 			ReasoningContent: reasoning,
 			Usage:            usage,
+			FinishReason:     finish,
 		}, nil
 	}
 
@@ -230,6 +233,7 @@ func parseChatCompletionsResponse(respBody []byte) (port.LLMChatResponse, error)
 		ReasoningContent: reasoning,
 		Usage:            usage,
 		Done:             true,
+		FinishReason:     finish,
 	}, nil
 }
 

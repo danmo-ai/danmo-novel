@@ -155,8 +155,10 @@ func ExecuteTask[T any](ctx context.Context, runner *TaskRunner, call Invocation
 			return TaskResult[T]{Value: value, Candidate: candidate, Calls: calls, Packet: packet}, nil
 		}
 		lastErr = err
-		if truncatedOutput(rec, policy) && attempt < max {
-			policy.MaxOutputTokens = escalateOutputBudget(policy.MaxOutputTokens, runner.modelMax(call.ModelID))
+		// 截断只由响应协议判定；输出上限由 LLM client 按模型配置决定，
+		// 上层不再持有可翻倍的预算。
+		if truncatedOutput(rec) {
+			lastErr = truncationRetryError(err)
 		}
 	}
 	return TaskResult[T]{Calls: calls, Packet: packet}, fmt.Errorf("%s 未通过输出协议：%w；last=%s", def.ID, lastErr, clip(lastRaw, 200))

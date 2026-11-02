@@ -70,13 +70,14 @@ func CheckProseWithRules(chapters []domain.ChapterDraft, chapterTarget int, rule
 					Suggestion: "扩写至目标字数区间",
 				})
 			} else if chars > ceil {
-				// 上限曾经完全没判：写多长都算通过，单章可以涨到目标的 1.4 倍以上，
-				// 单元总量随之失控。先按 advisory 报，不新增阻断面。
+				// 超长只报 advisory，不做成阻断面：审校页没法对整章做大幅度缩写，
+				// 强行 blocking 只会把作者卡在这一步。真正的约束在写作提示词里
+				// （系统提示词 + 本章字数额度块），这里只负责把超出的事实说清楚。
 				r.Findings = append(r.Findings, domain.ReviewFinding{
 					ID: fmt.Sprintf("length-over-ch%d", ch.Chapter), Severity: "advisory", Source: "local_gate",
 					Lens: "length", Title: "字数超出目标区间", Chapter: ch.Chapter,
 					Evidence:   fmt.Sprintf("chars=%d target≈%d ceil=%d", chars, chapterTarget, ceil),
-					Suggestion: "删冗余节拍或拆章；别靠删结尾的钩子凑字数",
+					Suggestion: fmt.Sprintf("下次按 %d–%d 字写；若要压缩，删同类复述与重复解释，别删场面结果和章末钩子", chapterTarget, ceil),
 				})
 			}
 		}

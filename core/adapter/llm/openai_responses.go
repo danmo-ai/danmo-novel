@@ -243,12 +243,24 @@ func parseResponsesBody(respBody []byte) (port.LLMChatResponse, error) {
 			} `json:"summary"`
 		} `json:"output"`
 		Usage openaiCompatibleUsage `json:"usage"`
+		// status 是 "completed" / "incomplete" / "failed"；
+		// incomplete_details.reason 为 "max_output_tokens" 时就是被预算截断。
+		Status            string `json:"status"`
+		IncompleteDetails struct {
+			Reason string `json:"reason"`
+		} `json:"incomplete_details"`
 	}
 	if err := json.Unmarshal(respBody, &result); err != nil {
 		return port.LLMChatResponse{}, err
 	}
 	if len(result.Output) == 0 {
 		return port.LLMChatResponse{}, fmt.Errorf("no output in responses api result")
+	}
+
+	// 只有 max_output_tokens 算截断；content_filter 之类是另一类失败，别混进来。
+	finish := "stop"
+	if result.Status == "incomplete" && result.IncompleteDetails.Reason == "max_output_tokens" {
+		finish = port.FinishReasonLength
 	}
 
 	usage := result.Usage.toLLMUsage()
@@ -294,6 +306,7 @@ func parseResponsesBody(respBody []byte) (port.LLMChatResponse, error) {
 			ToolCalls:        tcs,
 			ReasoningContent: reasoning.String(),
 			Usage:            usage,
+			FinishReason:     finish,
 		}, nil
 	}
 
@@ -302,5 +315,6 @@ func parseResponsesBody(respBody []byte) (port.LLMChatResponse, error) {
 		ReasoningContent: reasoning.String(),
 		Usage:            usage,
 		Done:             true,
+		FinishReason:     finish,
 	}, nil
 }

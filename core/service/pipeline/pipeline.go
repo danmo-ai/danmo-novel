@@ -101,10 +101,16 @@ func (r *Runner) RunWrite(ctx context.Context, snap domain.BookSnapshot, unit do
 		CreatedAt: time.Now().UTC(),
 	}
 	var calls []domain.CallRecord
+	// 每章目标字数放在"本次只写这一章"的指令里：按章调用时这条是模型最后读到
+	// 的、也是唯一针对本次输出的约束，比 payload 里那段通用说明更难忽略。
+	target := books.ChapterTarget(unit)
+	floor, ceil := domain.ChapterBand(target)
 	for ch := from; ch <= to; ch++ {
 		extra := map[string]any{
-			"chapter":     ch,
-			"chapterRule": fmt.Sprintf("本次只写第 %d 章，chapters 数组只放这一章。", ch),
+			"chapter": ch,
+			"chapterRule": fmt.Sprintf(
+				"本次只写第 %d 章，chapters 数组只放这一章。本章为 %d 字（允许 %d–%d 字）：先按场面分配字数，写完收在目标附近，不要靠追加场景或复述把篇幅写长。",
+				ch, target, floor, ceil),
 		}
 		if len(cand.Chapters) > 0 {
 			prev := cand.Chapters[len(cand.Chapters)-1]
@@ -121,7 +127,6 @@ func (r *Runner) RunWrite(ctx context.Context, snap domain.BookSnapshot, unit do
 		cand.Chapters = append(cand.Chapters, draft)
 	}
 	// 按章定向修复：单章硬门不过只重生成该章，其他章不动。
-	target := books.ChapterTarget(unit)
 	cand.Chapters = r.repairFailedChapters(ctx, modelID, packet, cand.Chapters, target, &calls)
 	rep := gates.CheckProseWithRules(cand.Chapters, target, r.proseRules())
 	cand.Findings = append(cand.Findings, rep.Findings...)
@@ -303,9 +308,10 @@ func (r *Runner) generateChapter(ctx context.Context, modelID string, packet dom
 			return draft, rec, nil
 		}
 		lastErr = perr
-		// 截断是唯一能靠"改预算"修掉的失败：原样重试必然在同一处再截断。
-		if truncatedOutput(rec, policy) && attempt < max {
-			policy.MaxOutputTokens = escalateOutputBudget(policy.MaxOutputTokens, r.modelMaxOut(modelID))
+		// 截断只认协议信号（finish_reason=length），不再猜预算。上限由 client
+		// 按模型配置决定，上层已经无法"加大预算"，重试能改的只有输出是否紧凑。
+		if truncatedOutput(rec) {
+			lastErr = truncationRetryError(perr)
 		}
 	}
 	return domain.ChapterDraft{}, lastRec, lastErr
@@ -365,7 +371,7 @@ func (r *Runner) repairFailedChapters(ctx context.Context, modelID string, packe
 			"repairChapter": map[string]any{
 				"findings": detailedFindings(fs),
 				"body":     ch.Body,
-				"rule":     fmt.Sprintf("第 %d 章未通过本地硬门，请定向修复这一章（其他章已合格，不需重写）；只返回这一章 JSON。", ch.Chapter),
+				"rule":     repairRule(ch.Chapter, fs, target),
 			},
 		})
 		// 记录起点：generateChapter 自己也可能重试一次，所以要按本次新增的
@@ -384,6 +390,24 @@ func (r *Runner) repairFailedChapters(ctx context.Context, modelID string, packe
 		}
 	}
 	return chapters
+}
+
+// repairRule 把硬门的阻断结论翻译成这一章该做什么。
+//
+// 只有 blocking 会走到这里（超长是 advisory，不进重写循环）。字数不足时明确
+// 给出区间，并要求"补能改变因果的场面"，否则模型会用同义扩写和天气描写凑字。
+func repairRule(chapter int, findings []domain.ReviewFinding, target int) string {
+	short := false
+	for _, f := range findings {
+		if f.ID == fmt.Sprintf("length-ch%d", chapter) {
+			short = true
+		}
+	}
+	_, ceil := domain.ChapterBand(target)
+	if short {
+		return fmt.Sprintf("第 %d 章字数不足，请补写到 %d–%d 字：补能改变因果的场面与动作，不做同义扩写、不注水；只返回这一章 JSON。", chapter, target, ceil)
+	}
+	return fmt.Sprintf("第 %d 章未通过本地硬门，请定向修复这一章（其他章已合格，不需重写）；只返回这一章 JSON。", chapter)
 }
 
 func (r *Runner) runJSON(
@@ -445,20 +469,15 @@ func (r *Runner) runJSON(
 		}
 		if err := parse(raw, &cand); err != nil {
 			lastErr = err
-			truncated := truncatedOutput(rec, policy)
+			truncated := truncatedOutput(rec)
 			if truncated {
-				// 预算用完是唯一能靠"改预算"修掉的失败：原样重试必然在同一处再截断。
-				lastErr = fmt.Errorf("%w；上一次输出在 %d tokens 预算处被截断（思维链与答案共用这份预算），"+
-					"这次只返回精简 JSON：不要复述或引用正文，条目与字段文本尽量短", err, policy.MaxOutputTokens)
+				lastErr = truncationRetryError(err)
 			}
 			if attempt < max && policy.AllowOneRepair {
-				if truncated {
-					policy.MaxOutputTokens = escalateOutputBudget(policy.MaxOutputTokens, r.modelMaxOut(modelID))
-				}
 				continue
 			}
 			if truncated {
-				return Result{Calls: calls, Packet: packet}, fmt.Errorf("parse: %w（输出在 %d tokens 预算处被截断）", err, policy.MaxOutputTokens)
+				return Result{Calls: calls, Packet: packet}, fmt.Errorf("parse: %w（模型输出达到该模型的最大输出上限被截断）", err)
 			}
 			return Result{Calls: calls, Packet: packet}, fmt.Errorf("parse: %w", err)
 		}
@@ -474,25 +493,24 @@ func (r *Runner) runJSON(
 	return Result{Calls: calls, Packet: packet}, fmt.Errorf("budget exhausted: %v; last=%s", lastErr, clip(lastRaw, 200))
 }
 
-// truncatedOutput reports that the call used up the whole output budget, so the
-// response was cut off rather than finished (thinking tokens share that budget
-// on Chat Completions dialects that enable reasoning).
-func truncatedOutput(rec domain.CallRecord, policy domain.CallPolicy) bool {
-	return policy.MaxOutputTokens > 0 && rec.CompletionTokens >= policy.MaxOutputTokens
+// truncationRetryError 告诉模型「上次是撞到输出上限」，而不是「格式不对」。
+// 上层不再持有预算（上限由 client 按模型配置决定），所以重试能改的只有长度：
+// 要求更紧凑的 JSON 与更少的复述。
+func truncationRetryError(err error) error {
+	return fmt.Errorf("%w；上一次输出因达到模型的最大输出上限被截断（思维链与答案共用这份额度），"+
+		"内容没写完。这次只返回精简 JSON：不要复述或引用正文，条目与字段文本尽量短，正文按字数目标写完",
+		err)
 }
 
-// escalateOutputBudget doubles the answer budget for a retry, never beyond what
-// the model itself accepts. Truncation is the one failure a retry can actually
-// fix, and only if the retry differs in the dimension that failed.
-func escalateOutputBudget(current, modelMax int) int {
-	if current <= 0 {
-		return current
-	}
-	next := current * 2
-	if modelMax > 0 && next > modelMax {
-		next = modelMax
-	}
-	return next
+// truncatedOutput reports that the model stopped because it hit its output
+// ceiling — read straight off the response protocol, never inferred.
+//
+// 以前上层自己定一个 max_tokens，再用「completion_tokens 是否等于它」反推截断。
+// 这个反推两头都错：上层给的值可能远低于模型能力（8k vs 384k），而用量报
+// 8191/8192、8189/8192 时严等于又判不出来。现在上限交给 client 按模型配置
+// 决定，截断只认 provider 自己说的 finish_reason == "length"。
+func truncatedOutput(rec domain.CallRecord) bool {
+	return rec.FinishReason == port.FinishReasonLength
 }
 
 func (r *Runner) chat(ctx context.Context, modelID, system, user string, policy domain.CallPolicy) (string, domain.CallRecord, error) {
@@ -513,6 +531,8 @@ func (r *Runner) chat(ctx context.Context, modelID, system, user string, policy 
 	}
 	resp, err := r.LLM.Chat(ctx, req)
 	rec.DurationMs = time.Since(start).Milliseconds()
+	// 停止原因先记下来：截断判定只看这个字段，不看我们发出去的额度。
+	rec.FinishReason = resp.FinishReason
 	if resp.Usage != nil {
 		rec.PromptTokens = resp.Usage.PromptTokens
 		rec.CompletionTokens = resp.Usage.CompletionTokens

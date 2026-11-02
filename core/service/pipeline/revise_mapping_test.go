@@ -58,12 +58,12 @@ func TestReviseRejectsOutOfRangeChapter(t *testing.T) {
 
 // 正常情况仍然要能修：带章号的意见不受上面两条影响。
 func TestReviseStillWorksWithChapteredFinding(t *testing.T) {
-	snap, unit, _ := loadFixtureUnit(t)
+	snap, unit := reviseFixture(t)
 	findings := []domain.ReviewFinding{
 		{ID: "style-1-1", Severity: "blocking", Chapter: 1, Title: "对白说明化", Evidence: "e"},
 	}
 	fake := &repairProbeLLM{responses: []string{
-		`{"chapter":1,"title":"第1章","body":"修好的正文。"}`,
+		`{"chapter":1,"edits":[{"find":"他在廊下站了很久。","replace":"他在廊下站了很久，直到更漏响过三遍。"}]}`,
 	}}
 	r := New(fake)
 

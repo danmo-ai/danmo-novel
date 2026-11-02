@@ -83,8 +83,14 @@ const (
 
 // CallPolicy is fixed before a run starts. Tools are always empty.
 type CallPolicy struct {
-	MaxCalls        int  `json:"maxCalls"`
-	MaxOutputTokens int  `json:"maxOutputTokens"`
+	MaxCalls int `json:"maxCalls"`
+	// MaxOutputTokens 已弃用，恒为 0。
+	//
+	// 输出上限不是上层该管的事：LLM client 会按模型目录里的 max_output 决定，
+	// 目录没写就不发这个字段、由 provider 用默认值。上层写死过 8192/32768/65536，
+	// 结果是声明 384000 的模型被按 8k 用，思考 tokens 把预算吃满后正文从中间被
+	// 截断。是否截断改为看响应协议的 finish_reason。
+	MaxOutputTokens int  `json:"maxOutputTokens,omitempty"`
 	TimeoutSec      int  `json:"timeoutSec"`
 	AllowOneRepair  bool `json:"allowOneRepair"`
 	SplitByChapter  bool `json:"splitByChapter,omitempty"`
@@ -337,11 +343,14 @@ type CallRecord struct {
 	// CacheReadTokens 是这次调用命中 provider 前缀缓存的 prompt token 数。
 	// 重试把 repair 追加在 payload 末尾，所以它应接近首轮的 prompt 量——
 	// 这个数字就是"重试几乎免费"的证据，也是缓存被破坏时的告警。
-	CacheReadTokens     int       `json:"cacheReadTokens,omitempty"`
-	CacheCreationTokens int       `json:"cacheCreationTokens,omitempty"`
-	DurationMs          int64     `json:"durationMs"`
-	Error               string    `json:"error,omitempty"`
-	StartedAt           time.Time `json:"startedAt"`
+	CacheReadTokens     int `json:"cacheReadTokens,omitempty"`
+	CacheCreationTokens int `json:"cacheCreationTokens,omitempty"`
+	// FinishReason 是 provider 报的停止原因；"length" 表示输出被预算截断。
+	// 记下来才能在日志里分辨"模型答歪了"和"我们给的预算不够"。
+	FinishReason string    `json:"finishReason,omitempty"`
+	DurationMs   int64     `json:"durationMs"`
+	Error        string    `json:"error,omitempty"`
+	StartedAt    time.Time `json:"startedAt"`
 }
 
 type Run struct {

@@ -63,36 +63,7 @@ func (c *DefaultLLMProviderClient) Chat(ctx context.Context, req port.LLMChatReq
 	}
 
 	if c.modelCfg != nil {
-		registryParams := c.modelCfg.GenParams(modelID)
-		if registryParams != nil {
-			if req.GenParams == nil {
-				req.GenParams = registryParams
-			} else {
-				gp := req.GenParams
-				rp := registryParams
-				if gp.MaxTokens == 0 {
-					gp.MaxTokens = rp.MaxTokens
-				} else if rp.MaxTokens > 0 && gp.MaxTokens > rp.MaxTokens {
-					// Never request above the model's catalog max_output.
-					gp.MaxTokens = rp.MaxTokens
-				}
-				if gp.Temperature == 0 {
-					gp.Temperature = rp.Temperature
-				}
-				if gp.TopP == 0 {
-					gp.TopP = rp.TopP
-				}
-				if gp.FrequencyPenalty == 0 {
-					gp.FrequencyPenalty = rp.FrequencyPenalty
-				}
-				if gp.PresencePenalty == 0 {
-					gp.PresencePenalty = rp.PresencePenalty
-				}
-				if len(gp.Stop) == 0 {
-					gp.Stop = rp.Stop
-				}
-			}
-		}
+		req.GenParams = mergeGenParams(req.GenParams, c.modelCfg.GenParams(modelID))
 	}
 	if req.GenParams == nil {
 		req.GenParams = &port.ModelGenParams{}
@@ -151,6 +122,44 @@ func ParseModelID(modelID string) (providerName, modelName, effort string) {
 		effort = parts[2]
 	}
 	return
+}
+
+// mergeGenParams 用模型目录里的参数补全调用方的请求，并保证不超过模型自身上限。
+//
+// MaxTokens 的语义是「上层愿意给多少」，0 表示不设限、交给模型配置决定。
+// 调用方没写时就用目录里的 max_output：一个声明 384000 的模型不该被上层按 8k 用。
+// 调用方写了更大的值也不会真的发出去，仍夹回目录值。
+func mergeGenParams(req, registry *port.ModelGenParams) *port.ModelGenParams {
+	if registry == nil {
+		return req
+	}
+	if req == nil {
+		return registry
+	}
+	gp := *req
+	rp := registry
+	switch {
+	case gp.MaxTokens == 0:
+		gp.MaxTokens = rp.MaxTokens
+	case rp.MaxTokens > 0 && gp.MaxTokens > rp.MaxTokens:
+		gp.MaxTokens = rp.MaxTokens
+	}
+	if gp.Temperature == 0 {
+		gp.Temperature = rp.Temperature
+	}
+	if gp.TopP == 0 {
+		gp.TopP = rp.TopP
+	}
+	if gp.FrequencyPenalty == 0 {
+		gp.FrequencyPenalty = rp.FrequencyPenalty
+	}
+	if gp.PresencePenalty == 0 {
+		gp.PresencePenalty = rp.PresencePenalty
+	}
+	if len(gp.Stop) == 0 {
+		gp.Stop = rp.Stop
+	}
+	return &gp
 }
 
 func stripImageParts(msgs []port.ChatMessage) []port.ChatMessage {

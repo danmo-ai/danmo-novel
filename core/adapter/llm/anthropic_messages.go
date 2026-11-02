@@ -42,6 +42,11 @@ func NewAnthropicMessagesClientWithTimeout(baseURL, apiKey string, timeout time.
 	}
 }
 
+// anthropicUncataloguedMaxTokens 只在模型目录查不到该模型时兜底：
+// Anthropic Messages 要求 max_tokens 必填，而目录里的模型都会给出准确的
+// max_output。取 8192 是为了在未知模型上尽量不触发 400（老模型上限更低）。
+const anthropicUncataloguedMaxTokens = 8192
+
 func (p *AnthropicMessagesClient) Chat(ctx context.Context, req port.LLMChatRequest, effort string, effortCfg *EffortConfig) (port.LLMChatResponse, error) {
 	model := req.Model
 	if model == "" {
@@ -126,7 +131,10 @@ func (p *AnthropicMessagesClient) Chat(ctx context.Context, req port.LLMChatRequ
 	// frequency_penalty / presence_penalty are not part of this API — omit.
 	applyAnthropicGenParams(body, req.GenParams)
 	if _, ok := body["max_tokens"]; !ok {
-		body["max_tokens"] = 4096
+		// Anthropic 要求这个字段必填。正常路径上它会由模型目录的 max_output
+		// 填好（mergeGenParams）；只有目录里没有这个模型时才会走到这里，
+		// 此时用一个保守值而不是上层再写死一个数。
+		body["max_tokens"] = anthropicUncataloguedMaxTokens
 	}
 	if len(systemParts) > 0 {
 		blocks := make([]map[string]any, 0, len(systemParts))
@@ -193,7 +201,9 @@ func (p *AnthropicMessagesClient) Chat(ctx context.Context, req port.LLMChatRequ
 	}
 
 	var result struct {
-		Content []struct {
+		// stop_reason 为 "max_tokens" 时就是撞到输出上限。
+		StopReason string `json:"stop_reason"`
+		Content    []struct {
 			Type      string `json:"type"`
 			Text      string `json:"text"`
 			ID        string `json:"id"`
@@ -262,6 +272,10 @@ func (p *AnthropicMessagesClient) Chat(ctx context.Context, req port.LLMChatRequ
 	// Preserve assistant text and reasoning even when tool calls are present so
 	// the model's pre-call narration is not silently dropped, and so the
 	// thinking block can be echoed back on the next request.
+	finish := "stop"
+	if result.StopReason == "max_tokens" {
+		finish = port.FinishReasonLength
+	}
 	return port.LLMChatResponse{
 		Content:            content,
 		ReasoningContent:   reasoning,
@@ -270,6 +284,7 @@ func (p *AnthropicMessagesClient) Chat(ctx context.Context, req port.LLMChatRequ
 		ToolCalls:          toolCalls,
 		Usage:              usage,
 		Done:               len(toolCalls) == 0,
+		FinishReason:       finish,
 	}, nil
 }
 

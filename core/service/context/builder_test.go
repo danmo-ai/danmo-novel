@@ -189,10 +189,10 @@ func TestWritePacketCarriesTheChapterLengthTarget(t *testing.T) {
 	}
 	floor, ceil := domain.ChapterBand(target)
 	for _, want := range []string{
-		"每章目标 3500 字",
+		"目标 3500 字",
 		fmt.Sprintf("%d–%d 字", floor, ceil),
-		"共 2 章",
 	} {
+
 		if !strings.Contains(text, want) {
 			t.Fatalf("length guidance missing %q:\n%s", want, text)
 		}
@@ -295,4 +295,61 @@ func TestStageInstructionAppended(t *testing.T) {
 	if !strings.Contains(op.Instruction, "不得改卷纲已定的 function") {
 		t.Fatal("outline gate contract must be preserved")
 	}
+}
+
+// 写作包不带输出上限：0 = 交给 LLM client 按模型目录的 max_output 决定。
+// 上层写死 8192 时，声明 384000 的模型被按 8k 用，思考 tokens 吃满后正文从
+// 中间被切断，报出来的却是"没有 JSON"。
+func TestWritePacketSendsNoOutputCap(t *testing.T) {
+	unit := domain.UnitInfo{
+		UnitID: "v01-U1", Volume: 1, ChapterFrom: 1, ChapterTo: 6,
+		OutlinePath: "outline/units/v01-U1.yaml", OutlineRaw: "chapter_chars: 2500\n",
+	}
+	packet := BuildWritePacket(domain.BookSnapshot{Summary: domain.BookSummary{ID: "b"}}, unit, "", 384000)
+	if packet.Policy.MaxOutputTokens != 0 {
+		t.Fatalf("maxOutputTokens=%d want 0 (model config decides)", packet.Policy.MaxOutputTokens)
+	}
+	// 按章调用仍由章节数量决定，与输出上限无关。
+	if !packet.Policy.SplitByChapter {
+		t.Fatal("a 6-chapter unit must still be written one chapter per call")
+	}
+}
+
+// 字数约束必须出现在模型真正会读的三处：系统提示词、额度块、单章指令。
+// 之前只写在额度块里，而且措辞是「多于 3500 字会有超长告警」——实测一本
+// 目标 2500 字/章的书六章写出 3160–6210 字。
+func TestLengthContractReachesEveryPromptSurface(t *testing.T) {
+	unit := domain.UnitInfo{
+		UnitID: "v01-U1", Volume: 1, ChapterFrom: 1, ChapterTo: 6,
+		OutlinePath: "outline/units/v01-U1.yaml", OutlineRaw: "chapter_chars: 2500\n",
+	}
+	packet := BuildWritePacket(domain.BookSnapshot{Summary: domain.BookSummary{ID: "b"}}, unit, "", 384000)
+
+	// 1) 系统提示词：硬规则里带确切目标，且写明不是参考值。
+	if !strings.Contains(packet.SystemPrompt, "每章 2500 字") {
+		t.Fatalf("system prompt lost the per-chapter target:\n%s", packet.SystemPrompt)
+	}
+	if !strings.Contains(packet.SystemPrompt, "合同值不是参考值") {
+		t.Fatalf("system prompt must say the target is a contract:\n%s", packet.SystemPrompt)
+	}
+	// 2) 额度块：只讲单章，给出区间与后果。
+	var guidance string
+	for _, b := range packet.Blocks {
+		if b.ID == "chapter-length" {
+			guidance = b.Content
+		}
+	}
+	for _, want := range []string{"目标 2500 字", "1500–3500", "会被退回重写", "判为不合格"} {
+		if !strings.Contains(guidance, want) {
+			t.Fatalf("length guidance missing %q:\n%s", want, guidance)
+		}
+	}
+	// 单元章数不固定，不折算单元总量：只说这一章。
+	for _, banned := range []string{"本单元", "单元总", "共 6 章"} {
+		if strings.Contains(guidance, banned) {
+			t.Fatalf("length guidance must not talk about the unit total (%q):\n%s", banned, guidance)
+		}
+	}
+	// 3) 超长只是 advisory：审校页没法对整章做大改，不能把它做成阻断面。
+	//    这条由 gates 的测试守（这里不引 gates 包，避免循环依赖语义混乱）。
 }
