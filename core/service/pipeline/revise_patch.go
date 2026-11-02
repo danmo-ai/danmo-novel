@@ -20,11 +20,22 @@ import (
 // 删字不可逆，宁可报错回喂，也不能猜。所以这里只做字符层归一（空白、标点），
 // 绝不做语义模糊，并且逐处计数——0 处和多处都是硬错误。
 
-// chapterEdit is one find/replace hunk inside a single chapter.
+// chapterEdit is one hunk inside a single chapter. Two forms:
+//
+//   - 替换：find + replace（覆盖改字、删句、以及"在锚点旁插入"）
+//   - 章末追加：append（不需要锚点）
+//
+// 追加必须单独一个形态，因为它是唯一无法用锚点可靠定位的位置：章末最后一句
+// 常常是短句（「他走了。」），章内撞车时模型只能往回扩上下文，扩不出来就
+// 只能落到整章兜底——而"续写式扩写"恰恰是最高频的扩写形态。
 type chapterEdit struct {
 	Find    string `json:"find"`
 	Replace string `json:"replace"`
+	Append  string `json:"append"`
 }
+
+// isAppend reports whether this edit only appends to the chapter end.
+func (e chapterEdit) isAppend() bool { return e.Append != "" }
 
 // chapterPatch is the revise output contract.
 //
@@ -336,15 +347,28 @@ func runeLen(s string) int { return len([]rune(s)) }
 //  1. 每条 find 必须在本章内唯一命中（0 处或多处都拒绝）。
 //  2. edits 之间不得重叠：那是模型把同一段拆成相邻多条，合并才是正确写法。
 //  3. 套用后必须真的改变了正文：否则作者点「确认落盘」等于什么都没发生。
+//
+// 插入（扩写）走两条路：借锚点的 replace，和不需要锚点的 append（章末）。
 func applyChapterEdits(base string, edits []chapterEdit) (string, error) {
 	if len(edits) == 0 {
 		return "", fmt.Errorf("edits 为空：一次修订至少要给出一条改动；如果审校问题无需改字，请在审校页只勾选真正要改的条目")
 	}
 	baseRunes := []rune(base)
 	spans := make([]locatedEdit, 0, len(edits))
+	var appends []string
 	for i, e := range edits {
+		if e.isAppend() {
+			if strings.TrimSpace(e.Append) == "" {
+				return "", fmt.Errorf("edits[%d].append 只有空白：要追加内容就写出正文，不需要追加就不要输出这条 edit", i)
+			}
+			if e.Find != "" || e.Replace != "" {
+				return "", fmt.Errorf("edits[%d] 同时给了 append 与 find/replace：两种形态只能用一种——章末追加用 append，改中间某处用 find+replace", i)
+			}
+			appends = append(appends, e.Append)
+			continue
+		}
 		if strings.TrimSpace(e.Find) == "" {
-			return "", fmt.Errorf("edits[%d].find 为空：需要逐字复制本章正文中被改动的一小段", i)
+			return "", fmt.Errorf("edits[%d].find 为空：改中间某处需要逐字复制被改动的一小段原文；要在章末加内容请改用 append", i)
 		}
 		if e.Find == e.Replace {
 			return "", fmt.Errorf("edits[%d] 的 find 与 replace 完全相同，是空操作；没有改动就不要输出这条 edit", i)
@@ -375,6 +399,10 @@ func applyChapterEdits(base string, edits []chapterEdit) (string, error) {
 		prev = s.end
 	}
 	b.WriteString(string(baseRunes[prev:]))
+	// 追加一定发生在所有替换之后：章末位置与它们无关，拼在末尾不会互相影响。
+	for _, a := range appends {
+		b.WriteString(a)
+	}
 	out := b.String()
 
 	if out == base {

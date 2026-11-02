@@ -105,6 +105,10 @@ func ReviewSystemPrompt() string {
 //
 // find 长度给的是**目标区间**而不是门槛：太短会碰撞，太长等于把省下的 token
 // 又抄回来。唯一性由服务端计数判定，短锚点只要本章真出现一次就放行。
+//
+// 插入（扩写）必须显式教：空 find 会被服务端拒绝，而"扩写"这类意见下模型最
+// 自然的写法就是空 find。章末追加单列 append，因为章末最后一句常常是短句，
+// 用它当锚点极易撞车——而续写式扩写正是最高频的扩写形态。
 func ReviseChapterPatchPrompt(chapter int) string {
 	return fmt.Sprintf(`你是小说修订助手。只改第 %d 章，不得改动其它章；保持本章章号不变。
 你不重写正文，只输出补丁：服务端会把 find 这段原文替换成 replace。
@@ -121,16 +125,24 @@ func ReviseChapterPatchPrompt(chapter int) string {
 4. 一处一改；同一段内的多处修改合并成一条 edit，edits 之间不得重叠。
 5. replace 是替换后的文本，可以为空字符串（表示删除）。find 与 replace 相同
    的空操作不要输出。
-6. edits 按正文顺序输出即可，顺序不影响套用。
-7. 只修列出的审校问题，保留已经成立的部分、人物关系、伏笔、物件与时间。
+6. **扩写与插入**：在章中间加内容，仍然用 find+replace——find 抄改动点旁的原文，
+   replace 里把它原样带回、把新增内容接在前面或后面。**不要写空 find**，空锚点
+   无法定位、服务端会直接拒绝。
+   在**章末**追加时改用 append 形态：{"append":"\n\n新增的段落"}。append 不需要
+   find，写法以 \n\n 开头另起一段；一条 edit 里 append 与 find/replace 不能同时给。
+7. edits 按正文顺序输出即可，顺序不影响套用。
+8. 只修列出的审校问题，保留已经成立的部分、人物关系、伏笔、物件与时间。
    不要新增自由审稿轮次，不要改未列出的问题。
-8. 只输出这一个 JSON 对象，不要任何分析、前言、代码块或正文引用。
+9. 只输出这一个 JSON 对象，不要任何分析、前言、代码块或正文引用。
 
 示例。正文含「他把杯子放下，说：「好。」然后转身走了。」
 - 改口吻：{"chapter":%d,"edits":[{"find":"他把杯子放下，说：「好。」","replace":"他把杯子放下，说：「随你。」"}]}
 - 连续两句一起改（合并，不要拆两条）：{"chapter":%d,"edits":[{"find":"他把杯子放下，说：「好。」然后转身走了。","replace":"他把杯子重重搁下：「随你。」转身头也不回地走了。"}]}
+- 在句中插入一段（锚点原样带回，新增接在后面）：
+  {"chapter":%d,"edits":[{"find":"他把杯子放下。","replace":"他把杯子放下。\n\n窗外的雨小了，屋檐上只剩零星几滴。"}]}
+- 在章末补写（append，不需要锚点）：{"chapter":%d,"edits":[{"append":"\n\n他走到门口，又停住了。"}]}
 - 不要这样：{"chapter":%d,"edits":[{"find":"好。","replace":"随你。"}]} —— 单句短锚点常在本章重复，也没带上下文，注定定位失败。`,
-		chapter, chapter, chapter, chapter, chapter)
+		chapter, chapter, chapter, chapter, chapter, chapter, chapter)
 }
 
 // ReviseChapterSystemPrompt bounds a revise call to exactly one chapter.

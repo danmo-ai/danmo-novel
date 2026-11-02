@@ -179,6 +179,63 @@ func TestApplyChapterEditsRejectsNoOpEdit(t *testing.T) {
 	}
 }
 
+// 章末追加不需要锚点：这是唯一无法用锚点可靠定位的位置（最后一句常是短句，
+// 撞车时模型只能往回扩上下文，扩不出来就得走整章兜底）。
+func TestApplyChapterEditsAppendAtChapterEnd(t *testing.T) {
+	out := mustApply(t, patchProse, chapterEdit{Append: "\n\n他停在门口，没有出去。"})
+	if !strings.HasSuffix(out, "他没有回头。\n\n他停在门口，没有出去。") {
+		t.Fatalf("append did not land at the chapter end:\n%s", out)
+	}
+	// 追加不改动任何已有文字。
+	if !strings.HasPrefix(out, "他推开门。") {
+		t.Fatalf("append modified the existing body:\n%s", out)
+	}
+}
+
+// 追加与替换混用时，追加一定发生在所有替换之后。
+func TestApplyChapterEditsAppendCombinesWithReplacements(t *testing.T) {
+	out := mustApply(t, patchProse,
+		chapterEdit{Append: "\n\n门外的雨还在下。"},
+		chapterEdit{Find: "他推开门。", Replace: "他推开门，雨声涌了进来。"},
+	)
+	if !strings.Contains(out, "他推开门，雨声涌了进来。") {
+		t.Fatalf("replacement lost:\n%s", out)
+	}
+	if !strings.HasSuffix(out, "\n\n门外的雨还在下。") {
+		t.Fatalf("append must be the last thing in the chapter:\n%s", out)
+	}
+}
+
+func TestApplyChapterEditsRejectsWhitespaceOnlyAppend(t *testing.T) {
+	if _, err := applyChapterEdits(patchProse, []chapterEdit{{Append: "  \n "}}); err == nil {
+		t.Fatal("a whitespace-only append must be rejected")
+	}
+}
+
+// append 与 find 同时给是矛盾的：一个说"章末"，一个说"某处"。
+func TestApplyChapterEditsRejectsAppendWithFind(t *testing.T) {
+	_, err := applyChapterEdits(patchProse, []chapterEdit{{
+		Find: "他推开门。", Append: "\n\n新段。",
+	}})
+	if err == nil {
+		t.Fatal("append combined with find must be rejected")
+	}
+	if !strings.Contains(err.Error(), "只能用一种") {
+		t.Fatalf("error should say the two forms are exclusive: %v", err)
+	}
+}
+
+// 空 find 的报错必须把模型引到正确形态上，否则它只会把空 find 改成更短的非空锚点。
+func TestApplyChapterEditsEmptyFindPointsAtAppend(t *testing.T) {
+	_, err := applyChapterEdits(patchProse, []chapterEdit{{Find: "", Replace: "新段"}})
+	if err == nil {
+		t.Fatal("empty find must still be rejected")
+	}
+	if !strings.Contains(err.Error(), "append") {
+		t.Fatalf("error should mention append for chapter-end insertion: %v", err)
+	}
+}
+
 func TestParseChapterPatchFillsMissingChapter(t *testing.T) {
 	ch := domain.ChapterDraft{Chapter: 7, Title: "门", Body: patchProse}
 	draft, err := parseChapterPatch(`{"edits":[{"find":"他推开门。","replace":"他撞开门。"}]}`, ch)
