@@ -8,7 +8,8 @@ choice: "用代价换一次爆发"
 payoff: "入门资格"
 pleasure: "弱者翻盘"
 forbidden: "不揭金手指来源"
-word_target: "2500"
+chapter_chars: 2500
+word_target: "7500"
 pov: "linchen"
 chapter_range: [1, 3]
 on_stage: ["linchen"]

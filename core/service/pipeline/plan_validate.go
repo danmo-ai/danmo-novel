@@ -114,7 +114,9 @@ func validateVolumeInheritance(bookDoc, volumeDoc domain.StructuredMarkdown, vol
 		return contractFail("卷纲", []Violation{{Path: "source_arc_id", Want: "总纲已有分卷 " + volumeID, Got: volumeDoc.Root.Value("source_arc_id")}})
 	}
 	var vs []Violation
-	for _, pair := range [][2]string{{"chapter_range", "chapter_range"}, {"entry_state", "entry_state"}, {"exit_state", "exit_state"}, {"dramatic_question", "goal"}} {
+	// goal 与 dramatic_question 不是同一字段：前者是本卷要完成的写作目标，
+	// 后者是要回答的读者悬念。绑在一起会强迫模型把目标写成问句。
+	for _, pair := range [][2]string{{"chapter_range", "chapter_range"}, {"entry_state", "entry_state"}, {"exit_state", "exit_state"}} {
 		parent, child := strings.TrimSpace(arc.Value(pair[0])), strings.TrimSpace(volumeDoc.Root.Value(pair[1]))
 		if child != parent {
 			vs = append(vs, Violation{Path: pair[1], Want: "继承总纲：" + parent, Got: child})

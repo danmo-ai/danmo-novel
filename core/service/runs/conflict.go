@@ -41,7 +41,7 @@ func taskKindLabel(kind domain.TaskKind) string {
 //
 // 规则本身是对的：同一本书同一类型同一单元只能有一个在跑的调用，否则两份候选
 // 会互相覆盖。但旧实现只回一句 `active run already exists: <uuid>`——作者既
-// 不知道是谁占着，也不知道该等还是该去点哪里，连续重写因此看起来"莫名其妙失败"。
+// 不知道是谁占着，也不知道该等还是该去点哪里，于是看起来"莫名其妙失败"。
 func activeRunConflict(active domain.Run, spec domain.TaskSpec) error {
 	label := taskKindLabel(spec.Kind)
 	unit := strings.TrimSpace(spec.UnitID)
@@ -60,6 +60,14 @@ func activeRunConflict(active domain.Run, spec domain.TaskSpec) error {
 	switch active.Status {
 	case domain.RunWaiting:
 		// waiting_accept 才是真正会一直挡住的那个：候选不处理就永远占着。
+		// 审校清单在界面上没有"接受"，只有通过/强制通过/拒绝，所以提示必须
+		// 说这三个真实存在的动作，否则作者被告知"去接受"却找不到按钮。
+		if spec.Kind == domain.TaskReview {
+			return fmt.Errorf(
+				"单元 %s 已有一份待处理的审校清单（候选 %s）：在审校页点「通过」或「强制通过」结案，"+
+					"或点「拒绝清单」丢弃；重审会先归档旧清单再重新审校",
+				target, shortID(active.CandidateID))
+		}
 		return fmt.Errorf(
 			"单元 %s 已有一份待处理的%s结果（%s，候选 %s），接受或拒绝它之后才能再发起%s",
 			target, label, diffStatus(active.Status), shortID(active.CandidateID), label)
@@ -82,6 +90,8 @@ func diffStatus(s domain.RunStatus) string {
 		return "运行中"
 	case domain.RunWaiting:
 		return "待接受"
+	case domain.RunExpired:
+		return "已过期"
 	}
 	return string(s)
 }

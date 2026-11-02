@@ -12,6 +12,7 @@ import (
 const bookProtocolSpec = `只输出一个结构化 Markdown 总纲文档。根字段包含 schema_version/book_id/title/logline。
 用「## 承诺 · id」「## 故事线 · id」「## 分卷 · v01」及「### 转折 · event-id」声明实体。
 分卷必填 title/chapter_range/purpose/dramatic_question/central_conflict/stakes/entry_state/exit_state/thread_moves/deliverables/open_questions/reveal_ids/forbidden_reveal_ids/next_volume_entry。
+reveal_ids 与 forbidden_reveal_ids 只填揭示计划里的 ID（如 r01,r02）；没有要禁揭或揭示的内容时把该行留空，不要写「无」或括号解释。
 转折必填 event/cause/effect/chapter_window。下层不得擅自改变父级合同。`
 
 const volumeProtocolSpec = `只输出一个结构化 Markdown 卷纲文档。根字段包含 schema_version/volume_id/title/source_arc_id/chapter_range/goal/central_conflict/stakes/entry_state/exit_state/cast。
@@ -19,6 +20,7 @@ const volumeProtocolSpec = `只输出一个结构化 Markdown 卷纲文档。根
 单元必填 title/chapter_range/objective/obstacle/attempt/setback/choice/cost/outcome/entry_cause/exit_result/state_changes/thread_ids/event_ids/reveal_ids/forbidden_reveal_ids/next_hook。
 单元必须一个主要戏剧问题、一个主结果、一种主要冲突形态；从属线必须改变主线选择或代价，不能拼接独立任务。
 每单元附 clock_start_day/clock_end_day（相对故事日整数）和 clock_gap_days（与上一单元的最少间隔天数）；可选 clock_deadline 为“事件ID@故事日”，timeline_id 默认为 main。
+reveal_ids 与 forbidden_reveal_ids 只填揭示计划里的 ID（如 r01,r02）；没有则留空，不要写「无」或括号解释。
 节拍/转折必填 event/cause/effect/chapter_window；至少一个高潮与不可逆结果。
 职务/机构变化在所属单元后添加「### 身份变更 · 单元ID-人物stem」，含 stem/role_title/org/from_unit/reason，from_unit 等于所属单元 ID。`
 
@@ -50,8 +52,8 @@ const bookProtocolTemplate = `# 全书总纲 · {{book.title}}
 - thread_moves: {{thread-id=从什么状态->到什么状态}}
 - deliverables: {{必须兑现的结果}}
 - open_questions: {{仍保留的问题}}
-- reveal_ids: {{可揭示 ID}}
-- forbidden_reveal_ids: {{禁止提前揭示 ID}}
+- reveal_ids: {{可揭示 ID，如 r01,r02；没有则该行留空}}
+- forbidden_reveal_ids: {{禁止提前揭示 ID，如 r11,r15；没有则该行留空}}
 - next_volume_entry: {{下一卷行动入口}}
 
 ### 转折 · {{event-id}}
@@ -100,8 +102,8 @@ const volumeProtocolTemplate = `# 卷纲 · {{v01}}
 - allow_flashback: {{非 main 时间线时为 true，否则省略}}
 - thread_ids: {{故事线 ID}}
 - event_ids: {{承接的节拍 ID}}
-- reveal_ids: {{可揭示 ID}}
-- forbidden_reveal_ids: {{禁揭 ID}}
+- reveal_ids: {{可揭示 ID，如 r01,r02；没有则留空}}
+- forbidden_reveal_ids: {{禁揭 ID，如 r11,r15；没有则留空}}
 - next_hook: {{钩子类型 | 具体未决事件}}
 
 ## 卷末交接 · {{handoff}}

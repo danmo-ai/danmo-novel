@@ -25,6 +25,7 @@ export const STATUS_LABELS: Record<string, string> = {
   failed: '失败',
   cancelled: '已取消',
   rejected: '已拒绝',
+  expired: '已过期',
 }
 
 const PLAN_MODE_LABELS: Record<string, string> = {  init: '立项',

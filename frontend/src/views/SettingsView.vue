@@ -277,8 +277,8 @@ async function saveAssignments() {
   store.note('阶段模型已保存')
 }
 
-// 审校分章是人工审校与连续重写共用的唯一开关：两条路读同一份设置，
-// 否则同一个单元在手动与自动流程下会得到不同粒度的 findings。
+// 审校分章是唯一的粒度开关：所有审校路径读同一份设置，
+// 否则同一个单元在不同入口下会得到不同粒度的 findings。
 const reviewSplit = ref(true)
 const reviewConcurrency = ref(3)
 const reviewSaved = ref(false)
@@ -302,7 +302,7 @@ async function saveReviewSettings() {
       reviewConcurrency.value = res.review.concurrency || 3
     }
     reviewSaved.value = true
-    store.note('审校设置已保存；人工审校与连续重写同时生效')
+    store.note('审校设置已保存；所有审校入口同时生效')
     setTimeout(() => { reviewSaved.value = false }, 2000)
   } catch (e) { store.fail(e) }
 }
@@ -423,7 +423,7 @@ async function saveReviewSettings() {
             </div>
           </div>
           <p class="assign-hint">
-            人工审校与连续重写读取同一个开关：开启时按章并行、prompt 更小、不会被整单元结论挤爆输出预算；
+            所有审校入口读取同一个开关：开启时按章并行、prompt 更小、不会被整单元结论挤爆输出预算；
             关闭时一次看完整单元，跨章连续性问题更容易被一起发现，但长单元可能截断。
           </p>
         </div>

@@ -369,6 +369,8 @@ func loadUnits(root string, files map[string]string) []domain.UnitInfo {
 
 	out := make([]domain.UnitInfo, 0, len(byID))
 	for _, e := range byID {
+		// 每章目标在这里算一次，之后前端/提示词/硬门都用同一个数。
+		e.ChapterTarget = ChapterTarget(*e)
 		out = append(out, *e)
 	}
 	sort.Slice(out, func(i, j int) bool {

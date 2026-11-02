@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/danmo-ai/danmo-novel/core/service/books"
 	"github.com/danmo-ai/danmo-novel/core/store/sqlite"
 )
 
@@ -38,11 +39,32 @@ func writeBookFile(ctx context.Context, store *sqlite.Store, bookID, rel, conten
 	if readOnly {
 		return fmt.Errorf("read-only book")
 	}
+	// 结构化大纲必须与 HTTP PUT /books/:id/file 走同一道校验：
+	// 少了这道门，一条不合规但能解析的总纲会被静默写盘，等到下一次立项
+	// 才以「揭示计划中不存在 无（…）」的形式爆出来，问题和现场已经隔了几个小时。
+	if isStructuredOutlinePath(rel) {
+		snap, snapErr := books.LoadBook(root, false)
+		if snapErr != nil {
+			return snapErr
+		}
+		if err := books.ValidateStructuredOutlineFile(snap, rel, content); err != nil {
+			return err
+		}
+	}
 	full := filepath.Join(root, rel)
 	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
 		return err
 	}
 	return os.WriteFile(full, []byte(content), 0o644)
+}
+
+// isStructuredOutlinePath reports whether rel is a Markdown outline governed by
+// the structured protocol (book outline or one volume outline).
+func isStructuredOutlinePath(rel string) bool {
+	if rel == "outline/book_outline.md" {
+		return true
+	}
+	return strings.HasPrefix(rel, "outline/volumes/") && strings.HasSuffix(rel, ".md")
 }
 
 // acceptVolume mirrors POST /books/:id/accept-volume.

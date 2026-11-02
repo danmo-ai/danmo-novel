@@ -19,6 +19,20 @@ func sampleSettings() map[string]string {
 	return out
 }
 
+// seedRevealSchedule registers the reveal IDs the sample outlines reference.
+// 卷纲与总纲现在走同一套引用校验，所以任何引用 R1/R2 的 fixture 都必须先
+// 有一份真的揭示计划；scaffold 默认是空计划，属于"尚未登记"而不是"存在 R1"。
+func seedRevealSchedule(t *testing.T, root string) {
+	t.Helper()
+	path := filepath.Join(root, "canon", "reveal-schedule.md")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(sampleSettings()["canon/reveal-schedule.md"]), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func sampleBookOutline() string {
 	return `# 全书总纲 · 测试
 - schema_version: 1
@@ -298,6 +312,7 @@ func TestAcceptPlanVolumeDoesNotWriteSettingsCastOrBook(t *testing.T) {
 		t.Fatal(err)
 	}
 	seedTestIdentity(t, root)
+	seedRevealSchedule(t, root)
 	if err := os.WriteFile(filepath.Join(root, "outline", "book_outline.md"), []byte(sampleBookOutline()), 0o644); err != nil {
 		t.Fatal(err)
 	}

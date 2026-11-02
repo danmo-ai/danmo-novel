@@ -16,9 +16,11 @@ import (
 const ContractVersion = "novel-v1"
 
 // Plan init/reinit emits book outline + settings.files + cast JSON in one shot.
-// 32768 fits a mid-size book (≈2–3 万汉字级) with JSON overhead; CapMaxOutput
-// clamps to the assigned model's catalog max_output when known.
-const planInitMaxOutputTokens = 32768
+// 整本书重新立项要一次吐出「总纲 + 全部设定文件 + 全部人物卡」，实测这份书
+// （8.8k 字符总纲 + 19 张卡 + 9 个设定）已经需要约 44k tokens：32768 只够
+// 走到 JSON 中途，重试翻倍才能收尾。所以首轮预算直接给 65536，让正常规模的
+// 全书 reinit 一次成功；CapMaxOutput 仍把值钳到该模型目录里的 max_output。
+const planInitMaxOutputTokens = 65536
 
 // CapMaxOutput returns desired budget, never above modelMax when modelMax > 0.
 func CapMaxOutput(desired, modelMax int) int {
@@ -40,7 +42,9 @@ func DefaultPolicy(kind domain.TaskKind, chapterCount int) domain.CallPolicy {
 	}
 	switch kind {
 	case domain.TaskWrite:
-		if chapterCount > 0 && chapterCount*3500 > 6000 {
+		// 单章上限决定「一次调用能写完几章」：超过这个总量就必须按章写，
+		// 否则输出预算必然截断。这里的 3500 来自 domain，不再是另一份口径。
+		if chapterCount > 0 && chapterCount*domain.ChapterCharsMax > 6000 {
 			p.SplitByChapter = true
 			// 每章最坏 3 次调用：生成 + 一次结构修复 + 一次硬门修复。
 			// 三种失败互相独立（结构不合规 → 修；写成了但字数/英文泄漏 → 也修），
@@ -74,7 +78,7 @@ func DefaultPolicy(kind domain.TaskKind, chapterCount int) domain.CallPolicy {
 // withUserInstruction appends the author's 追加指令 to the stage's default
 // instruction. The default text carries the output-format and gate contract, so
 // it is never replaced — the author's wording is layered on top as 补充要求.
-// 手工点击与连续重写走同一个 builder，因此两者此字段完全一致。
+// 所有入口走同一个 builder，因此这个字段的语义完全一致。
 func withUserInstruction(base, instruction string) string {
 	instruction = strings.TrimSpace(instruction)
 	if instruction == "" {
@@ -157,6 +161,10 @@ func BuildWritePacket(snap domain.BookSnapshot, unit domain.UnitInfo, instructio
 
 	// 时间书写规范：把 story_day/gap 转成正文可执行的时间锚点指令。
 	add("time-guidance", "时间书写规范", "knowledge:time", buildTimeGuidance(snap, unit))
+
+	// 字数额度：写的时候不给数字，模型只能猜长度，于是写完被硬门判"字数不足"，
+	// 白跑修复。这里的目标与接受区间和硬门同源（domain.ChapterChars* / books.ChapterTarget）。
+	add("chapter-length", "本章字数额度", "policy:chapter-length", chapterLengthGuidance(unit))
 
 	hashes := map[string]string{}
 	for _, b := range blocks {
@@ -533,55 +541,64 @@ func BuildFinalizePacket(snap domain.BookSnapshot, unit domain.UnitInfo) domain.
 	}
 }
 
+// BuildReviewPacket 组装整单元审校的上下文（分章开关关闭时使用）。
+//
+// 必须与分章路径用同一套依据：作者的审校开关只该改变"粒度"，不该顺带改变
+// 模型看到什么。以前这里手搓 blocks，结果少了在场关系/风格/锁词/题材约束，
+// 又把未裁剪的单元合同整份塞进去——切到整单元审校后，POV、锁词、AI 味这几类
+// 意见会莫名消失，同时作者台账（continuity_risks / observations）漏进提示词。
 func BuildReviewPacket(snap domain.BookSnapshot, unit domain.UnitInfo, localFindings []domain.ReviewFinding, modelMaxOut int, libraryRules string) domain.ContextPacket {
 	policy := DefaultPolicy(domain.TaskReview, 0)
 	policy.MaxOutputTokens = CapMaxOutput(policy.MaxOutputTokens, modelMaxOut)
-	prose := unit.ProseRaw
+
+	baseline := BuildReviewBaseline(snap, unit, localFindings, libraryRules)
 	onStage := extractOnStage(unit.OutlineRaw)
-	blocks := []domain.ContextBlock{
-		{ID: "outline", Label: "单元合同", Source: unit.OutlinePath, Content: unit.OutlineRaw, Bytes: len(unit.OutlineRaw)},
-		{ID: "prose", Label: "正文", Source: unit.ProsePath, Content: prose, Bytes: len(prose)},
+
+	blocks := []domain.ContextBlock{}
+	add := func(id, label, source, content string) {
+		content = strings.TrimSpace(content)
+		if content == "" {
+			return
+		}
+		blocks = append(blocks, domain.ContextBlock{ID: id, Label: label, Source: source, Content: content, Bytes: len(content)})
 	}
+
+	// 整单元路径没有"本章场面节拍"这个按章切片，所以合同保留 scenes；
+	// 分章路径必须用 ContractWithoutBeats 以免节拍出现两遍。
+	add("unit-contract", "单元合同", unit.OutlinePath,
+		TrimContract(NormalizeUnitContract(unit.OutlineRaw), domain.TaskReview))
 	// 审校读取连续性状态（含知情范围，用来判断 POV 越权）；绝不读作者底牌。
-	if cont := ExtractContinuity(snap, unit, onStage, ContinuityForReview); cont != "" {
-		blocks = append(blocks, domain.ContextBlock{ID: "continuity", Label: "连续性状态", Source: books.StatePath, Content: cont, Bytes: len(cont)})
+	add("continuity", "连续性状态", books.StatePath, ExtractContinuity(snap, unit, onStage, ContinuityForReview))
+	add("relations", "在场关系", "canon/cast", baseline.Relations)
+	add("reveal", "揭示约束", "canon/reveal-schedule.md", baseline.Reveal)
+	add("style", "风格与写作规则", "canon/style-fingerprint.md", baseline.Style)
+	add("locked-terms", "锁词", "canon/locked-terms.yaml", baseline.LockedTerms)
+	add("genre-kb", "题材写时约束", "knowledge:"+snap.Summary.Genre, baseline.GenreKB)
+	rulesSource := "knowledge:25-review-checklist.md"
+	switch baseline.RulesSource {
+	case RulesFromBook:
+		rulesSource = "canon/review-checklist.md"
+	case RulesFromLibrary:
+		rulesSource = "knowledge:25-review-checklist.md（作者已编辑）"
 	}
-	for _, stem := range onStage {
-		for _, c := range snap.Cast {
-			if c.Stem == stem {
-				identity := identityLabel(snap.IdentitySegments, stem, unit.UnitID)
-				if card := ExtractCastForWriteWithIdentity(c, extractPOV(unit.OutlineRaw), identity); card != "" {
-					blocks = append(blocks, domain.ContextBlock{ID: "cast-" + stem, Label: "人物·" + CleanName(c.Name), Source: "canon/cast/" + stem + ".md", Content: card, Bytes: len(card)})
-				}
-			}
-		}
-	}
-	// 审校同样校验信息释放边界（按卷截取，不含底牌）。
-	if reveal := ExtractRevealForVolume(snap.Files["canon/reveal-schedule.md"], unit.Volume); reveal != "" {
-		blocks = append(blocks, domain.ContextBlock{ID: "reveal", Label: "揭示约束", Source: "canon/reveal-schedule.md", Content: reveal, Bytes: len(reveal)})
-	}
-	// 整单元路径同样带审校清单，与分章路径来源一致。
-	if rules, source := ResolveReviewRules(snap, libraryRules); rules != "" {
-		src := "knowledge:25-review-checklist.md"
-		switch source {
-		case RulesFromBook:
-			src = "canon/review-checklist.md"
-		case RulesFromLibrary:
-			src = "knowledge:25-review-checklist.md（作者已编辑）"
-		}
-		blocks = append(blocks, domain.ContextBlock{ID: "review-rules", Label: "审校清单", Source: src, Content: rules, Bytes: len(rules)})
-	}
-	var fb strings.Builder
-	for _, f := range localFindings {
-		fmt.Fprintf(&fb, "- [%s] %s: %s\n", f.Severity, f.Title, f.Evidence)
-	}
-	hashes := map[string]string{unit.ProsePath: shortHash(prose)}
+	add("review-rules", "审校清单", rulesSource, baseline.Rules)
+	add("cast", "在场人物", "canon/cast", baseline.CastCards)
+	// 跨单元连续性靠卷摘要尾巴：整单元审校更容易漏掉"上一单元留下的状态"。
+	add("prev-summary", "最近章摘要", "continuity/summaries", baseline.PrevSummary)
+	add("prose", "正文", unit.ProsePath, unit.ProseRaw)
+
+	hashes := map[string]string{unit.ProsePath: shortHash(unit.ProseRaw)}
 	for _, b := range blocks {
 		hashes[b.Source] = shortHash(b.Content)
 	}
+
 	system := novel.ReviewSystemPrompt()
 	extra := map[string]any{}
-	if fb.Len() > 0 {
+	if len(localFindings) > 0 {
+		var fb strings.Builder
+		for _, f := range localFindings {
+			fmt.Fprintf(&fb, "- [%s] %s: %s\n", f.Severity, f.Title, f.Evidence)
+		}
 		extra["localFindings"] = fb.String()
 	}
 	user := BuildUserPrompt("review", "", map[string]any{
@@ -752,6 +769,22 @@ func buildTimeGuidance(snap domain.BookSnapshot, unit domain.UnitInfo) string {
 		b.WriteString("- 时间顺序推进，不插无标记闪回。\n")
 	}
 	b.WriteString("- 昼夜/天气/季节与上一单元保持连续；同一章内时间不得倒流。")
+	return b.String()
+}
+
+// chapterLengthGuidance 把「这一章写多长」写成可执行的指令。
+//
+// 数字全部来自 domain 常量与 books.ChapterTarget，与硬门是同一个来源：
+// 模型看到的目标和事后判它的阈值不可能不一致。
+func chapterLengthGuidance(unit domain.UnitInfo) string {
+	target := books.ChapterTarget(unit)
+	floor, ceil := domain.ChapterBand(target)
+	chapters := books.ChapterCount(unit)
+	var b strings.Builder
+	b.WriteString("字数规则：\n")
+	fmt.Fprintf(&b, "- 本单元共 %d 章，单元目标约 %d 字；每章目标 %d 字。\n", chapters, target*chapters, target)
+	fmt.Fprintf(&b, "- 单章落在 %d–%d 字之间：少于 %d 字判 blocking（要重写这一章），多于 %d 字会有超长告警。\n", floor, ceil, floor, ceil)
+	b.WriteString("- 章节按目标写足，不注水也不压缩：该有的场面写透，不为凑字加天气/回忆/复述。")
 	return b.String()
 }
 

@@ -17,7 +17,6 @@ Danmo Novel — controlled AI novel production workbench. Go backend + Vue 3 fro
 | Pipeline | `core/service/pipeline/` |
 | Gates | `core/service/gates/` |
 | Runs/accept | `core/service/runs/` |
-| Chain 编排 | `core/service/chain/` (连续单元重写) |
 | SQLite | `core/store/sqlite/` |
 | Frontend | `frontend/` |
 | Desktop (Tauri) | `desktop/` |

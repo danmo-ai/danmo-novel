@@ -36,7 +36,7 @@ func (r *Runner) RunReviseWithOptions(ctx context.Context, snap domain.BookSnaps
 	if len(chapters) == 0 {
 		return Result{}, fmt.Errorf("no chapters to revise")
 	}
-	target := books.WordTargetPerChapter(unit)
+	target := books.ChapterTarget(unit)
 	local := gates.CheckProseWithRules(chapters, target, r.proseRules())
 	baseline := contextsvc.BuildReviewBaseline(snap, unit, nil, r.ReviewChecklist)
 

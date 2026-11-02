@@ -27,13 +27,16 @@ type Report struct {
 }
 
 // CheckProse runs the fixed structural checks plus the built-in deslop rules.
-func CheckProse(chapters []domain.ChapterDraft, wordTargetPerChapter int) Report {
-	return CheckProseWithRules(chapters, wordTargetPerChapter, nil)
+func CheckProse(chapters []domain.ChapterDraft, chapterTarget int) Report {
+	return CheckProseWithRules(chapters, chapterTarget, nil)
 }
 
 // CheckProseWithRules is CheckProse with an author-resolved rule set.
 // The pipeline passes the book/library one; nil falls back to the embedded set.
-func CheckProseWithRules(chapters []domain.ChapterDraft, wordTargetPerChapter int, rules *Ruleset) Report {
+//
+// chapterTarget 必须来自 books.ChapterTarget——它是「每章多少字」的唯一读数，
+// 硬门不再自己算目标，也不认字面量。目标与接受区间都在 domain 里定义。
+func CheckProseWithRules(chapters []domain.ChapterDraft, chapterTarget int, rules *Ruleset) Report {
 	if rules == nil {
 		rules = BuiltinRules()
 	}
@@ -56,14 +59,26 @@ func CheckProseWithRules(chapters []domain.ChapterDraft, wordTargetPerChapter in
 		totalEN += en
 		totalSim += sim
 		chars := utf8.RuneCountInString(strings.ReplaceAll(body, " ", ""))
-		if wordTargetPerChapter > 0 && chars < int(float64(wordTargetPerChapter)*0.6) {
-			r.OK = false
-			r.Findings = append(r.Findings, domain.ReviewFinding{
-				ID: fmt.Sprintf("length-ch%d", ch.Chapter), Severity: "blocking", Source: "local_gate",
-				Lens: "length", Title: "字数不足", Chapter: ch.Chapter,
-				Evidence:   fmt.Sprintf("chars=%d target≈%d", chars, wordTargetPerChapter),
-				Suggestion: "扩写至目标字数区间",
-			})
+		if chapterTarget > 0 {
+			floor, ceil := domain.ChapterBand(chapterTarget)
+			if chars < floor {
+				r.OK = false
+				r.Findings = append(r.Findings, domain.ReviewFinding{
+					ID: fmt.Sprintf("length-ch%d", ch.Chapter), Severity: "blocking", Source: "local_gate",
+					Lens: "length", Title: "字数不足", Chapter: ch.Chapter,
+					Evidence:   fmt.Sprintf("chars=%d target≈%d floor=%d", chars, chapterTarget, floor),
+					Suggestion: "扩写至目标字数区间",
+				})
+			} else if chars > ceil {
+				// 上限曾经完全没判：写多长都算通过，单章可以涨到目标的 1.4 倍以上，
+				// 单元总量随之失控。先按 advisory 报，不新增阻断面。
+				r.Findings = append(r.Findings, domain.ReviewFinding{
+					ID: fmt.Sprintf("length-over-ch%d", ch.Chapter), Severity: "advisory", Source: "local_gate",
+					Lens: "length", Title: "字数超出目标区间", Chapter: ch.Chapter,
+					Evidence:   fmt.Sprintf("chars=%d target≈%d ceil=%d", chars, chapterTarget, ceil),
+					Suggestion: "删冗余节拍或拆章；别靠删结尾的钩子凑字数",
+				})
+			}
 		}
 		// 以下旧阈值保持不变（只加不减，避免已有书突然变宽松）。
 		if em > 8 {
@@ -220,6 +235,30 @@ func CheckUnitOutline(u domain.UnitOutlineDraft, volumeCast []string) Report {
 	if u.ChapterFrom <= 0 || u.ChapterTo < u.ChapterFrom || (u.ChapterTo-u.ChapterFrom+1) > 10 {
 		r.OK = false
 		r.Findings = append(r.Findings, finding("outline-range", "blocking", "章范围非法或超过 10 章硬上限"))
+		return r
+	}
+	// 字数额度：单章字数只有一本书级的定义（domain.ChapterChars*），细纲不能
+	// 自己发明。典型事故是 word_target: 30000 / 6 章 —— 读出来就是每章 5000 字，
+	// 与知识库的 2000–3500 打架，写作硬门把整单元拦下。这里在细纲阶段就拦住，
+	// 让模型用一次修复把数字改成合法的，而不是等写完正文才发现。
+	chapters := u.ChapterTo - u.ChapterFrom + 1
+	if cc, err := strconv.Atoi(strings.Trim(strings.TrimSpace(u.ChapterChars), `"'`)); err == nil && cc > 0 {
+		if cc < domain.ChapterCharsMin || cc > domain.ChapterCharsMax {
+			r.OK = false
+			r.Findings = append(r.Findings, finding("outline-chapter-chars", "blocking",
+				fmt.Sprintf("chapter_chars=%d 超出单章区间 %d–%d 字", cc, domain.ChapterCharsMin, domain.ChapterCharsMax)))
+		}
+	}
+	if wt, err := strconv.Atoi(strings.Trim(strings.TrimSpace(u.WordTarget), `"'`)); err == nil && wt > 0 {
+		target := domain.ClampChapterChars(wt / chapters)
+		// 允许每章 1 字的取整误差：老书回写的是实测值（如 21274/10）。
+		if diff := wt - target*chapters; diff > chapters || diff < -chapters {
+			r.OK = false
+			r.Findings = append(r.Findings, finding("outline-word-target", "blocking",
+				fmt.Sprintf("word_target=%d 折合每章 %d 字，超出 %d–%d 字区间；%d 章应写 %d–%d（或改用 chapter_chars）",
+					wt, wt/chapters, domain.ChapterCharsMin, domain.ChapterCharsMax,
+					chapters, domain.ChapterCharsMin*chapters, domain.ChapterCharsMax*chapters)))
+		}
 	}
 	return r
 }

@@ -1,6 +1,7 @@
 package contextsvc
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -161,6 +162,40 @@ units:
 	}
 	if strings.Contains(beats.Content, "chapter_range") {
 		t.Fatalf("chapter plan leaked full contract: %s", beats.Content)
+	}
+}
+
+func TestWritePacketCarriesTheChapterLengthTarget(t *testing.T) {
+	// 写的时候必须知道这一章该多长，否则只能猜，写完才被硬门拦。
+	unit := domain.UnitInfo{
+		UnitID: "v01-U1", Volume: 1, ChapterFrom: 1, ChapterTo: 2,
+		OutlinePath: "outline/units/v01-U1.yaml",
+		OutlineRaw:  "unit_id: v01-U1\nword_target: 10000\n",
+	}
+	packet := BuildWritePacket(domain.BookSnapshot{Summary: domain.BookSummary{ID: "b"}}, unit, "", 0)
+	var text string
+	for _, b := range packet.Blocks {
+		if b.ID == "chapter-length" {
+			text = b.Content
+		}
+	}
+	if text == "" {
+		t.Fatal("write packet is missing the chapter-length block")
+	}
+	// 10000 / 2 章 = 5000 → 夹到上限 3500；提示词里的数字必须与硬门一致。
+	target := books.ChapterTarget(unit)
+	if target != domain.ChapterCharsMax {
+		t.Fatalf("chapterTarget=%d want %d", target, domain.ChapterCharsMax)
+	}
+	floor, ceil := domain.ChapterBand(target)
+	for _, want := range []string{
+		"每章目标 3500 字",
+		fmt.Sprintf("%d–%d 字", floor, ceil),
+		"共 2 章",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("length guidance missing %q:\n%s", want, text)
+		}
 	}
 }
 

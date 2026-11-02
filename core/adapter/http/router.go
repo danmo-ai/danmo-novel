@@ -14,7 +14,6 @@ import (
 	"github.com/danmo-ai/danmo-novel/core/domain"
 	"github.com/danmo-ai/danmo-novel/core/port"
 	"github.com/danmo-ai/danmo-novel/core/service/books"
-	"github.com/danmo-ai/danmo-novel/core/service/chain"
 	"github.com/danmo-ai/danmo-novel/core/service/knowledge"
 	"github.com/danmo-ai/danmo-novel/core/service/llmconfig"
 	"github.com/danmo-ai/danmo-novel/core/service/runs"
@@ -30,7 +29,6 @@ type App struct {
 	Models   *llmconfig.ModelRegistry
 	LLM      port.LLMProvider
 	Runs     *runs.Service
-	Chains   *chain.Service
 }
 
 func NewRouter(app *App) *gin.Engine {
@@ -147,8 +145,8 @@ func NewRouter(app *App) *gin.Engine {
 			_ = app.Settings.Update(func(s *config.Settings) { s.ModelAssignments = body.Assignments })
 			c.JSON(200, app.Settings.Get())
 		})
-		// 审校分章是人工路径与连续重写共同读取的唯一开关；两处必须同源，
-		// 否则同一个单元在两条路下会得到不同粒度的 findings。
+		// 审校分章是唯一的粒度开关；人工审校、审校页重审与「通过」后的定稿都读它，
+		// 否则同一个单元会得到不同粒度的 findings。
 		api.GET("/settings/review", func(c *gin.Context) {
 			c.JSON(200, gin.H{"review": app.Settings.Get().Review})
 		})
@@ -172,7 +170,6 @@ func NewRouter(app *App) *gin.Engine {
 		registerLLM(api, app)
 		registerBooks(api, app)
 		registerRuns(api, app)
-		registerChains(api, app)
 	}
 	mountMCP(r, app)
 	return r
@@ -441,15 +438,17 @@ func registerBooks(api *gin.RouterGroup, app *App) {
 			return
 		}
 		kind, unit, vol := books.SelectPrimaryAction(snap)
+		// drafted 单元的默认下一步是审校；但当已有清单 0 阻断且每章都审完时，
+		// 再审一遍只是重跑一次结论不同的审校，单元永远到不了定稿——所以推进到定稿。
+		if kind == domain.TaskReview && unit != "" && app.Runs != nil {
+			if v, n := app.Runs.ReviewGate(c.Request.Context(), snap.Summary.ID, unit); n > 0 && v == domain.ReviewClean {
+				kind = domain.TaskFinalize
+			}
+		}
 		out := gin.H{"book": snap, "primary": gin.H{"kind": kind, "unitId": unit, "volume": vol}}
 		// 连续性状态摘要：作者一眼能看出"状态账建到哪了"，缺失时提示先定稿一个单元。
 		if states, serr := books.LoadState(root); serr == nil {
 			out["continuity"] = books.SummarizeState(states)
-		}
-		if app.Chains != nil {
-			if ch, ok := app.Chains.Latest(c.Request.Context(), snap.Summary.ID); ok {
-				out["chain"] = ch
-			}
 		}
 		c.JSON(200, out)
 	})
@@ -911,6 +910,25 @@ func registerRuns(api *gin.RouterGroup, app *App) {
 			return
 		}
 		c.JSON(200, cand)
+	})
+	// 审校结案：归档该单元全部待处理清单，并按需直接起定稿。
+	// force 由作者在确认框里授权；不带 force 时服务端拒绝带阻断/不完整的清单。
+	api.POST("/books/:id/units/:unitId/close-review", func(c *gin.Context) {
+		var body struct {
+			Force         bool  `json:"force"`
+			StartFinalize *bool `json:"startFinalize"`
+		}
+		_ = c.BindJSON(&body)
+		startFinalize := true
+		if body.StartFinalize != nil {
+			startFinalize = *body.StartFinalize
+		}
+		res, err := app.Runs.CloseUnitReview(c.Request.Context(), c.Param("id"), c.Param("unitId"), body.Force, startFinalize)
+		if err != nil {
+			c.JSON(400, gin.H{"error": err.Error(), "verdict": res.Verdict, "closed": res.Closed})
+			return
+		}
+		c.JSON(200, res)
 	})
 	api.POST("/candidates/:id/reject", func(c *gin.Context) {
 		var body struct {

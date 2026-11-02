@@ -10,6 +10,9 @@ import (
 
 // 冲突提示必须说人话：旧实现只回 `active run already exists: <uuid>`，
 // 作者既不知道是谁占着单元，也不知道该等还是该去点哪里。
+//
+// 审校清单是特例：界面上它没有"接受"按钮，只有通过/强制通过/拒绝清单，
+// 所以提示绝不能叫作者"去接受"——那是一个不存在的按钮。
 func TestActiveRunConflictExplainsWaitingAccept(t *testing.T) {
 	active := domain.Run{
 		ID: "ca25903a-ef75-4153-b96e-bbdcde4873fd", Kind: domain.TaskReview,
@@ -21,18 +24,23 @@ func TestActiveRunConflictExplainsWaitingAccept(t *testing.T) {
 
 	for _, want := range []string{
 		"v01-U1",   // 哪个单元
-		"审校",       // 哪种调用（人话，不是枚举值）
-		"待接受",      // 卡在哪一步
-		"接受或拒绝",    // 作者该做什么
+		"审校清单",     // 哪种调用（人话，不是枚举值）
+		"通过",       // 作者该做什么：界面上真实存在的动作
+		"强制通过",     //
+		"拒绝清单",     //
+		"重审",       // 另一条出路：重审会先归档旧清单
 		"9ecdf100", // 哪个候选（短 id，够定位到 UI）
 	} {
 		if !strings.Contains(msg, want) {
 			t.Fatalf("message missing %q:\n%s", want, msg)
 		}
 	}
-	// 不再把裸 UUID 当唯一信息。
+	// 不再把裸 UUID 当唯一信息，也不再指向不存在的按钮。
 	if strings.Contains(msg, "active run already exists") {
 		t.Fatalf("raw english error leaked: %s", msg)
+	}
+	if strings.Contains(msg, "接受或拒绝") {
+		t.Fatalf("review lists have no 接受 button; hint must not send the author there: %s", msg)
 	}
 }
 

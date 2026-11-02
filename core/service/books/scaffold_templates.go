@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+
+	"github.com/danmo-ai/danmo-novel/core/domain"
 )
 
 // ScaffoldFiles mirrors the novel expert's canonical/continuity tree. Existing
@@ -108,13 +110,13 @@ locked_until: {}
 compliance: []
 aliases: {}
 `,
-		"canon/writing-rules.md": `# Writing rules
+		"canon/writing-rules.md": fmt.Sprintf(`# Writing rules
 
 - 单元 3–8 章（硬上限 10）
-- 单章默认 2000–3500 字，以单元合同为准
+- 单章 %d–%d 字，目标 %d 字：在细纲写 `+"`chapter_chars`"+`，别写单元总字数
 - 正文只写 prose，章间单独一行 ---
 - 不用 AI 套话，不提前打光终局底牌
-`,
+`, domain.ChapterCharsMin, domain.ChapterCharsMax, domain.ChapterCharsDefault),
 		"canon/style-fingerprint.md": `# Style fingerprint
 
 ## POV / 叙事距离

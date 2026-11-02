@@ -14,6 +14,7 @@ func TestAcceptPlanVolumeSeedsUnits(t *testing.T) {
 		t.Fatal(err)
 	}
 	seedTestIdentity(t, root)
+	seedRevealSchedule(t, root)
 	if err := os.WriteFile(filepath.Join(root, "outline", "book_outline.md"), []byte(sampleBookOutline()), 0o644); err != nil {
 		t.Fatal(err)
 	}

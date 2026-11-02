@@ -38,6 +38,8 @@ export interface UnitInfo {
   hasProse: boolean
   outlinePath: string
   prosePath: string
+  /** 派生出的单章目标字数（后端 books.ChapterTarget），UI 不要自己算。 */
+  chapterTarget: number
   outlineRaw?: string
   proseRaw?: string
 }
@@ -53,54 +55,6 @@ export interface BookSnapshot {
   revision: string
   structuredOutlines?: Record<string, StructuredMarkdown>
   identitySegments?: IdentitySegment[]
-  chain?: Chain | null
-}
-
-export type ChainStatus = 'pending' | 'running' | 'waiting_manual' | 'completed' | 'failed' | 'cancelled'
-export type ChainUnitStatus = 'pending' | 'running' | 'done' | 'blocked'
-
-export interface ChainStageConfig {
-  instruction?: string
-  knowledgeIds?: string[]
-}
-
-export interface ChainSpec {
-  bookId: string
-  volumeId: string
-  fromUnitId: string
-  toUnitId?: string
-  modelId?: string
-  outline: ChainStageConfig
-  write: ChainStageConfig
-  /** 审校只取参考知识：它没有「追加指令」的语义。 */
-  review: ChainStageConfig
-}
-
-export interface ChainUnitState {
-  unitId: string
-  stage: string
-  status: ChainUnitStatus
-  runId?: string
-  candidateId?: string
-  error?: string
-  /** 新写 | 重写 */
-  note?: string
-}
-
-export interface Chain {
-  id: string
-  bookId: string
-  volume: number
-  status: ChainStatus
-  cursor: number
-  stage: string
-  units: ChainUnitState[]
-  spec: ChainSpec
-  error?: string
-  /** 此前的中断原因，最近的在前；首次的根因常在这里。 */
-  previousErrors?: string[]
-  createdAt: string
-  updatedAt: string
 }
 
 export interface ChapterDraft { chapter: number; title: string; body: string }
@@ -167,6 +121,14 @@ export interface Candidate {
   acceptedAt?: string
   followUpRunId?: string
 }
+/** 「通过」的响应：通过了几份清单、整体结论、自动起的定稿 run。 */
+export interface CloseReviewResult {
+  closed: number
+  verdict: 'clean' | 'blocking' | 'unfinished'
+  runId?: string
+  warning?: string
+}
+
 export interface CallRecord {
   index: number
   modelId: string
@@ -192,7 +154,6 @@ export interface Run {
   callsUsed: number
   calls: CallRecord[]
   candidateId?: string
-  reviewCursor?: number
   contextSummary?: string[]
   error?: string
   createdAt: string

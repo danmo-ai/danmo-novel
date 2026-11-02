@@ -15,17 +15,17 @@ import (
 // 写作与审校必须用同一个每章字数目标。
 //
 // 旧代码写死 2000（硬门阈值 = 0.6×2000 = 1200 字），审校却用
-// books.WordTargetPerChapter（word_target/章数，实测 2520 → 阈值 1512）。
+// books.ChapterTarget（细纲字数目标，实测 2520 → 阈值 1512）。
 // 于是一章 1394 字：写作阶段判定通过并接受，审校阶段立刻判 blocking，
-// 自动修订再修一轮，整条链必然在这里停住——这是"连续写作自动失败"的根因。
-func TestWriteGateUsesSameWordTargetAsReview(t *testing.T) {
+// 自动修订再修一轮，整条流程必然在这里停住。
+func TestWriteGateUsesSameChapterTargetAsReview(t *testing.T) {
 	// 造一个每章目标 2520 的单元（单章），文字落在两个阈值之间：
 	// 老逻辑 0.6×2000=1200 判定通过，审校 0.6×2520=1512 判定不足。
 	unit := domain.UnitInfo{
 		UnitID: "v01-U1", ChapterFrom: 1, ChapterTo: 1,
 		OutlineRaw: "word_target: 2520\n",
 	}
-	target := books.WordTargetPerChapter(unit)
+	target := books.ChapterTarget(unit)
 	if target != 2520 {
 		t.Fatalf("target=%d want 2520", target)
 	}
@@ -46,7 +46,7 @@ func TestWriteGateUsesSameWordTargetAsReview(t *testing.T) {
 func TestRunWriteRepairsShortChapterBeforeReview(t *testing.T) {
 	snap, unit, _ := loadFixtureUnit(t)
 	unit.ChapterFrom, unit.ChapterTo = 1, 1
-	target := books.WordTargetPerChapter(unit)
+	target := books.ChapterTarget(unit)
 
 	fake := &shortThenLongLLM{shortChars: target / 3, longChars: target}
 	r := New(fake)

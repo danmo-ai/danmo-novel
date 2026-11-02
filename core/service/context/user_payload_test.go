@@ -38,6 +38,20 @@ func TestBuildPlanPacketInitOutputBudget(t *testing.T) {
 	}
 }
 
+// 整本书 reinit 要一次写完总纲＋全部设定＋全部人物卡。实测一本书（8.8k 字符
+// 总纲、19 张人物卡、9 个设定文件）需要约 44k tokens：32768 只能写到 JSON 中途，
+// 首轮必截断、重试才收尾。预算必须够一次成功，别把正常规模当成异常路径。
+func TestPlanReinitOutputBudgetFitsWholeBook(t *testing.T) {
+	snap := domain.BookSnapshot{Summary: domain.BookSummary{ID: "demo"}}
+	reinit := BuildPlanPacketWithMode(snap, 1, domain.PlanModeReinit, "", 0)
+	if reinit.Policy.MaxOutputTokens < 65536 {
+		t.Fatalf("reinit budget=%d want >= 65536", reinit.Policy.MaxOutputTokens)
+	}
+	if reinit.Policy.MaxCalls < 2 || !reinit.Policy.AllowOneRepair {
+		t.Fatalf("reinit still needs one structure repair: %+v", reinit.Policy)
+	}
+}
+
 func TestBuildOutlinePacketOutputBudget(t *testing.T) {
 	snap := domain.BookSnapshot{Summary: domain.BookSummary{ID: "demo"}}
 	// 未知模型容量时用 outline 的固定预算（需容纳与细纲头同量级的输出）。

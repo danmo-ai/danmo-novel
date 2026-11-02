@@ -241,15 +241,81 @@ func stateDeltasFromMarkdown(raw string) []map[string]string {
 	return out
 }
 
+// splitList splits a comma/semicolon separated author list.
+//
+// 作者和模型常用行内数组写法（"[career,relationship]"）。以前只切逗号，
+// 于是一份合法的卷纲会生成 thread_ids: ["[career", "relationship]"] —— 下游
+// 按 thread_id 找故事线永远对不上。方括号属于容器语法，不是值的一部分。
 func splitList(raw string) []string {
+	raw = strings.TrimSpace(raw)
+	raw = strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(raw, "["), "]"))
+	raw = strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(raw, "【"), "】"))
 	parts := strings.FieldsFunc(raw, func(r rune) bool { return r == ',' || r == '，' || r == ';' || r == '；' })
 	out := []string{}
 	for _, p := range parts {
-		if p = strings.TrimSpace(p); p != "" {
+		p = strings.TrimSpace(strings.Trim(p, "[]【】"))
+		if p != "" {
 			out = append(out, p)
 		}
 	}
 	return out
+}
+
+// revealNoteRe matches a bracketed explanation, e.g. "（第二部未解问题不得提前回答）".
+var revealNoteRe = regexp.MustCompile(`（[^）]*）|\([^)]*\)|【[^】]*】|\[[^\]]*\]`)
+
+// revealIDList splits a reveal-id field (reveal_ids / forbidden_reveal_ids) into IDs.
+//
+// 字段契约是「rNN 列表」，但作者和模型都会用自然语言表达「没有」：
+// "- forbidden_reveal_ids: 无（第二部未解问题不得提前回答）"。把它当成一个 ID
+// 会让整卷的接受流程失败在一个语义正确的句子上——所以整句说明先归一化为空列表，
+// 而不是留给下游当成「揭示计划里不存在的 ID」。
+//
+// 同时接受三种作者实际会用到的写法："r01,r02"、"r01、r02"、"［r01,r02］"（方括号）。
+func revealIDList(raw string) []string {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return nil
+	}
+	value = strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(value, "["), "]"))
+	value = strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(value, "【"), "】"))
+	if value == "" {
+		return nil
+	}
+	head := strings.ToLower(strings.TrimSpace(revealNoteRe.ReplaceAllString(value, "")))
+	switch head {
+	case "", "无", "没有", "暂无", "空", "none", "n/a", "na", "null", "-", "—", "－", "/":
+		return nil
+	}
+	parts := strings.FieldsFunc(value, func(r rune) bool {
+		switch r {
+		case ',', '，', ';', '；', '、', '|', ' ', '\t', '\n':
+			return true
+		}
+		return false
+	})
+	seen := map[string]bool{}
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(strings.Trim(p, "[]【】"))
+		if p == "" || seen[strings.ToLower(p)] {
+			continue
+		}
+		seen[strings.ToLower(p)] = true
+		out = append(out, p)
+	}
+	return out
+}
+
+// looksLikeProse reports whether a reveal token is an explanation rather than an ID.
+// 揭示 ID 是标识符（r01 / R-SECRET 之类）；出现 CJK 说明模型把说明写进了字段。
+func looksLikeProse(token string) bool {
+	for _, r := range token {
+		if r >= 0x3000 {
+			return true
+		}
+	}
+	return false
 }
 
 func ChapterWindow(value string) (int, int) {

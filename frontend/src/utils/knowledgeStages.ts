@@ -106,6 +106,42 @@ export function genreFamilies(name?: string): string[] {
   return ordered.length ? [...ordered] : [n]
 }
 
+/**
+ * Subgenre spellings that name the same 子类, mirroring `subgenreAliases` in
+ * `core/resource/novel/genre.go`. 95-genre-routing 把警察、法医、社会派都归在
+ * 「刑侦探案」，书里写成 年代刑侦 / 刑侦 / 探案 都是同一子类。
+ */
+const SUBGENRE_ALIASES: Record<string, string> = {
+  刑侦探案: '刑侦探案',
+  刑侦: '刑侦探案',
+  年代刑侦: '刑侦探案',
+  探案: '刑侦探案',
+  侦探推理: '刑侦探案',
+  侦探: '刑侦探案',
+  警察: '刑侦探案',
+  法医: '刑侦探案',
+  社会派: '刑侦探案',
+}
+
+/** Canonical subgenre name, or '' when the spelling is unknown. */
+export function canonicalSubgenre(subgenre?: string): string {
+  const s = (subgenre || '').trim()
+  if (!s) return ''
+  if (SUBGENRE_ALIASES[s]) return SUBGENRE_ALIASES[s]
+  for (const [alias, canonical] of Object.entries(SUBGENRE_ALIASES)) {
+    if (alias !== canonical && s.includes(alias)) return canonical
+  }
+  return ''
+}
+
+/** Whether a tagged subgenre and a book subgenre name the same 子类. */
+function subgenreMatched(tagged: string, book: string): boolean {
+  const t = canonicalSubgenre(tagged)
+  const b = canonicalSubgenre(book)
+  if (t && b) return t === b
+  return tagged.trim().toLowerCase() === book.trim().toLowerCase()
+}
+
 /** True when the article is 公共 (offered for any book genre). */
 export function isCommonKnowledge(doc: { genres?: string[]; subgenres?: string[] }) {
   return !doc.genres?.length && !doc.subgenres?.length
@@ -129,7 +165,7 @@ export function knowledgeAppliesToGenre(
   if (doc.subgenres?.length) {
     const sub = (bookSubgenre || '').trim()
     if (!sub) return false
-    return doc.subgenres.some((s) => s.trim() === sub)
+    return doc.subgenres.some((s) => subgenreMatched(s, sub))
   }
   return true
 }

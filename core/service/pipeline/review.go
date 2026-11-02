@@ -22,27 +22,24 @@ type ReviewOptions struct {
 	SplitByChapter bool
 	// Concurrency bounds how many chapter calls run in parallel (default 3).
 	Concurrency int
-	// ReviewCursor lets a restarted process skip chapters already reviewed.
-	ReviewCursor int
 }
 
 type reviewOutcome struct {
 	chapter  int
 	findings []domain.ReviewFinding
 	calls    []domain.CallRecord
-	skipped  bool
 	err      error
 }
 
 // RunReviewByChapter runs one review call per chapter, in bounded parallel.
-// 已完成的章即使在后续失败时也要保住：它们的 findings 会随候选一起落盘，
-// 并把 NextReviewCursor 指向第一个失败章，重跑时从那里继续。
+// 单章失败不会带走其他章的结论：它们仍随候选一起落盘，另附一条「审校未覆盖」
+// 提示，下游据此判成"审校不完整"，不会被当成"没有问题"放行。
 func (r *Runner) RunReviewByChapter(ctx context.Context, snap domain.BookSnapshot, unit domain.UnitInfo, modelID string, opts ReviewOptions) (Result, error) {
 	chapters := gates.ParseProseChapters(unit.ProseRaw)
 	if len(chapters) == 0 {
 		return Result{}, fmt.Errorf("no chapters to review")
 	}
-	target := books.WordTargetPerChapter(unit)
+	target := books.ChapterTarget(unit)
 	local := gates.CheckProseWithRules(chapters, target, r.proseRules())
 	baseline := contextsvc.BuildReviewBaseline(snap, unit, local.Findings, r.ReviewChecklist)
 
@@ -60,10 +57,6 @@ func (r *Runner) RunReviewByChapter(ctx context.Context, snap domain.BookSnapsho
 
 	for idx, ch := range chapters {
 		results[idx] = reviewOutcome{chapter: ch.Chapter}
-		if ch.Chapter < opts.ReviewCursor {
-			results[idx].skipped = true
-			continue
-		}
 		wg.Add(1)
 		go func(idx int, ch domain.ChapterDraft) {
 			defer wg.Done()
@@ -103,9 +96,6 @@ func (r *Runner) RunReviewByChapter(ctx context.Context, snap domain.BookSnapsho
 			}
 			continue
 		}
-		if out.skipped {
-			continue
-		}
 		cand.Findings = append(cand.Findings, out.findings...)
 	}
 	sort.SliceStable(allCalls, func(i, j int) bool { return allCalls[i].Index < allCalls[j].Index })
@@ -119,13 +109,12 @@ func (r *Runner) RunReviewByChapter(ctx context.Context, snap domain.BookSnapsho
 
 	if len(failed) > 0 {
 		cand.Findings = append(cand.Findings, domain.ReviewFinding{
-			ID: "review-incomplete", Severity: "advisory", Source: "local_gate", Lens: "coverage",
+			ID: domain.FindingReviewIncomplete, Severity: severityAdvisory, Source: "local_gate", Lens: "coverage",
 			Title:      fmt.Sprintf("审校未覆盖第 %v 章", failed),
 			Evidence:   fmt.Sprintf("%d/%d 章审校失败，其余章结论已保存。", len(failed), len(chapters)),
-			Suggestion: "修复后从该章重试；已通过的章不会重复审。",
+			Suggestion: "先按失败章重审整个单元（重审会重新审所有章，旧清单随之归档）。",
 		})
 		res.Candidate = cand
-		res.NextReviewCursor = failed[0]
 		if firstErr != nil {
 			return res, fmt.Errorf("chapters %v failed: %w", failed, firstErr)
 		}
@@ -138,11 +127,19 @@ func (r *Runner) RunReviewByChapter(ctx context.Context, snap domain.BookSnapsho
 // call records (token usage, latency) so the run keeps accurate accounting.
 func (r *Runner) reviewChapter(ctx context.Context, modelID string, packet domain.ContextPacket, chapter int) ([]domain.ReviewFinding, []domain.CallRecord, error) {
 	var findings []domain.ReviewFinding
+	// 抢救路径能解析出"半份结论"，但那不是结论：第一次截断必须交给 runJSON
+	// 用翻倍预算重试（截断是唯一能靠改预算修掉的失败），第二次仍截断才收下，
+	// 并保留 budget advisory 让下游判成"审校不完整"而不是"没有问题"。
+	attempt := 0
 	res, err := r.runJSON(ctx, domain.BookSnapshot{}, packet, modelID, domain.TaskReview, packet.UnitID, packet.UnitID+"#"+fmt.Sprint(chapter),
 		func(raw string, cand *domain.Candidate) error {
+			attempt++
 			fs, err := parseReviewResponse(raw, chapter)
 			if err != nil {
 				return err
+			}
+			if attempt == 1 && hasTruncationFinding(fs) {
+				return fmt.Errorf("审校输出在 %d tokens 预算处被截断", packet.Policy.MaxOutputTokens)
 			}
 			findings = fs
 			return nil
@@ -155,6 +152,17 @@ func (r *Runner) reviewChapter(ctx context.Context, modelID string, packet domai
 		res.Calls[i].Step = fmt.Sprintf("chapter-%d", chapter)
 	}
 	return findings, res.Calls, err
+}
+
+// hasTruncationFinding reports whether the salvaged conclusions carry the
+// truncation marker, i.e. the model was cut off rather than finished.
+func hasTruncationFinding(fs []domain.ReviewFinding) bool {
+	for _, f := range fs {
+		if f.ID == domain.FindingReviewTruncated {
+			return true
+		}
+	}
+	return false
 }
 
 // parseReviewResponse interprets a review response and enforces its contract.
@@ -182,7 +190,7 @@ func parseReviewResponse(raw string, wantChapter int) ([]domain.ReviewFinding, e
 		}
 		if truncated {
 			findings = append(findings, domain.ReviewFinding{
-				ID: "review-truncated", Severity: severityAdvisory, Source: "local_gate", Lens: "budget",
+				ID: domain.FindingReviewTruncated, Severity: severityAdvisory, Source: "local_gate", Lens: "budget",
 				Chapter:    wantChapter,
 				Title:      fmt.Sprintf("审校输出被截断，仅保留已解析的 %d 条", len(findings)),
 				Evidence:   fmt.Sprintf("模型输出在输出预算处中断（约 %d 字）。", len([]rune(raw))),
@@ -223,12 +231,17 @@ func tailOf(s string, n int) string {
 // RunReview keeps the unit-wide review path (used when SplitByChapter is off).
 func (r *Runner) RunReview(ctx context.Context, snap domain.BookSnapshot, unit domain.UnitInfo, modelID string) (Result, error) {
 	chapters := gates.ParseProseChapters(unit.ProseRaw)
-	target := books.WordTargetPerChapter(unit)
+	target := books.ChapterTarget(unit)
 	local := gates.CheckProseWithRules(chapters, target, r.proseRules())
 	packet := contextsvc.BuildReviewPacket(snap, unit, local.Findings, r.modelMaxOut(modelID), r.ReviewChecklist)
 	res, err := r.runJSON(ctx, snap, packet, modelID, domain.TaskReview, unit.UnitID, unit.ProsePath, func(raw string, cand *domain.Candidate) error {
 		findings, err := parseReviewResponse(raw, 0)
 		if err != nil {
+			return err
+		}
+		// 整单元审校没有"本次只审这一章"的天然约束，必须对着本单元的章号表校验，
+		// 否则一条越界章号会让后续「自动修复」整批报无法定位。
+		if err := validateFindingsWithinUnit(findings, chapters); err != nil {
 			return err
 		}
 		cand.Findings = append(append([]domain.ReviewFinding{}, local.Findings...), findings...)

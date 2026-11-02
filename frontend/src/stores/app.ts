@@ -1,7 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import { api } from '@/api/client'
-import type { BookSnapshot, BookSummary, Candidate, Chain, LLMModel, ProviderPublic, Run } from '@/types'
+import type { BookSnapshot, BookSummary, Candidate, CloseReviewResult, LLMModel, ProviderPublic, Run } from '@/types'
 
 export const useAppStore = defineStore('app', () => {
   const books = ref<BookSummary[]>([])
@@ -18,7 +18,6 @@ export const useAppStore = defineStore('app', () => {
   const assignments = ref<{ role: string; modelId: string }[]>([])
   const toast = ref('')
   const error = ref('')
-  const chain = ref<Chain | null>(null)
   /** 连续性状态摘要：已建到哪个单元、多少人物状态、多少未回收伏笔。 */
   const continuity = ref<{ units: number; lastUnit?: string; afterCh?: number; cast: number; openLoops: number } | null>(null)
 
@@ -28,10 +27,9 @@ export const useAppStore = defineStore('app', () => {
   async function loadBooks() { books.value = (await api.get<BookSummary[] | null>('/api/books')) ?? [] }
   async function loadBook(id: string) {
     type StateSummary = { units: number; lastUnit?: string; afterCh?: number; cast: number; openLoops: number }
-    const res = await api.get<{ book: BookSnapshot; primary: any; chain?: Chain; continuity?: StateSummary }>(`/api/books/${id}`)
+    const res = await api.get<{ book: BookSnapshot; primary: any; continuity?: StateSummary }>(`/api/books/${id}`)
     currentBook.value = res.book
     primary.value = res.primary
-    chain.value = res.chain ?? null
     continuity.value = res.continuity ?? null
     await Promise.all([loadCandidates(id), loadRuns(id), loadCandidateHistory(id)])
   }
@@ -64,46 +62,38 @@ export const useAppStore = defineStore('app', () => {
     return run
   }
   function clearActiveRun() { activeRun.value = null }
-  async function acceptCandidate(id: string, baseRevision: string, opts: { followUpReview?: boolean } = {}) {
+  async function acceptCandidate(
+    id: string,
+    baseRevision: string,
+    opts: { followUpReview?: boolean; forceRiskAccept?: boolean } = {},
+  ) {
     const c = await api.post<Candidate>(`/api/candidates/${id}/accept`, {
       baseRevision,
       followUpReview: opts.followUpReview === true,
+      forceRiskAccept: opts.forceRiskAccept === true,
     })
     note(c.followUpRunId ? '已接受修订，正在自动复审' : '已接受候选')
     return c
   }
+  /** 审校通过：归档该单元全部待处理清单，并按需直接起定稿。 */
+  async function closeUnitReview(
+    bookId: string,
+    unitId: string,
+    opts: { force?: boolean; startFinalize?: boolean } = {},
+  ) {
+    const res = await api.post<CloseReviewResult>(`/api/books/${bookId}/units/${unitId}/close-review`, {
+      force: opts.force === true,
+      startFinalize: opts.startFinalize !== false,
+    })
+    note(res.runId ? '审校已通过，正在定稿' : '审校已通过')
+    return res
+  }
   async function rejectCandidate(id: string, reason = '') { await api.post(`/api/candidates/${id}/reject`, { reason }) }
 
-  // ---- 连续单元重写（chain）----
-  async function startChain(spec: any) {
-    const ch = await api.post<Chain>('/api/chains', spec)
-    chain.value = ch
-    note('连续重写已开始')
-    return ch
-  }
-  async function pollChain(id: string) {
-    const ch = await api.get<Chain>(`/api/chains/${id}`)
-    chain.value = ch
-    return ch
-  }
-  async function resumeChain(id: string) {
-    const ch = await api.post<Chain>(`/api/chains/${id}/resume`)
-    chain.value = ch
-    note('连续重写继续')
-    return ch
-  }
-  async function cancelChain(id: string) {
-    await api.post(`/api/chains/${id}/cancel`)
-    note('连续重写已取消')
-    if (chain.value?.id === id) chain.value = { ...chain.value, status: 'cancelled' }
-  }
-  function clearChain() { chain.value = null }
-
   return {
-    books, currentBook, primary, continuity, candidates, candidateHistory, runs, activeRun, chain,
+    books, currentBook, primary, continuity, candidates, candidateHistory, runs, activeRun,
     providers, models, presets, assignments, toast, error,
     note, fail, loadBooks, loadBook, loadCandidates, loadCandidateHistory, loadRuns,
-    loadLLM, startRun, pollRun, clearActiveRun, acceptCandidate, rejectCandidate,
-    startChain, pollChain, resumeChain, cancelChain, clearChain,
+    loadLLM, startRun, pollRun, clearActiveRun, acceptCandidate, closeUnitReview, rejectCandidate,
   }
 })

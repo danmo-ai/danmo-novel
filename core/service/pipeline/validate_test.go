@@ -74,6 +74,40 @@ func TestValidateReviewFindingsRejectsUnknownSeverity(t *testing.T) {
 	}
 }
 
+// id 重复会让"勾一条"变成"勾多条"：前端按 id 去重显示已选数量，修订又按 id
+// 取问题，于是一条勾选会把同 id 的两条意见一起送去改。
+func TestValidateReviewFindingsRejectsDuplicateIDs(t *testing.T) {
+	findings := []domain.ReviewFinding{
+		{ID: "style-1-1", Severity: "advisory", Chapter: 1, Title: "比喻重复", Evidence: "e1"},
+		{ID: "style-1-1", Severity: "blocking", Chapter: 1, Title: "另一条问题", Evidence: "e2"},
+	}
+	err := validateReviewFindings(findings, 1)
+	if err == nil {
+		t.Fatal("duplicate id must be rejected")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "findings[1].id") || !strings.Contains(msg, "重复") {
+		t.Fatalf("error should point at the duplicate id: %s", msg)
+	}
+}
+
+// 章号必填在两条路径上都要成立：整单元审校以前允许 chapter=0，结果那条意见
+// 到了「自动修复」这一步才炸（RunRevise 找不到落点），而且一条就废掉整批。
+func TestValidateReviewFindingsRequiresChapter(t *testing.T) {
+	findings := []domain.ReviewFinding{
+		{ID: "structure-1", Severity: "blocking", Title: "全单元节奏拖沓", Evidence: "每章都在原地打转"},
+	}
+	// wantChapter=0 就是整单元审校的调用方式。
+	err := validateReviewFindings(findings, 0)
+	if err == nil {
+		t.Fatal("findings without a chapter must be rejected even in whole-unit review")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "findings[0].chapter") || !strings.Contains(msg, "正整数章号") {
+		t.Fatalf("error should demand a chapter: %s", msg)
+	}
+}
+
 func TestValidateReviewFindingsRejectsWrongChapter(t *testing.T) {
 	findings := []domain.ReviewFinding{
 		{ID: "a-2-1", Severity: "advisory", Chapter: 2, Title: "t", Evidence: "e"},

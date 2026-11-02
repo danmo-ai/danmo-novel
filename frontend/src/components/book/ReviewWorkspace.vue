@@ -4,6 +4,7 @@ import { RouterLink } from 'vue-router'
 import { api } from '@/api/client'
 import { useAppStore } from '@/stores/app'
 import { STATUS_LABELS } from '@/utils/runLabels'
+import { VERDICT_LABEL, isUnfinishedFinding, reviewVerdict } from '@/utils/reviewState'
 import type { Candidate, ReviewFinding, UnitInfo } from '@/types'
 
 const props = defineProps<{ selectedUnit: UnitInfo | null; busy?: boolean; readOnly?: boolean }>()
@@ -12,6 +13,8 @@ const emit = defineEmits<{
   retrySplit: [unitId?: string]
   focusUnit: [unitId: string]
   rejectUnit: [unitId: string, candidateIds: string[]]
+  /** 通过（归档清单）并按需起定稿；force 由父组件弹确认框授权。 */
+  closeReview: [unitId: string, force: boolean]
 }>()
 const store = useAppStore()
 
@@ -37,6 +40,9 @@ const groups = computed(() => {
       rows: g.rows,
       candidateIds: g.candidateIds,
       blocking: g.rows.filter((f) => f.severity === 'blocking').length,
+      // 截断/分章失败的标记：有它就不是"没有问题"，而是"这章没审完"。
+      unfinished: g.rows.filter(isUnfinishedFinding).length,
+      verdict: reviewVerdict(g.rows),
       chapters: [...new Set(g.rows.map((f) => f.chapter).filter(Boolean))].sort((a, b) => (a as number) - (b as number)) as number[],
     }))
     .sort((a, b) => a.unitId.localeCompare(b.unitId))
@@ -99,6 +105,34 @@ function visibleRows(g: { unitId: string; rows: Row[] }) {
   return f === 'all' ? g.rows : g.rows.filter((r) => r.chapter === f)
 }
 
+// 可勾选 = 当前筛选下真正"要修的问题"。截断/分章失败标记是"没审完"的证据，
+// 送去修订只会让模型去"修"一条并不存在的问题，所以全选必须跳过它们。
+function selectableRows(g: { unitId: string; rows: Row[] }) {
+  return visibleRows(g).filter((f) => !isUnfinishedFinding(f))
+}
+const allSelected = (g: { unitId: string; rows: Row[] }) => {
+  const rows = selectableRows(g)
+  return rows.length > 0 && rows.every((f) => isPicked(f, g.unitId))
+}
+/** 全选/取消全选只作用于当前筛选可见的行：筛到第 2 章时全选不会动别的章。 */
+function toggleAll(g: { unitId: string; rows: Row[] }) {
+  const rows = selectableRows(g)
+  if (!rows.length) return
+  if (allSelected(g)) {
+    const visible = new Set(rows.map(keyOf))
+    picked[g.unitId] = picksOf(g.unitId).filter((k) => !visible.has(k))
+    return
+  }
+  picked[g.unitId] = [...new Set([...picksOf(g.unitId), ...rows.map(keyOf)])]
+}
+
+/** 全选按钮文案：筛到某一章时说清作用范围，避免作者以为动了整份清单。 */
+function allLabel(g: { unitId: string; rows: Row[] }) {
+  const scoped = filterOf(g.unitId) !== 'all'
+  if (allSelected(g)) return scoped ? '取消本章全选' : '取消全选'
+  return scoped ? '全选本章' : '全选'
+}
+
 function canRevise(g: { unitId: string }) {
   return Boolean(!props.busy && !props.readOnly && issueIdsOf(g as any).length)
 }
@@ -109,7 +143,7 @@ function copyFinding(f: Row) {
   if (navigator.clipboard?.writeText) navigator.clipboard.writeText(text)
 }
 
-// 历史清单：拒绝的、被后续修复自动结案的都在这里，只读回看。
+// 历史清单：拒绝的、被后续修复自动归档的都在这里，只读回看。
 // 审校页没有"归档"按钮：清单要么去修订，要么拒绝。
 const archivedByCandidate = computed(() =>
   store.candidateHistory.filter((c) => c.kind === 'review').slice(0, 20),
@@ -139,7 +173,7 @@ const rulesSourceLabel = computed(() => ({
   builtin: '内置默认',
 }[rulesSource.value]))
 
-const archiveLabel: Record<string, string> = { accepted: '已结案', rejected: '已拒绝', expired: '已作废' }
+const archiveLabel: Record<string, string> = { accepted: '已通过', rejected: '已拒绝', expired: '已作废' }
 const runStatusLabel = (s: string) => STATUS_LABELS[s] || s
 function archivedAt(c: Candidate) {
   const ts = c.acceptedAt || c.createdAt
@@ -153,7 +187,7 @@ function archivedAt(c: Candidate) {
       <div>
         <p class="eyebrow">Quality</p>
         <h2>审校与定稿</h2>
-        <p>审校只出问题清单。两条路：勾选后点「自动修复」看 diff 再确认落盘；或「拒绝清单」丢弃后自己重审。</p>
+        <p>审校只出问题清单，出口有三个：勾选后「自动修复」看 diff 再确认落盘；清单干净（无阻断、每章都审完）时「通过」；明知还有问题仍要往前推时「强制通过」。</p>
       </div>
       <div class="review-totals">
         <span><strong>{{ totalBlocking }}</strong> 阻断</span>
@@ -199,11 +233,17 @@ function archivedAt(c: Candidate) {
 
     <div v-if="!groups.length" class="empty-state panel">
       <h3>全书没有待处理审校问题</h3>
-      <p>到写作页对某个单元点「审校」；结果会按单元分组出现在这里。</p>
-      <button v-if="selectedUnit?.hasProse" class="primary" :disabled="props.busy || props.readOnly"
-        @click="emit('retrySplit', selectedUnit.unitId)">
-        重新审校 {{ selectedUnit.unitId }}
-      </button>
+      <p>到写作页对某个单元点「审校」；结果会按单元分组出现在这里。清单都处理完时，在这里直接定稿。</p>
+      <p v-if="selectedUnit?.hasProse" class="muted">没有待处理清单时，「通过」会直接进定稿。</p>
+      <div v-if="selectedUnit?.hasProse" class="empty-actions">
+        <button :disabled="props.busy || props.readOnly" @click="emit('retrySplit', selectedUnit.unitId)">
+          重新审校 {{ selectedUnit.unitId }}
+        </button>
+        <button class="primary" :disabled="props.busy || props.readOnly"
+          @click="emit('closeReview', selectedUnit.unitId, false)">
+          通过并定稿
+        </button>
+      </div>
       <p v-if="archivedByCandidate.length" class="muted">已有 {{ archivedByCandidate.length }} 份历史清单，见页面底部。</p>
     </div>
 
@@ -211,8 +251,8 @@ function archivedAt(c: Candidate) {
       <header class="unit-head">
         <div class="unit-title">
           <button class="unit-link" :title="`切换到 ${g.unitId}`" @click="emit('focusUnit', g.unitId)">{{ g.unitId }}</button>
-          <span class="unit-badge" :data-severity="g.blocking ? 'blocking' : 'advisory'">
-            {{ g.blocking ? `${g.blocking} 阻断` : '无阻断' }}
+          <span class="unit-badge" :data-severity="g.verdict === 'clean' ? 'advisory' : g.verdict">
+            {{ g.verdict === 'blocking' ? `${g.blocking} 阻断` : VERDICT_LABEL[g.verdict] }}
           </span>
           <span class="muted">{{ g.rows.length }} 条 · {{ g.chapters.length }} 章 · {{ g.candidateIds.length }} 份清单</span>
         </div>
@@ -222,7 +262,7 @@ function archivedAt(c: Candidate) {
             <option value="all">全部章节</option>
             <option v-for="ch in g.chapters" :key="ch" :value="ch">第 {{ ch }} 章</option>
           </select>
-          <span class="muted">已选 {{ issueIdsOf(g).length }}/{{ g.rows.length }}</span>
+          <span class="muted">已选 {{ issueIdsOf(g).length }}/{{ selectableRows(g).length }}</span>
           <button class="ghost" :disabled="props.busy || props.readOnly"
             title="丢弃这份清单；之后要自己重新点审校"
             @click="emit('rejectUnit', g.unitId, g.candidateIds)">
@@ -233,10 +273,39 @@ function archivedAt(c: Candidate) {
             @click="emit('revise', g.unitId, issueIdsOf(g))">
             {{ props.busy ? '运行中…' : '自动修复' }}
           </button>
+          <!-- 清单的第三个出口：通过只归档清单，定稿才回写账本。以前只有"去修订/拒绝"。 -->
+          <button v-if="g.verdict === 'clean'" class="primary" :disabled="props.busy || props.readOnly"
+            title="通过这份清单并立即定稿；通过不写正文，定稿才回写账本"
+            @click="emit('closeReview', g.unitId, false)">
+            通过
+          </button>
+          <button v-else class="ghost force" :disabled="props.busy || props.readOnly"
+            :title="`仍有 ${g.blocking} 条阻断${g.unfinished ? `、${g.unfinished} 处审校不完整` : ''}；强制通过会放弃这些结论`"
+            @click="emit('closeReview', g.unitId, true)">
+            强制通过
+          </button>
         </div>
       </header>
 
       <div class="finding-list">
+        <!-- 全选按"当前筛选 + 可修"生效：筛到第 2 章只选第 2 章，截断标记不参与。 -->
+        <div class="list-tools">
+          <button class="ghost" :disabled="props.busy || props.readOnly || !selectableRows(g).length"
+            :title="selectableRows(g).length ? '勾选当前筛选下所有可修问题' : '当前筛选下没有可修的问题'"
+            @click="toggleAll(g)">
+            {{ allLabel(g) }}
+          </button>
+          <span class="muted">可修 {{ selectableRows(g).length }} 条 · 已选 {{ issueIdsOf(g).length }}</span>
+          <span v-if="g.unfinished" class="muted">· {{ g.unfinished }} 条审校不完整，不参与勾选</span>
+        </div>
+        <!-- 没有结论 ≠ 没有问题：截断/分章失败的清单必须先补审，或由作者显式强制通过。 -->
+        <div v-if="g.verdict === 'unfinished'" class="unfinished-note">
+          <strong>审校不完整</strong>
+          <span class="muted">有章节的输出被预算截断或调用失败，剩下的结论不能当"通过"用。先重审该单元，或显式强制通过。</span>
+          <button class="ghost" :disabled="props.busy || props.readOnly" @click="emit('retrySplit', g.unitId)">
+            重审该单元
+          </button>
+        </div>
         <div v-if="rejectedRevises.get(g.unitId)" class="rejected-note">
           <strong>上一次自动修复已丢弃</strong>
           <span class="muted">{{ rejectedRevises.get(g.unitId)!.reason }}</span>
@@ -251,7 +320,9 @@ function archivedAt(c: Candidate) {
             <span>{{ f.source === 'local_gate' ? '本地硬门' : 'AI 审校' }}</span>
             <span v-if="f.chapter">第 {{ f.chapter }} 章</span>
             <span v-if="f.lens">{{ f.lens }}</span>
-            <span class="sev" :data-severity="f.severity">{{ f.severity === 'blocking' ? '阻断' : '建议' }}</span>
+            <span class="sev" :data-severity="isUnfinishedFinding(f) ? 'unfinished' : f.severity">
+              {{ isUnfinishedFinding(f) ? '不完整' : (f.severity === 'blocking' ? '阻断' : '建议') }}
+            </span>
           </div>
           <h4>{{ f.title }}</h4>
           <p v-if="f.evidence">{{ f.evidence }}</p>
@@ -271,7 +342,7 @@ function archivedAt(c: Candidate) {
 
     <details v-if="archivedByCandidate.length" class="archive panel">
       <summary><strong>历史审校清单</strong><span class="muted"> · {{ archivedByCandidate.length }} 份，只读</span></summary>
-      <p class="archive-note">清单要么去修订、要么拒绝；这里只回看已处理的结论，单元状态不变（仍待定稿）。</p>
+      <p class="archive-note">清单的出口是去修订、通过或拒绝；这里只回看已处理的结论（通过不写正文，状态由定稿推进）。</p>
       <article v-for="c in archivedByCandidate" :key="c.id" class="archive-row">
         <div class="archive-head">
           <span class="archive-status" :data-status="c.status">{{ archiveLabel[c.status] || c.status }}</span>
@@ -304,11 +375,19 @@ function archivedAt(c: Candidate) {
 .unit-badge { font-size: 11px; padding: 2px 8px; border-radius: 999px; font-weight: 600; }
 .unit-badge[data-severity='blocking'] { background: rgba(163,59,50,.12); color: var(--bad); }
 .unit-badge[data-severity='advisory'] { background: rgba(15,107,92,.1); color: var(--accent); }
+.unit-badge[data-severity='unfinished'] { background: rgba(176,124,28,.14); color: var(--warn, #8a5a00); }
 .unit-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .unit-actions select { padding: 6px 10px; border: 1px solid var(--line); border-radius: 8px; font-size: 12px; }
 .unit-actions .muted { font-size: 12px; color: var(--ink-soft); }
 .unit-actions .ghost { background: transparent; border: 1px solid var(--line); color: var(--ink-soft); }
 .unit-actions .ghost:hover:not(:disabled) { color: var(--bad); border-color: rgba(163,59,50,.35); }
+/* 强制通过是危险动作（放弃结论），但不该和"拒绝清单"一样灰：它是唯一的前进按钮。 */
+.unit-actions .ghost.force { color: var(--bad); border-color: rgba(163,59,50,.35); }
+.empty-actions { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; }
+.unfinished-note { display: grid; gap: 4px; margin: 12px 0 4px; padding: 10px 12px; border-radius: 10px; background: rgba(176,124,28,.08); border: 1px solid rgba(176,124,28,.25); font-size: 12px; justify-items: start; }
+.unfinished-note strong { color: var(--warn, #8a5a00); font-size: 13px; }
+.unfinished-note .muted { color: var(--ink-soft); line-height: 1.6; }
+.unfinished-note button { margin-top: 4px; }
 .rules-bar { padding: 14px 18px; display: flex; justify-content: space-between; gap: 16px; align-items: flex-start; }
 .rules-bar h3 { margin: 0 0 6px; font-size: 14px; }
 .rules-kinds { margin: 0; padding-left: 18px; color: var(--ink-soft); font-size: 12px; line-height: 1.75; }
@@ -318,6 +397,10 @@ function archivedAt(c: Candidate) {
 .ghost-link { font-size: 12px; color: var(--accent); text-decoration: none; padding: 6px 12px; border: 1px solid var(--line); border-radius: 8px; white-space: nowrap; }
 .ghost-link:hover { border-color: var(--accent); }
 .finding-list { padding: 4px 18px 12px; }
+.list-tools { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 10px 0 8px; border-bottom: 1px solid var(--line); }
+.list-tools .ghost { background: transparent; border: 1px solid var(--line); color: var(--ink-soft); padding: 4px 10px; font-size: 12px; }
+.list-tools .ghost:hover:not(:disabled) { color: var(--accent); border-color: var(--accent); }
+.list-tools .muted { font-size: 12px; color: var(--ink-soft); }
 .rejected-note { display: grid; gap: 3px; margin: 12px 0 4px; padding: 10px 12px; border-radius: 10px; background: rgba(163,59,50,.06); border: 1px solid rgba(163,59,50,.18); font-size: 12px; }
 .rejected-note strong { color: var(--bad); font-size: 13px; }
 .rejected-note small { color: var(--ink-soft); line-height: 1.6; }
@@ -329,6 +412,7 @@ function archivedAt(c: Candidate) {
 .finding-meta { display: flex; gap: 8px; color: var(--ink-soft); font-size: 11px; margin-top: 4px; flex-wrap: wrap; }
 .finding-meta .sev { font-weight: 600; }
 .finding-meta .sev[data-severity='blocking'] { color: var(--bad); }
+.finding-meta .sev[data-severity='unfinished'] { color: var(--warn, #8a5a00); }
 .finding h4 { margin: 6px 0; font-size: 14px; }
 .finding.blocking h4 { color: var(--bad); }
 .finding p { margin: 4px 0; color: var(--ink-soft); font-size: 13px; line-height: 1.7; }

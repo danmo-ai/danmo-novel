@@ -43,6 +43,13 @@ const preserveOpen = ref(true)
 
 const isReinit = computed(() => props.spec.kind === 'plan' && props.spec.mode === 'reinit')
 const isLocalFinalize = computed(() => props.spec.kind === 'finalize')
+/** 重审：该单元尚未处理的旧审校清单会在启动前被归档，必须提前说明。 */
+const isSupersedeReview = computed(() => props.spec.kind === 'review' && props.spec.supersedeReview === true)
+const openReviewLists = computed(() => {
+  if (!isSupersedeReview.value) return 0
+  const unitId = props.spec.unitId
+  return (store.candidates || []).filter((c) => c.kind === 'review' && (!unitId || c.unitId === unitId)).length
+})
 const isDerivedRewrite = computed(() => {
   if (props.spec.kind !== 'rewrite_entity') return false
   const p = String(props.spec.targetPath || '')
@@ -90,6 +97,9 @@ const riskNote = computed(() => {
   }
   if (isDerivedRewrite.value) {
     return '总纲派生设定：已附总纲等依据（只读）。接受仅写当前文件。'
+  }
+  if (isSupersedeReview.value && openReviewLists.value) {
+    return `重审会先归档该单元 ${openReviewLists.value} 份未处理的审校清单（旧结论作废），再按章重新审一遍；正文不受影响。`
   }
   if (props.spec.kind === 'rewrite_entity') {
     return '生产约束可独立优化；接受仅写当前文件。'

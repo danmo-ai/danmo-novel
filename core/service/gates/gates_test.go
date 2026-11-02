@@ -156,3 +156,49 @@ func titles(rep Report) []string {
 	}
 	return out
 }
+
+// 细纲里的字数额度必须落在单章区间内：30000/6 章 = 5000 字/章，
+// 与 2000–3500 打架，应该在细纲阶段就拦下，而不是等正文写完才发现。
+func TestCheckUnitOutlineRejectsOutOfRangeWordTarget(t *testing.T) {
+	base := domain.UnitOutlineDraft{
+		UnitID: "v01-U1", Function: "功能", Desire: "欲望", Obstacle: "阻碍", Choice: "选择",
+		POV: "lin", OnStage: []string{"lin"}, ChapterFrom: 1, ChapterTo: 6,
+	}
+	bad := base
+	bad.WordTarget = "30000"
+	rep := CheckUnitOutline(bad, nil)
+	if rep.OK {
+		t.Fatal("30000 over 6 chapters is 5000/chapter and must be rejected")
+	}
+	var hit bool
+	for _, f := range rep.Findings {
+		if f.ID == "outline-word-target" {
+			hit = true
+		}
+	}
+	if !hit {
+		t.Fatalf("missing word_target finding: %+v", rep.Findings)
+	}
+
+	// 15000/6 = 2500，合法。
+	good := base
+	good.WordTarget = "15000"
+	if rep := CheckUnitOutline(good, nil); !rep.OK {
+		t.Fatalf("15000 over 6 chapters should pass: %+v", rep.Findings)
+	}
+
+	// chapter_chars 显式越界同样拦。
+	cc := base
+	cc.ChapterChars = "5000"
+	if rep := CheckUnitOutline(cc, nil); rep.OK {
+		t.Fatal("chapter_chars=5000 must be rejected")
+	}
+
+	// 老书回写带取整误差（21274/10 章 ≈ 2127.4）不该被拦。
+	old := base
+	old.ChapterTo = 10
+	old.WordTarget = "21274"
+	if rep := CheckUnitOutline(old, nil); !rep.OK {
+		t.Fatalf("rounded legacy word_target should pass: %+v", rep.Findings)
+	}
+}

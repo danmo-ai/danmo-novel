@@ -115,6 +115,7 @@ func TestStructuredVolumeSeedInheritsUnitContract(t *testing.T) {
 		t.Fatal(err)
 	}
 	seedTestIdentity(t, root)
+	seedRevealSchedule(t, root)
 	if err := writeTestFile(root, "outline/book_outline.md", testBookMD); err != nil {
 		t.Fatal(err)
 	}
@@ -197,6 +198,7 @@ func TestVolumeIdentityChangeIsAtomicAndEffective(t *testing.T) {
 		t.Fatal(err)
 	}
 	seedTestIdentity(t, root)
+	seedRevealSchedule(t, root)
 	if err := writeTestFile(root, "outline/book_outline.md", testBookMD); err != nil {
 		t.Fatal(err)
 	}
@@ -252,6 +254,7 @@ func TestStructuredVolumeSeedAcceptKeepsExistingProse(t *testing.T) {
 		t.Fatal(err)
 	}
 	seedTestIdentity(t, root)
+	seedRevealSchedule(t, root)
 	if err := writeTestFile(root, "outline/book_outline.md", testBookMD); err != nil {
 		t.Fatal(err)
 	}
@@ -331,4 +334,171 @@ func writeTestFile(root, rel, body string) error {
 		return err
 	}
 	return os.WriteFile(path, []byte(body), 0o644)
+}
+
+func TestUnitContractForSeedKeepsInlineArraysClean(t *testing.T) {
+	doc := ParseStructuredMarkdown(`# 卷纲 · v01
+- schema_version: 1
+- volume_id: v01
+- title: 第一卷
+- source_arc_id: arc-v01
+- chapter_range: 1-6
+- goal: 目标
+- central_conflict: 冲突
+- stakes: 代价
+- entry_state: 开始
+- exit_state: 结束
+- cast: [lin, shen]
+
+## 单元 · v01-U1
+- title: 起步
+- chapter_range: 1-6
+- objective: 获得资格
+- obstacle: 没有许可
+- attempt: 找旧材料
+- setback: 材料不足
+- choice: 申请复核
+- cost: 承担责任
+- outcome: 拿到许可
+- entry_cause: 报到
+- exit_result: 获得许可
+- state_changes: lin.goal=新人->复核人
+- clock_start_day: 1
+- clock_end_day: 6
+- clock_gap_days: 0
+- thread_ids: [career,relationship]
+- reveal_ids: [R1]
+- next_hook: 信息缺口 | 签名不一致
+`, VolumeOutlineProtocol)
+	seeds := SeedsFromStructuredVolume(doc)
+	if len(seeds) != 1 {
+		t.Fatalf("seeds=%d", len(seeds))
+	}
+	segments := []domain.IdentitySegment{
+		{Stem: "lin", RoleTitle: "复核人", Org: "青江分局", FromUnit: "v01-U1"},
+		{Stem: "shen", RoleTitle: "法医", Org: "市局", FromUnit: "v01-U2"},
+	}
+	c := UnitContractForSeed(seeds[0], splitList(doc.Root.Value("cast")), segments)
+	threads, _ := c["thread_ids"].([]string)
+	if strings.Join(threads, "|") != "career|relationship" {
+		t.Fatalf("thread_ids must not keep brackets: %v", c["thread_ids"])
+	}
+	// shen 的身份从 v01-U2 才开始，不应被排进本单元场上。
+	onStage, _ := c["on_stage"].([]string)
+	if strings.Join(onStage, "|") != "lin" {
+		t.Fatalf("on_stage 应只含本单元已有身份的角色: %v", c["on_stage"])
+	}
+	if c["pov"] != "lin" || c["unit_id"] != "v01-U1" || c["status"] != "proposed" {
+		t.Fatalf("contract head wrong: %+v", c)
+	}
+}
+
+// 尚未登场的角色不能因为出现在卷 cast 里，就被要求在每个单元都有身份段。
+func TestUnitSeedSkipsCharactersWithoutIdentityYet(t *testing.T) {
+	segments := []domain.IdentitySegment{
+		{Stem: "lin", RoleTitle: "新警", Org: "分局", FromUnit: "v01-U1"},
+		{Stem: "late", RoleTitle: "顾问", Org: "市局", FromUnit: "v01-U3"},
+	}
+	c := UnitContractForSeed(UnitSeed{UnitID: "v01-U1", From: 1, To: 3}, []string{"lin", "late"}, segments)
+	onStage, _ := c["on_stage"].([]string)
+	if strings.Join(onStage, "|") != "lin" {
+		t.Fatalf("v01-U1 不应包含尚未登场的 late: %v", c["on_stage"])
+	}
+	c3 := UnitContractForSeed(UnitSeed{UnitID: "v01-U3", From: 7, To: 9}, []string{"lin", "late"}, segments)
+	onStage3, _ := c3["on_stage"].([]string)
+	if strings.Join(onStage3, "|") != "lin|late" {
+		t.Fatalf("v01-U3 应包含已登场的 late: %v", c3["on_stage"])
+	}
+}
+
+func TestSplitListStripsInlineArraySyntax(t *testing.T) {
+	cases := map[string]string{
+		"[career,relationship]":  "career|relationship",
+		"[career, relationship]": "career|relationship",
+		"career,relationship":    "career|relationship",
+		"career；relationship":    "career|relationship",
+		"[]":                     "",
+		"[a]":                    "a",
+	}
+	for raw, want := range cases {
+		if got := strings.Join(splitList(raw), "|"); got != want {
+			t.Fatalf("splitList(%q)=%q want %q", raw, got, want)
+		}
+	}
+}
+
+func TestRevealIDListAcceptsAuthorPlaceholders(t *testing.T) {
+	cases := []struct {
+		raw  string
+		want []string
+	}{
+		{"r01,r02", []string{"r01", "r02"}},
+		{"r01、r02", []string{"r01", "r02"}},
+		{"[r01,r02]", []string{"r01", "r02"}},
+		{"【r01】", []string{"r01"}},
+		{"r01 r02", []string{"r01", "r02"}},
+		{"R1", []string{"R1"}},
+		{"无", nil},
+		{"无（第二部未解问题不得提前回答）", nil},
+		{"没有（本卷先不锁）", nil},
+		{"none", nil},
+		{"[]", nil},
+		{"", nil},
+		{"r01,r01", []string{"r01"}},
+	}
+	for _, c := range cases {
+		got := revealIDList(c.raw)
+		if strings.Join(got, "|") != strings.Join(c.want, "|") {
+			t.Fatalf("revealIDList(%q)=%v want %v", c.raw, got, c.want)
+		}
+	}
+}
+
+func TestAcceptPlanAcceptsEmptyRevealListWrittenAsProse(t *testing.T) {
+	root, err := CreateBookScaffold(t.TempDir(), "reveal-placeholder", "测试", "悬疑")
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedTestIdentity(t, root)
+	seedRevealSchedule(t, root)
+	outline := strings.Replace(testBookMD, "- reveal_ids: R1", "- reveal_ids: 无（本卷没有可揭示内容）", 1)
+	outline = strings.Replace(outline, "- forbidden_reveal_ids: R2", "- forbidden_reveal_ids: [R2]", 1)
+	cand := domain.Candidate{Mode: domain.PlanModeInit, PlanMarkdown: map[string]string{"book_outline": outline, "cast_json": sampleCastJSON()}, PlanSettings: sampleSettings()}
+	if err := AcceptPlan(root, cand); err != nil {
+		t.Fatalf("placeholder reveal values must not block accept: %v", err)
+	}
+}
+
+func TestAcceptPlanRejectsUnknownRevealID(t *testing.T) {
+	root, err := CreateBookScaffold(t.TempDir(), "reveal-unknown", "测试", "悬疑")
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedTestIdentity(t, root)
+	seedRevealSchedule(t, root)
+	outline := strings.Replace(testBookMD, "- reveal_ids: R1", "- reveal_ids: R99", 1)
+	cand := domain.Candidate{Mode: domain.PlanModeInit, PlanMarkdown: map[string]string{"book_outline": outline, "cast_json": sampleCastJSON()}, PlanSettings: sampleSettings()}
+	err = AcceptPlan(root, cand)
+	if err == nil || !strings.Contains(err.Error(), "v01.reveal_ids") || !strings.Contains(err.Error(), "R99") {
+		t.Fatalf("unknown reveal id must name the field and value: %v", err)
+	}
+}
+
+func TestAcceptPlanRejectsProseInRevealField(t *testing.T) {
+	root, err := CreateBookScaffold(t.TempDir(), "reveal-prose", "测试", "悬疑")
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedTestIdentity(t, root)
+	seedRevealSchedule(t, root)
+	outline := strings.Replace(testBookMD, "- reveal_ids: R1", "- reveal_ids: R1、本卷暂不揭示", 1)
+	cand := domain.Candidate{Mode: domain.PlanModeInit, PlanMarkdown: map[string]string{"book_outline": outline, "cast_json": sampleCastJSON()}, PlanSettings: sampleSettings()}
+	err = AcceptPlan(root, cand)
+	if err == nil || !strings.Contains(err.Error(), "只接受揭示 ID 列表") {
+		t.Fatalf("prose in reveal field must be actionable: %v", err)
+	}
+}
+
+func sampleCastJSON() string {
+	return `[{"stem":"lin","name":"林晚","role":"protagonist","cardMarkdown":"# 林晚\n","initialIdentity":{"roleTitle":"见习调查员","org":"青江分局","fromUnit":"v01-U1"}}]`
 }

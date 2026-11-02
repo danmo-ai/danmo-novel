@@ -63,9 +63,6 @@ type Result struct {
 	Calls     []domain.CallRecord
 	Packet    domain.ContextPacket
 	LocalGate gates.Report
-	// NextReviewCursor is the first chapter that failed during a split review;
-	// a retry resumes from it instead of re-reviewing finished chapters.
-	NextReviewCursor int
 }
 
 func (r *Runner) RunWrite(ctx context.Context, snap domain.BookSnapshot, unit domain.UnitInfo, instruction string, modelID string) (Result, error) {
@@ -86,9 +83,9 @@ func (r *Runner) RunWrite(ctx context.Context, snap domain.BookSnapshot, unit do
 			cand.Chapters = parsed.Chapters
 			return nil
 		}, func(cand domain.Candidate) gates.Report {
-			// 与审校用同一个每章目标：否则会出现"写作阶段通过、审校阶段字数不足"
-			// 的死循环——写的时候按 2000 判、审的时候按 word_target/章数 判。
-			return gates.CheckProseWithRules(cand.Chapters, books.WordTargetPerChapter(unit), r.proseRules())
+			// 与审校共用同一个每章目标（books.ChapterTarget）：写作阶段与审校
+			// 阶段的字数判定不可能再分叉。
+			return gates.CheckProseWithRules(cand.Chapters, books.ChapterTarget(unit), r.proseRules())
 		})
 	}
 
@@ -124,7 +121,7 @@ func (r *Runner) RunWrite(ctx context.Context, snap domain.BookSnapshot, unit do
 		cand.Chapters = append(cand.Chapters, draft)
 	}
 	// 按章定向修复：单章硬门不过只重生成该章，其他章不动。
-	target := books.WordTargetPerChapter(unit)
+	target := books.ChapterTarget(unit)
 	cand.Chapters = r.repairFailedChapters(ctx, modelID, packet, cand.Chapters, target, &calls)
 	rep := gates.CheckProseWithRules(cand.Chapters, target, r.proseRules())
 	cand.Findings = append(cand.Findings, rep.Findings...)
@@ -260,7 +257,7 @@ func (r *Runner) RunRewriteEntity(ctx context.Context, snap domain.BookSnapshot,
 // RunFinalize performs local gates only — no extra LLM review loop.
 func (r *Runner) RunFinalize(_ context.Context, snap domain.BookSnapshot, unit domain.UnitInfo) (Result, error) {
 	chapters := gates.ParseProseChapters(unit.ProseRaw)
-	local := gates.CheckProseWithRules(chapters, 2000, r.proseRules())
+	local := gates.CheckProseWithRules(chapters, books.ChapterTarget(unit), r.proseRules())
 	cand := domain.Candidate{
 		ID: uuid.NewString(), BookID: snap.Summary.ID, Kind: domain.TaskFinalize,
 		Status: domain.CandidateOpen, BaseRevision: snap.Revision,
@@ -345,7 +342,7 @@ func parseChapterDraft(raw string, ch int) (domain.ChapterDraft, error) {
 // repairFailedChapters re-generates only chapters that fail the local hard
 // gate, with evidence+suggestion回注。每章最多一次修复，通过的章不动。
 //
-// target 必须与审校阶段一致（books.WordTargetPerChapter），否则写作阶段会
+// target 必须与审校阶段一致（books.ChapterTarget），否则写作阶段会
 // 觉得"字数够了"而审校阶段判 blocking，白跑一轮修复。
 func (r *Runner) repairFailedChapters(ctx context.Context, modelID string, packet domain.ContextPacket, chapters []domain.ChapterDraft, target int, calls *[]domain.CallRecord) []domain.ChapterDraft {
 	rep := gates.CheckProseWithRules(chapters, target, r.proseRules())
@@ -561,7 +558,7 @@ func parseOutlineUnits(raw string) ([]domain.UnitOutlineDraft, error) {
 
 var outlineStringFields = []string{
 	"unitId", "status", "title", "function", "desire", "obstacle", "choice", "payoff",
-	"pleasure", "forbidden", "wordTarget", "pov", "storyDay", "gapFromPrev", "infoControl",
+	"pleasure", "forbidden", "wordTarget", "chapterChars", "pov", "storyDay", "gapFromPrev", "infoControl",
 }
 
 // normalizeOutlineJSON coerces model drift: storyDay/gapFromPrev as objects or

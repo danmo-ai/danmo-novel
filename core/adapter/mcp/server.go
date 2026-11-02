@@ -210,6 +210,12 @@ func (s *Server) handleGetBook(ctx context.Context, req mcpgo.CallToolRequest) (
 		return errResult(err)
 	}
 	kind, unit, vol := books.SelectPrimaryAction(snap)
+	// 与 HTTP 侧同一条规则：审校已干净时下一步是定稿，不是再审一遍。
+	if kind == domain.TaskReview && unit != "" && s.deps.Runs != nil {
+		if v, n := s.deps.Runs.ReviewGate(ctx, snap.Summary.ID, unit); n > 0 && v == domain.ReviewClean {
+			kind = domain.TaskFinalize
+		}
+	}
 	return jsonResult(map[string]any{
 		"book":    snap,
 		"primary": map[string]any{"kind": kind, "unitId": unit, "volume": vol},

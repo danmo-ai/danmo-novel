@@ -3,6 +3,8 @@ package novel
 import (
 	"fmt"
 	"strings"
+
+	"github.com/danmo-ai/danmo-novel/core/domain"
 )
 
 const KnowledgeVersion = "kb-novel-2026.10.1"
@@ -19,9 +21,10 @@ func WriteSystemPrompt() string {
 }
 
 func OutlineSystemPrompt() string {
-	return `你是小说编辑。只补全单元细纲合同字段，输出严格 JSON，不要工具调用，不要只输出单个单元对象。
+	return fmt.Sprintf(`你是小说编辑。只补全单元细纲合同字段，输出严格 JSON，不要工具调用，不要只输出单个单元对象。
 输出外壳必须是：{"units":[{...},...]}；即使只改 1 个单元，也要放进 units 数组。
-每个单元字段：unitId,title,function,desire,obstacle,choice,payoff,pleasure,forbidden,wordTarget,onStage,pov,chapterFrom,chapterTo,chapters,scenes,stateDeltas,nextHook,storyDay,endDay,gapDays,timelineId,gapFromPrev,infoControl。
+每个单元字段：unitId,title,function,desire,obstacle,choice,payoff,pleasure,forbidden,chapterChars,onStage,pov,chapterFrom,chapterTo,chapters,scenes,stateDeltas,nextHook,storyDay,endDay,gapDays,timelineId,gapFromPrev,infoControl。
+chapterChars 是**单章**目标字数，正整数，只能落在 %d–%d；不写则由系统补默认值。不要输出 wordTarget —— 单元总字数由 chapterChars × 章数派生，多写一份只会出现两套口径。
 chapters 是逐章轻量合同，每章必须有 {chapter,goal,change,cutHook,dayOffset}；change 必须是可验证的状态/信息/关系/行动变化，不得只写情绪。章范围全部覆盖，day_offset 不超出单元结束日。
 scenes 仅复杂章的可选子项，不要求每章都有；每个 scene 仅含 {chapter,goal,conflict,turn,outcome}，可选 id/mustLand/evidenceIn/evidenceOut/dayOffset。禁止预写台词、动作清单和情绪曲线；mustLand 最多 2 个可见事实。
 存在「不可改写的单元种子」时：sourceSeedId 必须等于单元 ID；chapterFrom/chapterTo、desire/obstacle/choice/payoff 必须逐字继承种子 chapter_range/objective/obstacle/choice/outcome，不得改故事；attempt/setback/cost 也继承种子；storyDay/endDay/gapDays 必须继承 clock_start_day/clock_end_day/clock_gap_days。
@@ -30,7 +33,8 @@ stateDeltas 必须是结构化数组 [{"stem":"人物或实体 ID","field":"role
 nextHook 必须是对象：{"type":"钩子类型","out":"具体事件"}（对应落盘 next_hook.type / next_hook.out），type 沿用卷纲索引已定类型；禁止写成一整句字符串。
 onStage ⊆ 本卷人物；pov ∈ onStage；每章至少 2 个 scenes。不要改卷纲已定 function。
 人物规则：onStage 只放有台词/有后续戏份的人物。纯功能路人（报案群众、值班民警、摊主等一次性角色）不要进 onStage，直接写在 scenes 的 who/beat 描述里（如「报案邻居」）。确需引入本卷人物表之外的新人物（如单元案受害者、嫌疑人），给出新英文 stem 并在 scenes 里体现其功能；该新 stem 会被播种为候选人物卡，作者晋升后才成为 canon。
-单元标题（title）规范：2–8 字，概括本单元的核心动作或意象（如「入门试炼」「锁定并出发」「两种手艺」）；与 function 呼应但不照抄；不用「单元」「第X」字样，不剧透终局底牌。`
+单元标题（title）规范：2–8 字，概括本单元的核心动作或意象（如「入门试炼」「锁定并出发」「两种手艺」）；与 function 呼应但不照抄；不用「单元」「第X」字样，不剧透终局底牌。`,
+		domain.ChapterCharsMin, domain.ChapterCharsMax)
 }
 
 func PlanSystemPrompt() string {
@@ -94,7 +98,7 @@ func ReviewChecklistArticle() string {
 	if !ok {
 		return ""
 	}
-	return StripFrontMatter(raw)
+	return ExpandPolicy(StripFrontMatter(raw))
 }
 
 // StripFrontMatter drops a leading `---` YAML header from a knowledge article.
@@ -122,24 +126,49 @@ func LocalEditSystemPrompt() string {
 	return `你是小说行文助手。只改选区，保持人称与文风，返回 JSON {"replacement":"..."}。不要扩写到选区外。`
 }
 
+// genreBullets 是每个题材族的一句话写时约束。键必须是 GenreFamiliesList 里的
+// 规范族名，否则该题材的书会静默落到"通用"。
+var genreBullets = map[string]string{
+	"玄幻":   "开篇冲突快；金手指有代价；升级节奏可见；章末留钩。",
+	"都市":   "现实压力具体；爽点来自能力兑现与身份落差；少口号。",
+	"悬疑":   "信息控制严格；每章推进线索或反转；禁止全知泄漏。",
+	"现代言情": "情绪可感；关系节点清楚；对话潜台词优先。",
+	"古代言情": "情绪可感；关系节点清楚；对话潜台词优先。",
+	"言情":   "情绪可感；关系节点清楚；对话潜台词优先。",
+	"通用":   "章内有目标冲突结果；章末有钩；人物反应先于解说。",
+}
+
+// GenreBullets returns the per-genre writing constraints injected into write
+// and review prompts.
+//
+// 题材元数据是作者填的自由文本（悬疑刑侦、都市官场权谋 + 悬疑解谜（重生流）），
+// 但约束表只能按规范族名索引。以前这里是精确查表，任何非规范写法都静默降级成
+// "通用"——包括把 genre 写成"悬疑刑侦"的刑侦小说，直接丢掉"信息控制严格、
+// 禁止全知泄漏"这条硬约束。所以先过 GenreFamilies 解析，再查表。
 func GenreBullets(genre, subgenre string) string {
-	g := genre
-	if g == "" {
-		g = "通用"
+	label := strings.TrimSpace(genre)
+	var parts []string
+	seen := map[string]bool{}
+	for _, f := range GenreFamilies(label) {
+		text, ok := genreBullets[f]
+		if !ok || seen[text] {
+			continue
+		}
+		seen[text] = true
+		parts = append(parts, text)
 	}
-	base := map[string]string{
-		"玄幻": "开篇冲突快；金手指有代价；升级节奏可见；章末留钩。",
-		"都市": "现实压力具体；爽点来自能力兑现与身份落差；少口号。",
-		"悬疑": "信息控制严格；每章推进线索或反转；禁止全知泄漏。",
-		"言情": "情绪可感；关系节点清楚；对话潜台词优先。",
-		"通用": "章内有目标冲突结果；章末有钩；人物反应先于解说。",
+	// 混搭题材（都市官场权谋 + 悬疑解谜）两族约束都要，只取第一个会静默丢掉
+	// 另一族的方法；言情两族文案相同，靠 seen 去重。
+	if len(parts) == 0 {
+		parts = append(parts, genreBullets["通用"])
 	}
-	out := base[g]
-	if out == "" {
-		out = base["通用"]
+	if label == "" {
+		label = "通用"
 	}
-	if subgenre == "刑侦探案" {
+	out := strings.Join(parts, "\n- ")
+	// 子类按规范名判断：年代刑侦 / 刑侦 / 探案 都算刑侦探案。
+	if CanonicalSubgenre(subgenre) == "刑侦探案" {
 		out += "\n刑侦：动机有社会性数字；死者有生前琐碎；避免档案式进场与庭审腔。"
 	}
-	return "- 题材：" + g + "\n- " + out
+	return "- 题材：" + label + "\n- " + out
 }

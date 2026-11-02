@@ -98,9 +98,116 @@ func TestChapterReviewPacketClipsSummaryAndScopesProse(t *testing.T) {
 	if contract == "" {
 		t.Fatal("unit contract missing from baseline")
 	}
-	// 单章预算必须收窄：整单元路径才用 32768。
-	if packet.Policy.MaxOutputTokens >= 32768 {
-		t.Fatalf("per-chapter budget=%d should be below the unit-wide 32768", packet.Policy.MaxOutputTokens)
+	// 单章预算不能比整单元更窄：思考链与答案共用 max_tokens，而思维链开销由
+	// 正文长度与 reasoning effort 决定，与 findings 条数无关。12288 曾在 high
+	// 强度下被思维链吃满，输出正好停在预算处只剩 1 条结论。
+	if packet.Policy.MaxOutputTokens < 32768 {
+		t.Fatalf("per-chapter budget=%d must not be below the unit-wide 32768", packet.Policy.MaxOutputTokens)
+	}
+}
+
+// 按章审校时上下文只带本章的本地硬门结论。整单元的塞进每一次单章调用，模型会
+// 照着重报别章的问题（章号对不上→多烧一次修复重试），同一问题也会在候选里
+// 出现两遍（一次 local_gate，一次 ai_review）。
+func TestChapterReviewPacketCarriesOnlyItsOwnLocalFindings(t *testing.T) {
+	unit := domain.UnitInfo{
+		UnitID: "v01-U1", Volume: 1, ChapterFrom: 1, ChapterTo: 2,
+		OutlinePath: "outline/units/v01-U1.yaml", ProsePath: "units/v01-U1.md",
+		OutlineRaw: "unitId: v01-U1\nword_target: 5000\n",
+	}
+	snap := domain.BookSnapshot{Summary: domain.BookSummary{ID: "b1"}, Files: map[string]string{}}
+	local := []domain.ReviewFinding{
+		{ID: "length-1", Severity: "advisory", Chapter: 1, Title: "第1章字数不足", Evidence: "1000 字"},
+		{ID: "length-2", Severity: "advisory", Chapter: 2, Title: "第2章字数不足", Evidence: "900 字"},
+		{ID: "unit-level", Severity: "advisory", Chapter: 0, Title: "整单元问题", Evidence: "无"},
+	}
+	baseline := BuildReviewBaseline(snap, unit, local, "")
+
+	ch1 := BuildChapterReviewPacket(snap, unit, domain.ChapterDraft{Chapter: 1, Body: "一"}, "", baseline, 0)
+	ch2 := BuildChapterReviewPacket(snap, unit, domain.ChapterDraft{Chapter: 2, Body: "二"}, "", baseline, 0)
+	gate := func(p domain.ContextPacket) string {
+		raw, _ := DecodeUserPayload(p.UserPrompt)
+		s, _ := raw.Extra["localFindings"].(string)
+		return s
+	}
+
+	g1, g2 := gate(ch1), gate(ch2)
+	if !strings.Contains(g1, "第1章字数不足") || strings.Contains(g1, "第2章字数不足") {
+		t.Fatalf("chapter 1 packet has the wrong local findings:\n%s", g1)
+	}
+	if !strings.Contains(g2, "第2章字数不足") || strings.Contains(g2, "第1章字数不足") {
+		t.Fatalf("chapter 2 packet has the wrong local findings:\n%s", g2)
+	}
+	// chapter=0 是全单元级结论，每章都该带上，否则会彻底从上下文里消失。
+	if !strings.Contains(g1, "整单元问题") || !strings.Contains(g2, "整单元问题") {
+		t.Fatalf("unit-level finding must reach every chapter:\nch1=%q\nch2=%q", g1, g2)
+	}
+}
+
+// 分章与整单元两条审校路径必须共享同一套依据：作者的开关只该改变粒度。
+// 这里把两者放在同一份快照上比较——风格、锁词、在场关系、揭示、题材约束
+// 缺一不可，否则切到整单元审校后 POV/锁词/文风类意见会静默消失。
+func TestReviewPathsCarryTheSameBaseline(t *testing.T) {
+	unit := domain.UnitInfo{
+		UnitID: "v02-U1", Volume: 2, ChapterFrom: 4, ChapterTo: 5,
+		OutlinePath: "outline/units/v02-U1.yaml", ProsePath: "units/v02-U1.md",
+		OutlineRaw: "unit_id: v02-U1\n" +
+			"desire: 立足\nobstacle: 质疑\nchoice: 复查\npayoff: 获得许可\n" +
+			"forbidden: 禁揭来源\npleasure: 弱者翻盘\n" +
+			"continuity_risks: 作者台账：第三场容易写穿\n" +
+			"observations: 历轮观察：上次节奏偏平\n" +
+			"on_stage: [lin]\npov: lin\n" +
+			"scenes:\n  - id: S1\n    chapter: 4\n    goal: 复查\n  - id: S2\n    chapter: 5\n    goal: 收尾\n",
+		ProseRaw: "## 第4章 复查\n\n正文四\n\n## 第5章 收尾\n\n正文五",
+	}
+	snap := domain.BookSnapshot{
+		Summary: domain.BookSummary{ID: "b1", Genre: "悬疑"},
+		Cast:    []domain.CastCard{{Stem: "lin", Name: "林晚", Raw: "# 林晚\n\n## 三锚点\n- 视觉：先看手\n\n## 知识边界\n- 不知未来\n\n## 台词\n- 先复核。\n"}},
+		Files: map[string]string{
+			"canon/style-fingerprint.md":  "# 文风\n\n- 短句为主，不用排比。\n",
+			"canon/writing-rules.md":      "- 不写心理总结。\n",
+			"canon/locked-terms.yaml":     "- term: 复核\n  note: 固定用词\n",
+			"continuity/summaries/v02.md": "第二卷摘要：林晚已调入重案队。",
+		},
+	}
+
+	whole := BuildReviewPacket(snap, unit, nil, 0, "")
+	baseline := BuildReviewBaseline(snap, unit, nil, "")
+	narrow := BuildChapterReviewPacket(snap, unit, domain.ChapterDraft{Chapter: 4, Body: "正文四"}, "", baseline, 0)
+
+	// 两条路径都必须带上的依据。
+	for _, want := range []string{"先看手", "短句为主", "当前卷锁词", "已调入重案队"} {
+		if !strings.Contains(whole.UserPrompt, want) {
+			t.Errorf("whole-unit review lost %q", want)
+		}
+		if !strings.Contains(narrow.UserPrompt, want) {
+			t.Errorf("per-chapter review lost %q", want)
+		}
+	}
+
+	// 作者台账不该进审校提示词：它们不是写作要求，进来会被当成规则乱套。
+	for _, leaked := range []string{"第三场容易写穿", "上次节奏偏平"} {
+		if strings.Contains(whole.UserPrompt, leaked) {
+			t.Errorf("whole-unit review leaked author ledger %q", leaked)
+		}
+	}
+
+	// 整单元路径没有「本章场面节拍」切片，所以合同必须保留 scenes，
+	// 否则模型整单元审校时看不到任何章级节拍。
+	if !strings.Contains(whole.UserPrompt, "goal: 复查") {
+		t.Error("whole-unit review lost scenes; it has no per-chapter beats to fall back on")
+	}
+	// 分章路径不能出现两遍节拍：合同里剥掉 + 单独的本章节拍块。
+	beats := 0
+	for _, b := range narrow.Blocks {
+		if b.ID == "unit-beats" || b.ID == "unit-contract" {
+			if strings.Contains(b.Content, "goal: 复查") {
+				beats++
+			}
+		}
+	}
+	if beats != 1 {
+		t.Errorf("chapter beats appear %d times, want exactly 1", beats)
 	}
 }
 

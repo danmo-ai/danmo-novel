@@ -14,6 +14,7 @@ import (
 	"github.com/danmo-ai/danmo-novel/core/port"
 	"github.com/danmo-ai/danmo-novel/core/service/books"
 	contextsvc "github.com/danmo-ai/danmo-novel/core/service/context"
+	"github.com/danmo-ai/danmo-novel/core/service/gates"
 )
 
 func loadFixtureUnit(t *testing.T) (domain.BookSnapshot, domain.UnitInfo, string) {
@@ -95,17 +96,17 @@ func TestRunReviewByChapterKeepsRealCallRecords(t *testing.T) {
 			t.Fatalf("call step=%q want chapter-N", rec.Step)
 		}
 	}
-	// 分章预算按章数计；单章上限仍应小于整单元路径的 32768。
-	// 每章最多 2 次（生成 + 一次结构修复），3 章合计上限 6。
+	// 分章预算按章数计：每章最多 2 次（生成 + 一次结构修复），3 章合计上限 6。
 	if res.Packet.Policy.MaxCalls != 6 {
 		t.Fatalf("maxCalls=%d want 6 (two per chapter)", res.Packet.Policy.MaxCalls)
 	}
 	if res.Packet.Policy.MaxOutputTokens == 0 {
 		t.Fatal("policy lost: UI would show 0 budget")
 	}
-	// 单章预算必须明显小于整单元路径（32768），否则分章省不出余量。
-	if res.Packet.Policy.MaxOutputTokens >= 32768 {
-		t.Fatalf("per-chapter budget=%d should be below the unit-wide 32768", res.Packet.Policy.MaxOutputTokens)
+	// 单章预算不能比整单元更窄：思考链与答案共用 max_tokens，思维链开销不随
+	// findings 条数缩小。12288 在 high 强度下会被吃满（实测只剩 1 条结论）。
+	if res.Packet.Policy.MaxOutputTokens < 32768 {
+		t.Fatalf("per-chapter budget=%d must not be below the unit-wide 32768", res.Packet.Policy.MaxOutputTokens)
 	}
 	// findings 必须带上章号，作者才能定位。
 	for _, f := range res.Candidate.Findings {
@@ -115,42 +116,149 @@ func TestRunReviewByChapterKeepsRealCallRecords(t *testing.T) {
 	}
 }
 
-// ReviewCursor 让重跑跳过已完成的章，避免整单元从头再审一遍。
-func TestRunReviewByChapterResumesFromCursor(t *testing.T) {
+// 截断不能被抢救路径静默收下：第一次截断必须触发"翻倍预算"重试，
+// 否则 high 强度下思维链吃满预算时，一章只剩 1 条结论会被读成"这章没问题"。
+func TestChapterReviewRetriesWithBiggerBudgetOnTruncation(t *testing.T) {
 	snap, unit, _ := loadFixtureUnit(t)
-	mock := llm.NewMock().AddText(`{"verdict":"pass","findings":[]}`)
-	r := New(mock)
+	unit.ProseRaw = "## 第1章 夜\n\n" + strings.Repeat("他握紧刀柄，没有退缩，只把呼吸压到最慢。", 110)
+	fake := &truncatingReviewLLM{}
+	r := New(fake)
 
-	if _, err := r.RunReviewByChapter(context.Background(), snap, unit, "mock/mock-gpt-4", ReviewOptions{
-		SplitByChapter: true, Concurrency: 1, ReviewCursor: 3,
-	}); err != nil {
+	res, err := r.RunReviewByChapter(context.Background(), snap, unit, "mock/mock-gpt-4", ReviewOptions{
+		SplitByChapter: true, Concurrency: 1,
+	})
+	if err != nil {
 		t.Fatal(err)
 	}
-	if len(mock.Requests) != 1 {
-		t.Fatalf("requests=%d want only the resumed chapter", len(mock.Requests))
+	if fake.count() != 2 {
+		t.Fatalf("requests=%d want 2 (truncated + escalated retry)", fake.count())
+	}
+	if fake.budgets[1] <= fake.budgets[0] {
+		t.Fatalf("retry budget=%d must exceed first budget=%d", fake.budgets[1], fake.budgets[0])
+	}
+	for _, f := range res.Candidate.Findings {
+		if f.ID == domain.FindingReviewTruncated {
+			t.Fatalf("retry succeeded, truncation marker must be gone: %+v", f)
+		}
 	}
 }
 
-// 本地硬门用细纲 word_target 派生每章下限，而不是写死 2000。
-func TestCheckProseUsesUnitWordTarget(t *testing.T) {
-	snap, unit, _ := loadFixtureUnit(t)
-	// fixture 的 word_target 是 2500、3 章 → 每章约 833 字，正文远超下限。
-	got := books.WordTargetPerChapter(unit)
-	if got != 833 {
-		t.Fatalf("wordTargetPerChapter=%d want 833 (2500/3)", got)
+// truncatingReviewLLM: 第一次输出被预算截断（usage 打满 + JSON 半截），
+// 第二次返回完整结论。故意带 usage，因为截断判定看的是 completion tokens。
+type truncatingReviewLLM struct {
+	mu      sync.Mutex
+	calls   int
+	budgets []int
+}
+
+func (f *truncatingReviewLLM) Chat(_ context.Context, req port.LLMChatRequest) (port.LLMChatResponse, error) {
+	f.mu.Lock()
+	f.calls++
+	n := f.calls
+	budget := 0
+	if req.GenParams != nil {
+		budget = req.GenParams.MaxTokens
 	}
-	chapters := []domain.ChapterDraft{{Chapter: 1, Body: strings.Repeat("字", 1000)}}
-	// 1000 > 833*0.6，不该报字数不足。
+	f.budgets = append(f.budgets, budget)
+	f.mu.Unlock()
+
+	if n == 1 {
+		return port.LLMChatResponse{
+			Content: `{"verdict":"pass","findings":[{"id":"style-1-1","severity":"advisory","chapter":1,"title":"半条`,
+			Usage:   &port.LLMUsage{PromptTokens: 1200, CompletionTokens: budget},
+			Done:    true,
+		}, nil
+	}
+	return port.LLMChatResponse{
+		Content: `{"verdict":"pass","findings":[{"id":"style-1-1","severity":"advisory","chapter":1,"lens":"style","title":"节奏略平","evidence":"全章只有一句推进"}]}`,
+		Usage:   &port.LLMUsage{PromptTokens: 1200, CompletionTokens: 900},
+		Done:    true,
+	}, nil
+}
+
+func (f *truncatingReviewLLM) count() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.calls
+}
+
+// 重审必须覆盖整个单元的每一章：以前记录过一个"从失败章继续"的游标，但那
+// 个值只写回 run，新 run 永远从 0 开始——既没生效，又在候选里声称"已通过的
+// 章不会重复审"。现在干脆审全单元，结论才完整。
+func TestRunReviewByChapterReviewsEveryChapter(t *testing.T) {
+	snap, unit, _ := loadFixtureUnit(t)
+	mock := llm.NewMock()
+	for i := 0; i < 3; i++ {
+		mock.AddText(`{"verdict":"pass","findings":[]}`)
+	}
+	r := New(mock)
+
+	if _, err := r.RunReviewByChapter(context.Background(), snap, unit, "mock/mock-gpt-4", ReviewOptions{
+		SplitByChapter: true, Concurrency: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(mock.Requests) != 3 {
+		t.Fatalf("requests=%d want one per chapter (3)", len(mock.Requests))
+	}
+}
+
+// 每章目标只由 books.ChapterTarget 决定：细纲写了 chapter_chars 就用它，
+// 没有就按 word_target÷章数，且结果一律夹进合法区间。
+func TestChapterTargetIsTheOnlyWordcountSource(t *testing.T) {
+	snap, unit, _ := loadFixtureUnit(t)
+	// fixture 的 chapter_chars 是 2500（3 章），与 word_target 7500 自洽。
+	if got := books.ChapterTarget(unit); got != 2500 {
+		t.Fatalf("chapterTarget=%d want 2500", got)
+	}
+	// 老书只有单元总字数：30000 / 6 章 = 5000，必须夹到单章上限，而不是照单全收。
+	legacy := domain.UnitInfo{
+		ChapterFrom: 1, ChapterTo: 6,
+		OutlineRaw: "word_target: 30000\n",
+	}
+	if got := books.ChapterTarget(legacy); got != domain.ChapterCharsMax {
+		t.Fatalf("chapterTarget=%d want %d (5000 must clamp)", got, domain.ChapterCharsMax)
+	}
+	// 低于下限同样夹回来：2500 总字数摊到 3 章是 833。
+	tiny := domain.UnitInfo{ChapterFrom: 1, ChapterTo: 3, OutlineRaw: "word_target: 2500\n"}
+	if got := books.ChapterTarget(tiny); got != domain.ChapterCharsMin {
+		t.Fatalf("chapterTarget=%d want %d", got, domain.ChapterCharsMin)
+	}
+	// 两个键都没有 → 默认值。
+	if got := books.ChapterTarget(domain.UnitInfo{ChapterFrom: 1, ChapterTo: 2}); got != domain.ChapterCharsDefault {
+		t.Fatalf("chapterTarget=%d want default %d", got, domain.ChapterCharsDefault)
+	}
+
+	// 1000 字以下不到 2500×0.6=1500，该报字数不足。
+	unit.ProseRaw = "## 第1章 夜\n\n" + strings.Repeat("字", 1000)
 	mock := llm.NewMock().AddText(`{"verdict":"pass","findings":[]}`)
 	r := New(mock)
 	res, err := r.RunReview(context.Background(), snap, unit, "mock/mock-gpt-4")
 	if err != nil {
 		t.Fatal(err)
 	}
+	var short bool
 	for _, f := range res.LocalGate.Findings {
 		if f.Title == "字数不足" {
-			t.Fatalf("1000 chars should clear an 833 target: %+v", f)
+			short = true
 		}
 	}
-	_ = chapters
+	if !short {
+		t.Fatalf("1000 chars must be short of a 2500 target: %+v", res.LocalGate.Findings)
+	}
+}
+
+// 超出目标上限也要报（以前只判下限，写多长都算通过）。
+func TestProseOverTargetIsReported(t *testing.T) {
+	body := strings.Repeat("字", 4000) // 2500 × 1.4 = 3500 以上
+	rep := gates.CheckProseWithRules([]domain.ChapterDraft{{Chapter: 1, Body: body}}, 2500, nil)
+	var over bool
+	for _, f := range rep.Findings {
+		if f.Title == "字数超出目标区间" {
+			over = true
+		}
+	}
+	if !over {
+		t.Fatalf("4000 chars against a 2500 target should be flagged: %+v", rep.Findings)
+	}
 }

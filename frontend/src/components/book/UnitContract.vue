@@ -36,7 +36,13 @@ const meta = computed(() => {
   const items: string[] = []
   if (props.unit.chapterFrom) items.push(`第 ${props.unit.chapterFrom}–${props.unit.chapterTo} 章`)
   const pov = scalar(r, 'pov'); if (pov) items.push(`POV ${castName(pov)}`)
-  const wt = scalar(r, 'word_target'); if (wt) items.push(`目标 ${wt} 字/章`)
+  // 字数只显示派生值：chapterTarget 是后端算好的单章目标，
+  // 细纲里的 word_target 是单元总数，直接标成「字/章」会放大章数倍。
+  const target = props.unit.chapterTarget
+  if (target > 0) {
+    const chapters = Math.max(1, (props.unit.chapterTo || 0) - (props.unit.chapterFrom || 0) + 1)
+    items.push(`每章 ${target} 字 · 共约 ${(target * chapters).toLocaleString()} 字`)
+  }
   const day = scalar(r, 'story_day'); if (day && day !== 'null') items.push(`故事第 ${day} 天`)
   if (scalar(r, 'flashback') === 'true') items.push('闪回')
   const hook = section(r, 'next_hook').match(/type:\s*(.*)/)?.[1]?.trim().replace(/^['"]|['"]$/g, '')

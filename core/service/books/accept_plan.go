@@ -23,7 +23,9 @@ type planCast struct {
 	InitialIdentity *domain.IdentitySegment `json:"initialIdentity"`
 }
 
-type unitSeed struct {
+// UnitSeed is one 单元 entity of a volume outline, reduced to what the unit
+// contract needs. 卷纲接受时由它播种 outline/units/*.yaml。
+type UnitSeed struct {
 	UnitID   string                 `json:"unitId"`
 	Title    string                 `json:"title"`
 	From     int                    `json:"from"`
@@ -32,15 +34,15 @@ type unitSeed struct {
 	Entity   *domain.MarkdownEntity `json:"-"`
 }
 
-func seedsFromStructuredVolume(doc domain.StructuredMarkdown) []unitSeed {
-	out := []unitSeed{}
+func SeedsFromStructuredVolume(doc domain.StructuredMarkdown) []UnitSeed {
+	out := []UnitSeed{}
 	for _, e := range doc.EntitiesOf("单元") {
 		from, to := ChapterWindow(e.Value("chapter_range"))
 		if from <= 0 || to < from {
 			continue
 		}
 		entity := e
-		out = append(out, unitSeed{UnitID: e.ID, Title: e.Value("title"), From: from, To: to, Function: e.Value("objective"), Entity: &entity})
+		out = append(out, UnitSeed{UnitID: e.ID, Title: e.Value("title"), From: from, To: to, Function: e.Value("objective"), Entity: &entity})
 	}
 	return out
 }
@@ -155,11 +157,20 @@ func acceptPlanBook(root string, cand domain.Candidate) error {
 	if err != nil {
 		return err
 	}
-	identityBody, err := MarshalIdentityTimeline(identity)
-	if err != nil {
-		return err
+	// 重新立项只负责补登缺失的初始身份，绝不重写已有段落。
+	// 一次 reinit 把整份时间线换成"每人都从 v01-U1 开始"，等于把温念慈从
+	// 专案组刑警退回内勤新警；这类历史只能由作者或单元接受推进。
+	if !preserved[IdentityTimelinePath] {
+		existing, err := LoadIdentityTimeline(root)
+		if err != nil {
+			return err
+		}
+		identityBody, err := MarshalIdentityTimeline(mergeInitialIdentities(existing, identity))
+		if err != nil {
+			return err
+		}
+		writes[IdentityTimelinePath] = identityBody
 	}
-	writes[IdentityTimelinePath] = identityBody
 	return commitPlanWrites(root, writes, map[string]string{
 		"stage": "planning", "next_action": "plan",
 	})
@@ -184,7 +195,29 @@ func initialIdentitiesFromCast(cast []planCast) ([]domain.IdentitySegment, error
 	return out, nil
 }
 
-func identityChangesFromVolume(snap domain.BookSnapshot, doc domain.StructuredMarkdown, seeds []unitSeed) ([]domain.IdentitySegment, error) {
+// mergeInitialIdentities keeps every existing segment and adds 立项 initial
+// identities only for cast members that have no history yet.
+//
+// 追加而不覆盖是有意的：已存在的身份段是"这个人已经走到哪"的既成事实，
+// 而 initialIdentity 只描述"他从哪起步"。两者冲突时必须以既有段落为准，
+// 否则重新立项会让所有晋升被静默作废。
+func mergeInitialIdentities(existing, initial []domain.IdentitySegment) []domain.IdentitySegment {
+	out := append([]domain.IdentitySegment(nil), existing...)
+	covered := map[string]bool{}
+	for _, s := range existing {
+		covered[s.Stem] = true
+	}
+	for _, s := range initial {
+		if covered[s.Stem] {
+			continue
+		}
+		covered[s.Stem] = true
+		out = append(out, s)
+	}
+	return out
+}
+
+func identityChangesFromVolume(snap domain.BookSnapshot, doc domain.StructuredMarkdown, seeds []UnitSeed) ([]domain.IdentitySegment, error) {
 	segments := append([]domain.IdentitySegment(nil), snap.IdentitySegments...)
 	units := append([]domain.UnitInfo(nil), snap.Units...)
 	for _, seed := range seeds {
@@ -232,7 +265,7 @@ func acceptPlanVolume(root string, cand domain.Candidate) error {
 	if err := ValidateStructuredOutlineFile(snap, "outline/volumes/"+cand.VolumeID+".md", outline); err != nil {
 		return err
 	}
-	identity, err := identityChangesFromVolume(snap, doc, seedsFromStructuredVolume(doc))
+	identity, err := identityChangesFromVolume(snap, doc, SeedsFromStructuredVolume(doc))
 	if err != nil {
 		return err
 	}
@@ -244,55 +277,25 @@ func acceptPlanVolume(root string, cand domain.Candidate) error {
 		"outline/volumes/" + cand.VolumeID + ".md": []byte(outline),
 		IdentityTimelinePath:                       identityBody,
 	}
-	seeds := seedsFromStructuredVolume(doc)
+	seeds := SeedsFromStructuredVolume(doc)
 	if len(seeds) == 0 {
 		return fmt.Errorf("卷纲没有可识别的单元索引；请使用结构化单元实体或 unit_id 表")
 	}
 
 	for _, s := range seeds {
 		rel := "outline/units/" + s.UnitID + ".yaml"
-		if err := ValidateIdentityCoverage(identity, snap.Cast, domain.UnitInfo{UnitID: s.UnitID}, splitList(doc.Root.Value("cast"))); err != nil {
-			return err
+		contract := UnitContractForSeed(s, splitList(doc.Root.Value("cast")), identity)
+		// 只校验真正排进本单元场上的角色。整卷人物里包含尚未登场的角色
+		// （例如身份段从 v01-U3 才开始的人），按整卷人物校验会把每个单元都判失败。
+		if onStage, ok := contract["on_stage"].([]string); ok {
+			if err := ValidateIdentityCoverage(identity, snap.Cast, domain.UnitInfo{UnitID: s.UnitID}, onStage); err != nil {
+				return err
+			}
 		}
 		abs := filepath.Join(root, filepath.FromSlash(rel))
 		if _, err := os.Stat(abs); err == nil {
 			// Never overwrite existing unit contracts (prose progress preserved).
 			continue
-		}
-		contract := map[string]any{
-			"unit_id": s.UnitID, "status": "proposed", "title_working": s.Title,
-			"function": s.Function, "chapter_range": []int{s.From, s.To},
-			"desire": "", "obstacle": "", "choice": "", "payoff": "",
-			"on_stage": []string{}, "pov": "", "scenes": []any{},
-			"next_hook": map[string]any{"type": ""},
-			"story_day": "", "gap_from_prev": "", "info_control": "",
-		}
-		if s.Entity != nil {
-			contract["source_seed_id"] = s.Entity.ID
-			contract["desire"] = s.Entity.Value("objective")
-			contract["obstacle"] = s.Entity.Value("obstacle")
-			contract["choice"] = s.Entity.Value("choice")
-			contract["payoff"] = s.Entity.Value("outcome")
-			contract["attempt"] = s.Entity.Value("attempt")
-			contract["setback"] = s.Entity.Value("setback")
-			contract["cost"] = s.Entity.Value("cost")
-			contract["entry_cause"] = s.Entity.Value("entry_cause")
-			contract["exit_result"] = s.Entity.Value("exit_result")
-			contract["story_day"] = s.Entity.Value("clock_start_day")
-			contract["end_day"] = s.Entity.Value("clock_end_day")
-			contract["gap_days"] = s.Entity.Value("clock_gap_days")
-			contract["clock_deadline"] = s.Entity.Value("clock_deadline")
-			contract["timeline_id"] = s.Entity.Value("timeline_id")
-			contract["state_changes"] = s.Entity.Value("state_changes")
-			contract["state_deltas"] = stateDeltasFromMarkdown(s.Entity.Value("state_changes"))
-			contract["thread_ids"] = splitList(s.Entity.Value("thread_ids"))
-			if cast := splitList(doc.Root.Value("cast")); len(cast) > 0 {
-				contract["on_stage"] = cast
-				contract["pov"] = cast[0]
-			}
-			if hook := strings.SplitN(s.Entity.Value("next_hook"), "|", 2); len(hook) == 2 {
-				contract["next_hook"] = map[string]any{"type": strings.TrimSpace(hook[0]), "out": strings.TrimSpace(hook[1])}
-			}
 		}
 		body, err := yaml.Marshal(contract)
 		if err != nil {
@@ -303,6 +306,61 @@ func acceptPlanVolume(root string, cand domain.Candidate) error {
 	return commitPlanWrites(root, writes, map[string]string{
 		"stage": "outlining", "next_action": "outline",
 	})
+}
+
+// UnitContractForSeed builds the proposed unit contract for one volume seed.
+//
+// 卷纲已经写了目标/阻碍/尝试/缺口/选择/代价/结果/状态迁移/揭示边界，这里只做
+// 字段搬运，不重新创作——细纲阶段作者只补逐章场面。抽成导出函数是为了让
+// 「卷纲已在盘上但单元没播种」的修复能复用同一份契约，不再各自拼一遍 YAML。
+//
+// on_stage 只放「在本单元已有生效公开身份」的卷内人物：卷纲的 cast 是「本卷
+// 出场人物」，不等于「每个单元都出场」，直接摊到每个单元会让身份覆盖校验把
+// 尚未登场的角色也算进来（身份段从 v01-U3 才开始的人，在 v01-U1 被要求登记）。
+func UnitContractForSeed(s UnitSeed, volumeCast []string, segments []domain.IdentitySegment) map[string]any {
+	contract := map[string]any{
+		"unit_id": s.UnitID, "status": "proposed", "title_working": s.Title,
+		"function": s.Function, "chapter_range": []int{s.From, s.To},
+		"desire": "", "obstacle": "", "choice": "", "payoff": "",
+		"on_stage": []string{}, "pov": "", "scenes": []any{},
+		"next_hook": map[string]any{"type": ""},
+		"story_day": "", "gap_from_prev": "", "info_control": "",
+	}
+	onStage := make([]string, 0, len(volumeCast))
+	for _, stem := range volumeCast {
+		if IdentityAt(segments, stem, s.UnitID) != nil {
+			onStage = append(onStage, stem)
+		}
+	}
+	if len(onStage) > 0 {
+		contract["on_stage"] = onStage
+		contract["pov"] = onStage[0]
+	}
+	if s.Entity == nil {
+		return contract
+	}
+	contract["source_seed_id"] = s.Entity.ID
+	contract["desire"] = s.Entity.Value("objective")
+	contract["obstacle"] = s.Entity.Value("obstacle")
+	contract["choice"] = s.Entity.Value("choice")
+	contract["payoff"] = s.Entity.Value("outcome")
+	contract["attempt"] = s.Entity.Value("attempt")
+	contract["setback"] = s.Entity.Value("setback")
+	contract["cost"] = s.Entity.Value("cost")
+	contract["entry_cause"] = s.Entity.Value("entry_cause")
+	contract["exit_result"] = s.Entity.Value("exit_result")
+	contract["story_day"] = s.Entity.Value("clock_start_day")
+	contract["end_day"] = s.Entity.Value("clock_end_day")
+	contract["gap_days"] = s.Entity.Value("clock_gap_days")
+	contract["clock_deadline"] = s.Entity.Value("clock_deadline")
+	contract["timeline_id"] = s.Entity.Value("timeline_id")
+	contract["state_changes"] = s.Entity.Value("state_changes")
+	contract["state_deltas"] = stateDeltasFromMarkdown(s.Entity.Value("state_changes"))
+	contract["thread_ids"] = splitList(s.Entity.Value("thread_ids"))
+	if hook := strings.SplitN(s.Entity.Value("next_hook"), "|", 2); len(hook) == 2 {
+		contract["next_hook"] = map[string]any{"type": strings.TrimSpace(hook[0]), "out": strings.TrimSpace(hook[1])}
+	}
+	return contract
 }
 
 func commitPlanWrites(root string, writes map[string][]byte, state map[string]string) error {
@@ -371,8 +429,8 @@ func renderCastCard(c planCast) string {
 	return md
 }
 
-func ParseUnitSeeds(md, volumeID string) []unitSeed {
-	var out []unitSeed
+func ParseUnitSeeds(md, volumeID string) []UnitSeed {
+	var out []UnitSeed
 	seen := map[string]bool{}
 	for _, line := range strings.Split(md, "\n") {
 		if !strings.HasPrefix(strings.TrimSpace(line), "|") || strings.Contains(line, "---") {
@@ -404,7 +462,7 @@ func ParseUnitSeeds(md, volumeID string) []unitSeed {
 		if len(cells) > 3 && fn == "" {
 			fn = cells[3]
 		}
-		out = append(out, unitSeed{UnitID: id, Title: cells[2], Function: fn, From: from, To: to})
+		out = append(out, UnitSeed{UnitID: id, Title: cells[2], Function: fn, From: from, To: to})
 	}
 	return out
 }

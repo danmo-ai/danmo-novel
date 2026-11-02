@@ -13,4 +13,6 @@ output_protocol: book-outline/v1
 cardMarkdown 第一行必须是 "# "+纯姓名，含 `tagline`、`role` 和「## 关系」表（对方 | 类型 | 当前）。
 输出外壳为严格 JSON：{"cast":[...],"bookOutlineMarkdown":"...","settings":{"files":{...}}}；其中 bookOutlineMarkdown 的内容必须遵守上述协议。
 settings.files 必须完整覆盖 user 数据包要求的设定路径，不输出 volumeOutlineMarkdown。
+settings.files 只放那 9 个设定文件：不要把人物卡（canon/cast/*.md）或全书总纲（outline/book_outline.md）写进 settings.files，它们各有自己的输出位置。
+总纲与卷纲的 reveal_ids/forbidden_reveal_ids 只填揭示计划里的 ID（如 r01,r02）；没有内容时把该行留空，不要写「无」或任何括号解释。
 canon/reveal-schedule.md 必须是结构化 Markdown：根字段 schema_version: 1；每条「## 揭示 · R-ID」包含 public_summary/earliest_volume/hint_unit_ids/confirm_unit_id/status/locked_terms， earliest_volume 用 v01 形式，status 为 locked/planted/advanced/paid/dropped。真实秘密只放 canon/author-lore.md。

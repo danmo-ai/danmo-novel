@@ -124,16 +124,23 @@ func validateChapters(task string, chapters []domain.ChapterDraft, from, to int)
 
 // validateReviewFindings enforces the review contract.
 //
-// severity 是下游唯一的开关（chain 是否阻断、定稿是否放行），所以未知值不能
+// severity 是下游唯一的开关（定稿是否放行、能否通过审校），所以未知值不能
 // 静默降级成 advisory——那会把一条真硬伤藏起来。id 为空则去重与「按 issueId
 // 修订」都会失效。wantChapter>0 时校验章号：审校是按章调用的，报别的章说明
 // 模型没在读本章。
 func validateReviewFindings(findings []domain.ReviewFinding, wantChapter int) error {
 	var vs []Violation
+	// id 是下游唯一的定位手段：前端据此勾选、修订据此取问题。重复的 id 会让
+	// 勾选一行等于勾中两条，修订时也会把同一 id 的意见一次性全带上。
+	seen := map[string]bool{}
 	for i, f := range findings {
 		base := fmt.Sprintf("findings[%d]", i)
 		if strings.TrimSpace(f.ID) == "" {
 			vs = append(vs, Violation{Path: base + ".id", Want: "非空，格式 <lens>-<章>-<序号>", Got: ""})
+		} else if seen[f.ID] {
+			vs = append(vs, Violation{Path: base + ".id", Want: "本条清单内唯一", Got: fmt.Sprintf("%q 重复", f.ID)})
+		} else {
+			seen[f.ID] = true
 		}
 		switch f.Severity {
 		case severityBlocking, severityAdvisory:
@@ -146,10 +153,45 @@ func validateReviewFindings(findings []domain.ReviewFinding, wantChapter int) er
 		if strings.TrimSpace(f.Evidence) == "" {
 			vs = append(vs, Violation{Path: base + ".evidence", Want: "≤40 字，只摘关键原文或点明事实", Got: ""})
 		}
-		if wantChapter > 0 && f.Chapter > 0 && f.Chapter != wantChapter {
+		// 章号不是可选信息：修订按章落点，一条无章号的 finding 会让整批选择
+		// 都无法定位（RunRevise 直接报错）。提示词早就要求"给不出章号的问题不要
+		// 产出"，这里补上执行侧的那一半。整单元审校同样适用——跨章问题也要标一个
+		// 起点章节。
+		if f.Chapter <= 0 {
+			vs = append(vs, Violation{Path: base + ".chapter", Want: "正整数章号（跨章问题标起始章）", Got: "未填"})
+		} else if wantChapter > 0 && f.Chapter != wantChapter {
 			vs = append(vs, Violation{
 				Path: base + ".chapter",
 				Want: fmt.Sprintf("第 %d 章（本次只审这一章）", wantChapter),
+				Got:  fmt.Sprintf("第 %d 章", f.Chapter),
+			})
+		}
+	}
+	return contractFail("审校", vs)
+}
+
+// validateFindingsWithinUnit keeps whole-unit review from citing chapters the unit
+// does not have.
+//
+// 整单元审校是唯一能"自由填章号"的路径，模型会顺手引用别单元的章（它看过卷摘要
+// 和上一单元结尾）。而修订是按章落点的：一个对不上的章号会让整批选中项一起报
+// 「无法定位」——本该是模型改一次 JSON 的事，变成了作者没法修复。
+func validateFindingsWithinUnit(findings []domain.ReviewFinding, chapters []domain.ChapterDraft) error {
+	known := map[int]bool{}
+	for _, ch := range chapters {
+		known[ch.Chapter] = true
+	}
+	nums := make([]int, 0, len(known))
+	for n := range known {
+		nums = append(nums, n)
+	}
+	sort.Ints(nums)
+	var vs []Violation
+	for i, f := range findings {
+		if f.Chapter > 0 && !known[f.Chapter] {
+			vs = append(vs, Violation{
+				Path: fmt.Sprintf("findings[%d].chapter", i),
+				Want: fmt.Sprintf("本单元的章号之一：%v", nums),
 				Got:  fmt.Sprintf("第 %d 章", f.Chapter),
 			})
 		}

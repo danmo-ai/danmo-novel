@@ -123,8 +123,8 @@
 - thread_moves: {{thread-id=从什么状态->到什么状态}}
 - deliverables: {{本卷必须兑现的结果}}
 - open_questions: {{允许保留的问题}}
-- reveal_ids: {{本卷可揭示 ID}}
-- forbidden_reveal_ids: {{本卷禁提前揭示 ID}}
+- reveal_ids: {{本卷可揭示 ID，如 r01,r02；没有则该行留空}}
+- forbidden_reveal_ids: {{本卷禁提前揭示 ID，如 r11,r15；没有则该行留空}}
 - next_volume_entry: {{下一卷行动入口}}
 
 ### 转折 · {{event-id}}
@@ -179,8 +179,8 @@
 - allow_flashback: {{非 main 时间线时为 true，否则省略}}
 - thread_ids: {{总纲故事线 ID 列表}}
 - event_ids: {{本卷节拍/转折 ID 列表}}
-- reveal_ids: {{可揭示 ID 列表}}
-- forbidden_reveal_ids: {{禁止提前揭示 ID 列表}}
+- reveal_ids: {{可揭示 ID 列表，如 r01,r02；没有则留空}}
+- forbidden_reveal_ids: {{禁止提前揭示 ID 列表，如 r11；没有则留空}}
 - next_hook: {{钩子类型 | 具体未决事件}}
 
 ### 身份变更 · {{unit_id}}-{{character.stem}}
@@ -217,7 +217,8 @@ cost: "{{继承单元 cost}}"
 payoff: "{{继承单元 outcome}}"
 pleasure: "{{本单元的阅读兑现/情绪形态}}"
 forbidden: "{{禁碰事实、揭示、表达和合规边界}}"
-word_target: "{{本单元目标总字数}}"
+chapter_chars: {{单章目标字数，只能用 2000–3500，默认 2500}}
+word_target: "{{由 chapter_chars × 章数派生，不要手填}}"
 on_stage: [{{在场人物 stem 列表}}]
 pov: {{POV 人物 stem，必须属于 on_stage}}
 chapter_range: [{{起始章}}, {{结束章}}]
@@ -379,10 +380,13 @@ segments:
 
 ### `canon/writing-rules.md`
 
+> 字数写进新书模板时取自 `core/domain/chapter_length.go` 的常量（`ChapterCharsMin/Max/Default`），
+> 这里只是它们当前值的快照；改标准改那个文件，别改这份示例。
+
 ```markdown
 # Writing rules
 - 单元 3–8 章（硬上限 10）
-- 单章默认 2000–3500 字，以单元合同为准
+- 单章 2000–3500 字，目标 2500 字：在细纲写 `chapter_chars`，别写单元总字数
 - 正文只写 prose，章间单独一行 ---
 - 不用 AI 套话，不提前打光终局底牌
 ```

@@ -56,97 +56,17 @@ func NormalizeStages(in []string) []string {
 	return out
 }
 
-// GenreFamily is one of the closed book-genre families used to decide whether
-// a genre-specific article is offered. The names are the 检索标题 from
-// `07-genre-platform`; a book's `genre` is expected to be one of them, and
-// `GenreFamilies` maps common variations onto them.
-type GenreFamily struct {
-	ID    string `json:"id"`
-	Label string `json:"label"`
-}
+// 题材词汇表已下移到 core/resource/novel（那是最低层，写时约束与知识匹配
+// 必须共用同一套解析）。这里保留同名导出，避免调用方与前端镜像的语义分叉。
+type GenreFamily = novel.GenreFamily
 
-// GenreFamiliesList is the closed genre vocabulary, in display order.
-var GenreFamiliesList = []GenreFamily{
-	{ID: "玄幻", Label: "玄幻"},
-	{ID: "仙侠", Label: "仙侠"},
-	{ID: "都市", Label: "都市"},
-	{ID: "悬疑", Label: "悬疑"},
-	{ID: "现代言情", Label: "现代言情"},
-	{ID: "古代言情", Label: "古代言情"},
-	{ID: "仕途扫黑", Label: "仕途扫黑"},
-	{ID: "系统穿越", Label: "系统穿越"},
-}
+var GenreFamiliesList = novel.GenreFamiliesList
 
-var genreOrder = func() map[string]int {
-	m := make(map[string]int, len(GenreFamiliesList))
-	for i, g := range GenreFamiliesList {
-		m[g.ID] = i
-	}
-	return m
-}()
-
-// genreAliases maps the spellings that appear in book metadata (platform main
-// categories, reading tags) onto families. It only widens matching; an unknown
-// name still falls back to a substring scan over the family names.
-var genreAliases = map[string][]string{
-	"玄幻": {"玄幻"}, "奇幻": {"玄幻"}, "东方玄幻": {"玄幻"}, "西方奇幻": {"玄幻"},
-	"仙侠": {"仙侠"}, "修真": {"仙侠"}, "武侠": {"仙侠"}, "凡人修仙": {"仙侠"}, "古典仙侠": {"仙侠"},
-	"都市": {"都市"}, "现实": {"都市"}, "都市日常": {"都市"}, "都市高武": {"都市"}, "战神赘婿": {"都市"},
-	"悬疑": {"悬疑"}, "推理": {"悬疑"}, "刑侦": {"悬疑"}, "灵异": {"悬疑"}, "悬疑灵异": {"悬疑"},
-	"言情":   {"现代言情", "古代言情"},
-	"现代言情": {"现代言情"}, "都市言情": {"现代言情"},
-	"古代言情": {"古代言情"}, "古言": {"古代言情"}, "宫斗": {"古代言情"},
-	"仕途扫黑": {"仕途扫黑"}, "仕途": {"仕途扫黑"}, "官场": {"仕途扫黑"}, "扫黑": {"仕途扫黑"},
-	"系统穿越": {"系统穿越"}, "系统": {"系统穿越"}, "签到": {"系统穿越"}, "快穿": {"系统穿越"}, "穿越": {"系统穿越"},
-}
+var genreOrder = novel.GenreOrder()
 
 // GenreFamilies maps a book genre/subgenre (or an article's genre tag) onto the
-// closed family set. Matching is set intersection, so an article tagged 言情
-// matches both 现代言情 and 古代言情 books, and 悬疑灵异 matches 悬疑.
-func GenreFamilies(name string) []string {
-	n := strings.TrimSpace(name)
-	if n == "" {
-		return nil
-	}
-	if fams, ok := genreAliases[n]; ok {
-		return fams
-	}
-	// Substring fallback: 悬疑脑洞 → 悬疑, 都市修真 → 都市+仙侠. Alias keys
-	// participate so a platform category built out of an alias (修真) still
-	// reaches its family (仙侠).
-	seen := map[string]bool{}
-	var hit []string
-	add := func(fams []string) {
-		for _, f := range fams {
-			if !seen[f] {
-				seen[f] = true
-				hit = append(hit, f)
-			}
-		}
-	}
-	for _, f := range GenreFamiliesList {
-		if strings.Contains(n, f.ID) {
-			add([]string{f.ID})
-		}
-	}
-	for alias, fams := range genreAliases {
-		if alias != n && strings.Contains(n, alias) {
-			add(fams)
-		}
-	}
-	if len(hit) > 0 {
-		sort.Slice(hit, func(i, j int) bool {
-			ri, iok := genreOrder[hit[i]]
-			rj, jok := genreOrder[hit[j]]
-			if iok && jok {
-				return ri < rj
-			}
-			return iok
-		})
-		return hit
-	}
-	return []string{n}
-}
+// closed family set. See novel.GenreFamilies.
+func GenreFamilies(name string) []string { return novel.GenreFamilies(name) }
 
 func intersects(a, b []string) bool {
 	for _, x := range a {
@@ -277,7 +197,8 @@ func (d Doc) GenreMatched(genre, subgenre string) bool {
 		}
 		ok := false
 		for _, s := range d.Subgenres {
-			if strings.EqualFold(strings.TrimSpace(s), sub) {
+			// 子类按规范名比较：书里写 年代刑侦、文章标 刑侦探案，是同一个子类。
+			if novel.SubgenreMatched(s, sub) {
 				ok = true
 				break
 			}
@@ -363,7 +284,9 @@ func List(libraryRoot string) ([]Doc, error) {
 }
 
 func newDoc(id, raw string, builtin, customized bool) Doc {
-	body := bodyOf(raw)
+	// 单章字数这类政策数字在文章里写成占位符，展示/注入时统一展开，
+	// 免得文章里的数字和硬门里的数字各走各的。
+	body := novel.ExpandPolicy(bodyOf(raw))
 	tags := tagsFrom(raw)
 	return Doc{
 		ID: id, Title: titleOf(id, body), Summary: summaryOf(body), Bytes: len(body),
@@ -529,7 +452,7 @@ func Read(libraryRoot, id string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return bodyOf(raw), nil
+	return novel.ExpandPolicy(bodyOf(raw)), nil
 }
 
 func readRaw(libraryRoot, id string) (string, error) {
@@ -592,7 +515,8 @@ func Restore(libraryRoot, id string) (string, error) {
 	if err := os.Remove(filepath.Join(Root(libraryRoot), id+".md")); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return "", err
 	}
-	return bodyOf(builtin), nil
+	// 与 Read 保持同一种呈现：恢复后作者看到的必须是展开过占位符的正文。
+	return novel.ExpandPolicy(bodyOf(builtin)), nil
 }
 
 func validID(id string) bool {

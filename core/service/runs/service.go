@@ -58,12 +58,7 @@ func (s *Service) modelMaxOut(modelID string) int {
 	return s.Models.MaxOutputTokens(modelID)
 }
 
-// ResolveModel returns the model a spec would use (explicit ModelID wins,
-// otherwise the stage role assignment). Exported for the chain preflight.
-func (s *Service) ResolveModel(spec domain.TaskSpec) string {
-	return s.resolveModel(spec)
-}
-
+// resolveModel 把 spec 映射到阶段角色再取绑定模型；显式 ModelID 优先。
 func (s *Service) resolveModel(spec domain.TaskSpec) string {
 	if spec.ModelID != "" {
 		return spec.ModelID
@@ -92,20 +87,37 @@ func (s *Service) Start(ctx context.Context, spec domain.TaskSpec) (domain.Run, 
 	if readOnly && (spec.Kind == domain.TaskWrite || spec.Kind == domain.TaskOutline || spec.Kind == domain.TaskPlan || spec.Kind == domain.TaskFinalize) {
 		// generation creating candidates is OK; accept will refuse writeback on read-only
 	}
-	if active, ok, _ := s.Store.FindActiveRun(ctx, spec.BookID, spec.Kind, spec.UnitID); ok {
-		return active, activeRunConflict(active, spec)
-	}
 	snap, err := books.LoadBook(root, readOnly)
 	if err != nil {
 		return domain.Run{}, err
 	}
+	// revision 校验必须在归档之前：否则一次过期请求会先把旧清单作废，再报错，
+	// 等于"什么都没跑成，结论却没了"。
 	if spec.BaseRevision != "" && spec.BaseRevision != snap.Revision {
 		return domain.Run{}, fmt.Errorf("baseRevision mismatch: book moved on, refresh and retry")
 	}
-	modelID := s.resolveModel(spec)
-	if modelID == "" {
+	if modelID := s.resolveModel(spec); modelID == "" {
 		return domain.Run{}, fmt.Errorf("no model assigned for this stage; configure Settings → 创作阶段模型")
 	}
+	// 重审先用新结论替换旧结论：归档该单元未处理的审校清单，否则那条
+	// waiting_accept 的 run 会一直占着单元，重审永远起不来。
+	if spec.Kind == domain.TaskReview && spec.SupersedeReview && spec.UnitID != "" {
+		if _, cerr := s.CloseUnitReview(ctx, spec.BookID, spec.UnitID, true, false); cerr != nil {
+			return domain.Run{}, fmt.Errorf("归档旧审校清单失败: %w", cerr)
+		}
+	}
+	if active, ok, _ := s.Store.FindActiveRun(ctx, spec.BookID, spec.Kind, spec.UnitID); ok {
+		// 自愈：waiting_accept 的 run 只有靠候选择才能收尾。若候选早已终结
+		// （过期/已拒绝/已接受）而 run 还占着，单元就永久卡死——作者看不到那条
+		// 候选，也就没有任何按钮能解开。这里补一次收尾再重新判断占用。
+		if s.reapIfCandidateClosed(ctx, active) {
+			active, ok, _ = s.Store.FindActiveRun(ctx, spec.BookID, spec.Kind, spec.UnitID)
+		}
+		if ok {
+			return active, activeRunConflict(active, spec)
+		}
+	}
+	modelID := s.resolveModel(spec)
 
 	run := domain.Run{
 		ID: uuid.NewString(), BookID: spec.BookID, Kind: spec.Kind, Status: domain.RunRunning,
@@ -133,30 +145,32 @@ func (s *Service) execute(ctx context.Context, run domain.Run, snap domain.BookS
 
 	var res pipeline.Result
 	var err error
+	// 每次 run 用一份自己的 Runner 值拷贝：KnowledgeDocs / ReviewChecklist /
+	// DeslopRules 是"本次调用"的设置，写回共享的 s.Pipeline 会与并发的另一个 run
+	// 互相覆盖（-race 已复现），严重时另一个 run 会在中途丢掉审校清单/去AI味规则。
+	// 其余字段（LLM / ModelMaxOut）只读，值拷贝是安全的。
+	runner := *s.Pipeline
 	// 作者勾选的参考知识文章（独立于 unit 的 ExtraContextIDs 语义）。
-	s.Pipeline.KnowledgeDocs = s.loadKnowledge(run.Spec.KnowledgeIDs)
-	defer func() { s.Pipeline.KnowledgeDocs = nil }()
+	runner.KnowledgeDocs = s.loadKnowledge(run.Spec.KnowledgeIDs)
 	// 审校清单按作者在知识库里的编辑生效；未编辑时回退内置文章。
-	s.Pipeline.ReviewChecklist = s.loadReviewChecklist()
-	defer func() { s.Pipeline.ReviewChecklist = "" }()
+	runner.ReviewChecklist = s.loadReviewChecklist()
 	// 本地硬门规则同样允许作者覆盖（本书 > 知识库 > 内置）。
 	// 正则写错时必须让作者看到，而不是静默退回内置继续"正常"跑——
 	// 所以这里先记下错误，switch 跑完后覆盖，而不是被 case 里的赋值冲掉。
 	var rulesErr error
 	if rules, rerr := s.loadDeslopRules(snap.Summary.RootPath); rerr != nil {
 		rulesErr = fmt.Errorf("去 AI 味规则无法解析：%w", rerr)
-		s.Pipeline.DeslopRules = gates.BuiltinRules()
+		runner.DeslopRules = gates.BuiltinRules()
 	} else {
-		s.Pipeline.DeslopRules = rules
+		runner.DeslopRules = rules
 	}
-	defer func() { s.Pipeline.DeslopRules = nil }()
 	switch run.Kind {
 	case domain.TaskWrite:
 		unit, ok := findUnit(snap, run.Spec.UnitID)
 		if !ok {
 			err = fmt.Errorf("unit not found: %s", run.Spec.UnitID)
 		} else {
-			res, err = s.Pipeline.RunWrite(ctx, snap, unit, run.Spec.Instruction, modelID)
+			res, err = runner.RunWrite(ctx, snap, unit, run.Spec.Instruction, modelID)
 		}
 	case domain.TaskOutline:
 		ids := run.Spec.ExtraContextIDs
@@ -175,7 +189,7 @@ func (s *Service) execute(ctx context.Context, run domain.Run, snap domain.BookS
 				vnum = u.Volume
 			}
 		}
-		res, err = s.Pipeline.RunOutline(ctx, snap, vnum, ids, run.Spec.Instruction, modelID)
+		res, err = runner.RunOutline(ctx, snap, vnum, ids, run.Spec.Instruction, modelID)
 	case domain.TaskPlan:
 		mode := strings.TrimSpace(run.Spec.Mode)
 		if mode == "" {
@@ -204,25 +218,24 @@ func (s *Service) execute(ctx context.Context, run domain.Run, snap domain.BookS
 				vnum++
 			}
 		}
-		res, err = s.Pipeline.RunPlanMode(ctx, snap, vnum, modelID, mode, run.Spec.Instruction, run.Spec.PreservePaths)
+		res, err = runner.RunPlanMode(ctx, snap, vnum, modelID, mode, run.Spec.Instruction, run.Spec.PreservePaths)
 	case domain.TaskReview:
 		unit, ok := findUnit(snap, run.Spec.UnitID)
 		if !ok {
 			err = fmt.Errorf("unit not found")
-		} else if run.Spec.SplitByChapter || s.Settings.Get().Review.SplitByChapter {
-			res, err = s.Pipeline.RunReviewByChapter(ctx, snap, unit, modelID, pipeline.ReviewOptions{
+		} else if s.reviewSplit(run.Spec) {
+			res, err = runner.RunReviewByChapter(ctx, snap, unit, modelID, pipeline.ReviewOptions{
 				SplitByChapter: true,
 				Concurrency:    s.Settings.Get().Review.Concurrency,
-				ReviewCursor:   run.ReviewCursor,
 			})
 		} else {
-			res, err = s.Pipeline.RunReview(ctx, snap, unit, modelID)
+			res, err = runner.RunReview(ctx, snap, unit, modelID)
 		}
 	case domain.TaskLocalEdit, domain.TaskRewriteSel, domain.TaskExpand, domain.TaskPolish, domain.TaskContinue:
 		if run.Spec.Selection == nil {
 			err = fmt.Errorf("selection required")
 		} else {
-			res, err = s.Pipeline.RunLocalEdit(ctx, snap, *run.Spec.Selection, run.Spec.Instruction, modelID)
+			res, err = runner.RunLocalEdit(ctx, snap, *run.Spec.Selection, run.Spec.Instruction, modelID)
 		}
 	case domain.TaskRevise:
 		unit, ok := findUnit(snap, run.Spec.UnitID)
@@ -241,7 +254,7 @@ func (s *Service) execute(ctx context.Context, run domain.Run, snap domain.BookS
 					}
 				}
 			}
-			res, err = s.Pipeline.RunRevise(ctx, snap, unit, findings, modelID)
+			res, err = runner.RunRevise(ctx, snap, unit, findings, modelID)
 		}
 	case domain.TaskFinalize:
 		unit, ok := findUnit(snap, run.Spec.UnitID)
@@ -250,10 +263,10 @@ func (s *Service) execute(ctx context.Context, run domain.Run, snap domain.BookS
 		} else if !unit.HasProse {
 			err = fmt.Errorf("单元尚无正文，无法定稿")
 		} else {
-			res, err = s.Pipeline.RunFinalize(ctx, snap, unit)
+			res, err = runner.RunFinalize(ctx, snap, unit)
 		}
 	case domain.TaskStructureReview:
-		res, err = s.Pipeline.ReviewStructure(ctx, snap, run.Spec, modelID)
+		res, err = runner.ReviewStructure(ctx, snap, run.Spec, modelID)
 	case domain.TaskRewriteEntity:
 		if run.Spec.TargetPath == "" {
 			err = fmt.Errorf("targetPath required for rewrite_entity")
@@ -269,9 +282,9 @@ func (s *Service) execute(ctx context.Context, run domain.Run, snap domain.BookS
 					}
 				}
 			}
-			res, err = s.Pipeline.RepairStructure(ctx, snap, run.Spec, findings, modelID)
+			res, err = runner.RepairStructure(ctx, snap, run.Spec, findings, modelID)
 		} else {
-			res, err = s.Pipeline.RunRewriteEntity(ctx, snap, run.Spec, modelID)
+			res, err = runner.RunRewriteEntity(ctx, snap, run.Spec, modelID)
 		}
 	default:
 		err = fmt.Errorf("unsupported task kind: %s", run.Kind)
@@ -288,8 +301,6 @@ func (s *Service) execute(ctx context.Context, run domain.Run, snap domain.BookS
 	for _, b := range res.Packet.Blocks {
 		run.ContextSummary = append(run.ContextSummary, b.Label)
 	}
-	// 分章审校失败时保留已通过章的进度，重跑从失败章继续。
-	run.ReviewCursor = res.NextReviewCursor
 	if ctx.Err() != nil {
 		run.Status = domain.RunCancelled
 		run.Error = "cancelled"
@@ -374,6 +385,20 @@ func (s *Service) PreviewPacket(_ context.Context, spec domain.TaskSpec) (domain
 		if !ok {
 			return domain.ContextPacket{}, fmt.Errorf("unit not found")
 		}
+		// 预览必须与实际执行的路径一致：分章时给"第一章"的包并把预算改成
+		// 章数×2，整单元时才给整份正文的包。否则确认弹窗里的"调用预算/上下文
+		// 块数"全是假的。
+		if s.reviewSplit(spec) {
+			chapters := gates.ParseProseChapters(unit.ProseRaw)
+			if len(chapters) == 0 {
+				return contextsvc.BuildReviewPacket(snap, unit, nil, s.modelMaxOut(s.resolveModel(spec)), s.loadReviewChecklist()), nil
+			}
+			local := gates.CheckProseWithRules(chapters, books.ChapterTarget(unit), s.Pipeline.DeslopRules)
+			baseline := contextsvc.BuildReviewBaseline(snap, unit, local.Findings, s.loadReviewChecklist())
+			packet := contextsvc.BuildChapterReviewPacket(snap, unit, chapters[0], baseline.PrevTail, baseline, s.modelMaxOut(s.resolveModel(spec)))
+			packet.Policy.MaxCalls = len(chapters) * 2
+			return packet, nil
+		}
 		return contextsvc.BuildReviewPacket(snap, unit, nil, s.modelMaxOut(s.resolveModel(spec)), s.loadReviewChecklist()), nil
 	case domain.TaskFinalize:
 		unit, ok := findUnit(snap, spec.UnitID)
@@ -447,29 +472,6 @@ func (s *Service) RecoverInterrupted(ctx context.Context) (int, error) {
 	return n, nil
 }
 
-// WaitRun blocks until the run leaves pending/running, then reloads it.
-// Used by orchestration (chains) that must act on the produced candidate.
-func (s *Service) WaitRun(ctx context.Context, runID string) (domain.Run, error) {
-	ticker := time.NewTicker(400 * time.Millisecond)
-	defer ticker.Stop()
-	for {
-		run, err := s.Store.GetRun(ctx, runID)
-		if err != nil {
-			return domain.Run{}, err
-		}
-		switch run.Status {
-		case domain.RunPending, domain.RunRunning:
-		default:
-			return run, nil
-		}
-		select {
-		case <-ctx.Done():
-			return run, ctx.Err()
-		case <-ticker.C:
-		}
-	}
-}
-
 func (s *Service) Accept(ctx context.Context, cmd domain.AcceptCommand) (domain.Candidate, error) {
 	cand, err := s.Store.GetCandidate(ctx, cmd.CandidateID)
 	if err != nil {
@@ -494,13 +496,11 @@ func (s *Service) Accept(ctx context.Context, cmd domain.AcceptCommand) (domain.
 	// 只能靠拒绝清掉，等于分不清「已复核」和「被丢弃」。
 	if cand.Kind != domain.TaskReview && cand.Kind != domain.TaskStructureReview {
 		if cmd.BaseRevision != "" && cmd.BaseRevision != snap.Revision {
-			cand.Status = domain.CandidateExpired
-			_ = s.Store.SaveCandidate(ctx, cand)
+			s.expireCandidate(ctx, cand, "书籍在生成后被修改，候选已过期")
 			return domain.Candidate{}, fmt.Errorf("baseRevision expired; re-compare and regenerate if needed")
 		}
 		if cand.BaseRevision != snap.Revision {
-			cand.Status = domain.CandidateExpired
-			_ = s.Store.SaveCandidate(ctx, cand)
+			s.expireCandidate(ctx, cand, "书籍在生成后被修改，候选已过期")
 			return domain.Candidate{}, fmt.Errorf("book changed since generation")
 		}
 	}
@@ -736,6 +736,134 @@ func (s *Service) Accept(ctx context.Context, cmd domain.AcceptCommand) (domain.
 	return cand, nil
 }
 
+// ReviewSplit models one unit into per-chapter review calls.
+//
+// 唯一判定口径：spec 可以强制开启（审校页的「重审该单元」按章跑），作者在设置里
+// 开关决定其余情况。预览必须走同一个函数，否则确认弹窗会展示一份与实际调用
+// 不同的上下文和预算（曾经固定展示整单元那一份）。
+func (s *Service) reviewSplit(spec domain.TaskSpec) bool {
+	if spec.SplitByChapter {
+		return true
+	}
+	return s.Settings.Get().Review.SplitByChapter
+}
+
+// ReviewGate reports the combined verdict of a unit's open review lists and how
+// many lists are open. 没有清单时返回 ("", 0)。
+//
+// 用于把"下一步"从审校推进到定稿：一份 0 阻断、每章都审完的清单不该让作者
+// 再点一次审校——那会重跑一遍完整审校，结论几乎必然不同，然后又回到"要不要
+// 再修一轮"的循环。
+func (s *Service) ReviewGate(ctx context.Context, bookID, unitID string) (string, int) {
+	open, err := s.Store.ListOpenCandidates(ctx, bookID)
+	if err != nil {
+		return "", 0
+	}
+	verdict := ""
+	n := 0
+	for _, c := range open {
+		if c.Kind != domain.TaskReview || c.UnitID != unitID {
+			continue
+		}
+		n++
+		switch domain.ReviewVerdict(c.Findings) {
+		case domain.ReviewBlocking:
+			// 任一清单有阻断，整体就是 blocking，后面的不用再看。
+			return domain.ReviewBlocking, n
+		case domain.ReviewUnfinished:
+			verdict = domain.ReviewUnfinished
+		default:
+			if verdict == "" {
+				verdict = domain.ReviewClean
+			}
+		}
+	}
+	return verdict, n
+}
+
+// CloseUnitReview archives every open review list of one unit and, when asked,
+// starts the finalize run in the same call.
+//
+// 这是审校的正常出口。以前清单只有两条路——"去修订"或"拒绝清单"，所以一份
+// 0 阻断的清单既不能通过也不能前进，单元永远停在 drafted。
+//
+// force 允许带着阻断通过，但必须由调用方显式请求：服务端默认拒绝，免得
+// "没路了"变成"静默放行"。
+func (s *Service) CloseUnitReview(ctx context.Context, bookID, unitID string, force, startFinalize bool) (domain.CloseReviewResult, error) {
+	res := domain.CloseReviewResult{Verdict: domain.ReviewClean}
+	open, err := s.Store.ListOpenCandidates(ctx, bookID)
+	if err != nil {
+		return res, err
+	}
+	var lists []domain.Candidate
+	blocking, unfinished := 0, 0
+	for _, c := range open {
+		if c.Kind != domain.TaskReview || c.UnitID != unitID {
+			continue
+		}
+		lists = append(lists, c)
+		switch domain.ReviewVerdict(c.Findings) {
+		case domain.ReviewBlocking:
+			blocking++
+		case domain.ReviewUnfinished:
+			unfinished++
+		}
+	}
+	switch {
+	case blocking > 0:
+		res.Verdict = domain.ReviewBlocking
+	case unfinished > 0:
+		res.Verdict = domain.ReviewUnfinished
+	}
+	if !force && res.Verdict != domain.ReviewClean {
+		if blocking > 0 {
+			return res, fmt.Errorf("还有 %d 份清单带阻断结论，不能直接通过；先修复，或显式强制通过", blocking)
+		}
+		return res, fmt.Errorf("有 %d 份清单的审校不完整（输出被截断或分章失败），先重审该单元，或显式强制通过", unfinished)
+	}
+	// 归档必须走 Accept：它会顺带把对应 run 从 waiting_accept 收尾，
+	// 否则那条 run 会一直挡着同一单元的新审校/定稿。
+	for _, c := range lists {
+		if _, err := s.Accept(ctx, domain.AcceptCommand{CandidateID: c.ID}); err != nil {
+			return res, fmt.Errorf("归档 %s 失败: %w", c.ID, err)
+		}
+		res.Closed++
+	}
+	if !startFinalize {
+		return res, nil
+	}
+	root, _, err := s.Store.GetBookRoot(ctx, bookID)
+	if err != nil {
+		res.Warning = err.Error()
+		return res, nil
+	}
+	snap, err := books.LoadBook(root, false)
+	if err != nil {
+		res.Warning = err.Error()
+		return res, nil
+	}
+	unit, ok := findUnit(snap, unitID)
+	if !ok {
+		res.Warning = fmt.Sprintf("单元 %s 不存在，未启动定稿", unitID)
+		return res, nil
+	}
+	if !unit.HasProse {
+		res.Warning = "单元还没有正文，无法定稿"
+		return res, nil
+	}
+	run, err := s.Start(ctx, domain.TaskSpec{
+		Kind: domain.TaskFinalize, BookID: bookID, UnitID: unitID,
+		BaseRevision: snap.Revision,
+	})
+	if err != nil {
+		// 已有定稿候选/在跑的定稿时 Start 会冲突：通过已经成功，不能把它退回。
+		res.Warning = err.Error()
+		return res, nil
+	}
+	res.RunID = run.ID
+	return res, nil
+}
+
 // startFollowUpReview closes the manual review loop after a revision is accepted:
 // the handled findings are archived and one automatic split review is started so
 // the author sees what is still open instead of a stale list.
@@ -795,6 +923,69 @@ func (s *Service) Reject(ctx context.Context, candidateID, reason string) error 
 		_ = s.Store.SaveRun(ctx, run)
 	}
 	return nil
+}
+
+// reapIfCandidateClosed closes a waiting_accept run whose candidate is no longer
+// open (expired / rejected / accepted). Returns true when it closed something.
+//
+// 这是给历史遗留死锁兜底的一道修复：进程崩在「候选已终结、run 未收尾」的
+// 中间态时，数据里会永久留一条占位 run。作者看到的只是「已有一份待处理的
+// 结果」，而那条结果在界面上已经不存在。
+func (s *Service) reapIfCandidateClosed(ctx context.Context, run domain.Run) bool {
+	if run.Status != domain.RunWaiting || run.CandidateID == "" {
+		return false
+	}
+	cand, err := s.Store.GetCandidate(ctx, run.CandidateID)
+	if err != nil {
+		// 候选记录消失（被清理）也算无人认领。
+		s.closeRun(ctx, run.ID, domain.RunExpired, "候选已不存在，运行占位已释放")
+		return true
+	}
+	if cand.Status == domain.CandidateOpen {
+		return false
+	}
+	status := domain.RunRejected
+	reason := "候选已被拒绝"
+	switch cand.Status {
+	case domain.CandidateExpired:
+		status = domain.RunExpired
+		reason = "候选已过期（书籍在生成后被修改），运行占位已释放"
+	case domain.CandidateAccepted:
+		status = domain.RunSucceeded
+		reason = ""
+	}
+	s.closeRun(ctx, run.ID, status, reason)
+	return true
+}
+
+// expireCandidate closes a candidate whose base no longer matches the book and,
+// crucially, closes its run too.
+//
+// 以前只把候选标成 expired：候选从「待审」列表里消失，而 run 永远停在
+// waiting_accept，单元就被永久占住——作者既看不到那条候选，也无法接受或拒绝
+// 它，再点生成只会收到「已有一份待处理的细纲结果」。终结候选就必须同时终结
+// run，否则终结态只兑现了一半。
+func (s *Service) expireCandidate(ctx context.Context, cand domain.Candidate, reason string) {
+	cand.Status = domain.CandidateExpired
+	_ = s.Store.SaveCandidate(ctx, cand)
+	s.closeRun(ctx, cand.RunID, domain.RunExpired, reason)
+}
+
+// closeRun moves a run out of the active states. Failure is ignored on purpose:
+// the caller is already handling a user-visible error, and a stuck run is
+// repaired by the self-heal path in Start.
+func (s *Service) closeRun(ctx context.Context, runID string, status domain.RunStatus, reason string) {
+	if runID == "" {
+		return
+	}
+	run, err := s.Store.GetRun(ctx, runID)
+	if err != nil {
+		return
+	}
+	run.Status = status
+	run.Error = strings.TrimSpace(reason)
+	run.UpdatedAt = time.Now().UTC()
+	_ = s.Store.SaveRun(ctx, run)
 }
 
 // loadDeslopRules resolves the local-gate rule table: 本书 > 作者机器 > 内置。
@@ -863,6 +1054,19 @@ func findUnit(snap domain.BookSnapshot, id string) (domain.UnitInfo, bool) {
 	return domain.UnitInfo{}, false
 }
 
+// chapterCharsSource 把草稿里的两个字数键拼成 ChapterTarget 能读的最小 YAML。
+// chapter_chars 优先，word_target 只是老格式的输入。
+func chapterCharsSource(u domain.UnitOutlineDraft) string {
+	var b strings.Builder
+	if v := strings.TrimSpace(u.ChapterChars); v != "" {
+		fmt.Fprintf(&b, "chapter_chars: %s\n", strings.Trim(v, `"'`))
+	}
+	if v := strings.TrimSpace(u.WordTarget); v != "" {
+		fmt.Fprintf(&b, "word_target: %s\n", strings.Trim(v, `"'`))
+	}
+	return b.String()
+}
+
 func serializeUnitYAML(u domain.UnitOutlineDraft) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "unit_id: %s\n", u.UnitID)
@@ -883,7 +1087,15 @@ func serializeUnitYAML(u domain.UnitOutlineDraft) string {
 	fmt.Fprintf(&b, "payoff: %q\n", u.Payoff)
 	fmt.Fprintf(&b, "pleasure: %q\n", u.Pleasure)
 	fmt.Fprintf(&b, "forbidden: %q\n", u.Forbidden)
-	fmt.Fprintf(&b, "word_target: %q\n", u.WordTarget)
+	// 字数只写一个可执行的口径：单章目标（chapter_chars），word_target 由它派生。
+	// 模型自带的 wordTarget 不再直接落盘——曾经 30000/6 章变成 5000 字/章。
+	target := books.OutlineChapterTarget(u.ChapterFrom, u.ChapterTo, chapterCharsSource(u))
+	chapters := u.ChapterTo - u.ChapterFrom + 1
+	if chapters < 1 {
+		chapters = 1
+	}
+	fmt.Fprintf(&b, "chapter_chars: %d\n", target)
+	fmt.Fprintf(&b, "word_target: %d\n", target*chapters)
 	fmt.Fprintf(&b, "pov: %q\n", u.POV)
 	fmt.Fprintf(&b, "chapter_range: [%d, %d]\n", u.ChapterFrom, u.ChapterTo)
 	fmt.Fprintf(&b, "on_stage: [%s]\n", strings.Join(quoteAll(u.OnStage), ", "))

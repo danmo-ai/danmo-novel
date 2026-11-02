@@ -10,7 +10,6 @@ import (
 	adaptermcp "github.com/danmo-ai/danmo-novel/core/adapter/mcp"
 	"github.com/danmo-ai/danmo-novel/core/config"
 	"github.com/danmo-ai/danmo-novel/core/runtimepaths"
-	"github.com/danmo-ai/danmo-novel/core/service/chain"
 	"github.com/danmo-ai/danmo-novel/core/service/llmconfig"
 	"github.com/danmo-ai/danmo-novel/core/service/runs"
 	"github.com/danmo-ai/danmo-novel/core/store/sqlite"
@@ -34,18 +33,12 @@ func main() {
 
 	runSvc := runs.New(db, settings, provider)
 	runSvc.Models = models
-	chainSvc := chain.New(db, settings, runSvc)
 	// 进程重启会丢掉内存里的 goroutine：把上次遗留的 running/pending 任务
 	// 收尾，否则它们会永远停在运行中并挡住同单元的新任务。
 	if n, err := runSvc.RecoverInterrupted(context.Background()); err != nil {
 		log.Printf("warning: recover interrupted runs: %v", err)
 	} else if n > 0 {
 		log.Printf("recovered %d interrupted run(s) from previous process", n)
-	}
-	if n, err := chainSvc.RecoverInterrupted(context.Background()); err != nil {
-		log.Printf("warning: recover interrupted chains: %v", err)
-	} else if n > 0 {
-		log.Printf("recovered %d interrupted chain(s) from previous process", n)
 	}
 	app := &httpapi.App{
 		Settings: settings,
@@ -54,7 +47,6 @@ func main() {
 		Models:   models,
 		LLM:      provider,
 		Runs:     runSvc,
-		Chains:   chainSvc,
 	}
 	r := httpapi.NewRouter(app)
 	host := first(os.Getenv("DQ_HTTP_HOST"), "127.0.0.1")

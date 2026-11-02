@@ -126,7 +126,10 @@ func ValidateStructuredOutlineFile(snap domain.BookSnapshot, path, raw string) e
 	if !ok {
 		return fmt.Errorf("source_arc_id：总纲中不存在 %s", doc.Root.Value("volume_id"))
 	}
-	for _, pair := range [][2]string{{"chapter_range", "chapter_range"}, {"entry_state", "entry_state"}, {"exit_state", "exit_state"}, {"dramatic_question", "goal"}} {
+	// 只锁定父级真正不可替换的合同。goal 是「本卷要完成的写作目标」，
+	// dramatic_question 是「本卷要回答的读者悬念」——两者是不同概念，早期把它们
+	// 绑成同一字段会逼模型把目标陈述改写成一句问句，等于用校验破坏内容。
+	for _, pair := range [][2]string{{"chapter_range", "chapter_range"}, {"entry_state", "entry_state"}, {"exit_state", "exit_state"}} {
 		if strings.TrimSpace(arc.Value(pair[0])) != strings.TrimSpace(doc.Root.Value(pair[1])) {
 			return fmt.Errorf("%s：必须继承总纲的 %s", pair[1], pair[0])
 		}
@@ -162,6 +165,9 @@ func ValidateStructuredOutlineFile(snap domain.BookSnapshot, path, raw string) e
 		if len(snap.Cast) > 0 && !found {
 			return fmt.Errorf("cast：引用不存在的人物 %s", stem)
 		}
+	}
+	if err := validateRevealRefs(snap, doc); err != nil {
+		return err
 	}
 	return nil
 }
@@ -200,19 +206,8 @@ func validateReferences(snap domain.BookSnapshot, doc domain.StructuredMarkdown)
 	for _, c := range snap.Cast {
 		cast[c.Stem] = true
 	}
-	revealDoc, hasReveals := StructuredOutlineFor(snap, "canon/reveal-schedule.md")
-	reveals := map[string]bool{}
-	if hasReveals && !revealDoc.Legacy {
-		for _, e := range revealDoc.EntitiesOf("揭示") {
-			reveals[e.ID] = true
-		}
-	}
-	for _, e := range doc.EntitiesOf("分卷") {
-		for _, id := range append(splitList(e.Value("reveal_ids")), splitList(e.Value("forbidden_reveal_ids"))...) {
-			if hasReveals && !reveals[id] {
-				return fmt.Errorf("%s：揭示计划中不存在 %s", e.ID, id)
-			}
-		}
+	if err := validateRevealRefs(snap, doc); err != nil {
+		return err
 	}
 	for _, e := range doc.EntitiesOf("单元") {
 		for _, id := range splitList(e.Value("thread_ids")) {
@@ -226,6 +221,47 @@ func validateReferences(snap domain.BookSnapshot, doc domain.StructuredMarkdown)
 			if len(cast) > 0 && !cast[stem] {
 				return fmt.Errorf("cast：引用不存在的人物 %s", stem)
 			}
+		}
+	}
+	return nil
+}
+
+// validateRevealRefs checks reveal_ids / forbidden_reveal_ids on both 分卷 and 单元.
+//
+// 两个层级用同一套规则：以前只有总纲校验、卷纲不校验，于是同一种写法在卷里写过
+// 很多次都没事，等到总纲一写就被拒——同一字段两套待遇会把问题推到最远的环节。
+func validateRevealRefs(snap domain.BookSnapshot, doc domain.StructuredMarkdown) error {
+	revealDoc, hasReveals := StructuredOutlineFor(snap, "canon/reveal-schedule.md")
+	reveals := map[string]bool{}
+	if hasReveals && !revealDoc.Legacy {
+		for _, e := range revealDoc.EntitiesOf("揭示") {
+			reveals[strings.ToLower(e.ID)] = true
+		}
+	}
+	for _, kind := range []string{"分卷", "单元"} {
+		for _, e := range doc.EntitiesOf(kind) {
+			for _, field := range []string{"reveal_ids", "forbidden_reveal_ids"} {
+				if err := checkRevealField(e, field, reveals, hasReveals); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// checkRevealField turns one reveal field into an actionable error.
+//
+// 「揭示计划中不存在 无（第二部未解问题不得提前回答）」这种文案会让作者以为
+// 揭示计划缺了一条，实际是字段里放了一句说明。所以两种情况分开报：
+// 说明性文字 → 告诉作者留空；未知 ID → 指名道姓哪个 ID 不存在。
+func checkRevealField(entity domain.MarkdownEntity, field string, reveals map[string]bool, hasReveals bool) error {
+	for _, id := range revealIDList(entity.Value(field)) {
+		if looksLikeProse(id) {
+			return fmt.Errorf("%s.%s：只接受揭示 ID 列表（如 r01,r02）或留空；无法识别 %q", entity.ID, field, id)
+		}
+		if hasReveals && !reveals[strings.ToLower(id)] {
+			return fmt.Errorf("%s.%s：揭示计划中不存在 %s", entity.ID, field, id)
 		}
 	}
 	return nil

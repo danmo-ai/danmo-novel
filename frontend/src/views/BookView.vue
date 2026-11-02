@@ -13,11 +13,10 @@ import UnitProse from '@/components/book/UnitProse.vue'
 import UnitContract from '@/components/book/UnitContract.vue'
 import UnitFlowActions from '@/components/book/UnitFlowActions.vue'
 import RunConfirmDialog from '@/components/book/RunConfirmDialog.vue'
-import ChainPanel from '@/components/book/ChainPanel.vue'
 import { planModeLabel as sharedPlanModeLabel, runKindLabel } from '@/utils/runLabels'
+import { isUnfinishedFinding } from '@/utils/reviewState'
 import { cacheStat, callCacheText, hitRateText } from '@/utils/tokenStats'
 import { parseStructuredMarkdown } from '@/utils/structuredMarkdown'
-import type { Chain, ChainSpec } from '@/types'
 
 const route = useRoute()
 const store = useAppStore()
@@ -101,11 +100,9 @@ const primaryInfo = computed(() => {
 onMounted(async () => {
   await store.loadLLM().catch(() => {})
   await reload()
-  if (store.chain && (store.chain.status === 'running' || store.chain.status === 'pending')) startChainPoll()
 })
 onUnmounted(() => {
   if (pollTimer.value) clearInterval(pollTimer.value)
-  stopChainPoll()
 })
 
 watch(selectedUnit, () => { editingProse.value = false; editingOutline.value = false; void openSelected() })
@@ -189,68 +186,6 @@ function repairStructure(c: Candidate) {
 const confirmSpec = ref<Record<string, any> | null>(null)
 const confirmTitle = ref('')
 
-// ---- 连续单元重写（chain）----
-const chainPollTimer = ref<number | null>(null)
-const chainSignature = ref('')
-
-function signatureOf(ch: Chain | null | undefined) {
-  if (!ch) return ''
-  return `${ch.status}|${ch.cursor}|${ch.stage}|${ch.units.map((u) => u.status).join(',')}`
-}
-
-function stopChainPoll() {
-  if (chainPollTimer.value) clearInterval(chainPollTimer.value)
-  chainPollTimer.value = null
-}
-
-/** 每个阶段接受都会改 revision，签名变化时整书重载一次。 */
-function startChainPoll() {
-  stopChainPoll()
-  chainSignature.value = signatureOf(store.chain)
-  chainPollTimer.value = window.setInterval(async () => {
-    const id = store.chain?.id
-    if (!id) { stopChainPoll(); return }
-    try {
-      const ch = await store.pollChain(id)
-      const sig = signatureOf(ch)
-      if (sig !== chainSignature.value) {
-        chainSignature.value = sig
-        await reload()
-      }
-      if (ch.status !== 'running' && ch.status !== 'pending') stopChainPoll()
-    } catch (e) { store.fail(e); stopChainPoll() }
-  }, 1500)
-}
-
-async function beginChain(spec: ChainSpec) {
-  try {
-    await store.startChain(spec)
-    chainSignature.value = ''
-    startChainPoll()
-    await reload()
-  } catch (e) { store.fail(e) }
-}
-
-async function continueChain() {
-  const id = store.chain?.id
-  if (!id) return
-  try {
-    await store.resumeChain(id)
-    startChainPoll()
-    await reload()
-  } catch (e) { store.fail(e) }
-}
-
-async function stopChain() {
-  const id = store.chain?.id
-  if (!id) return
-  try {
-    await store.cancelChain(id)
-    stopChainPoll()
-    await reload()
-  } catch (e) { store.fail(e) }
-}
-
 function start(kind: string, opts: { mode?: string; volumeId?: string; title?: string } = {}) {
   const book = store.currentBook
   if (!book || busy.value) return
@@ -265,6 +200,9 @@ function start(kind: string, opts: { mode?: string; volumeId?: string; title?: s
     // 无选中单元时才回落到全书下一步所在卷。
     spec.volumeId = `v${String(store.primary.volume).padStart(2, '0')}`
   }
+  // 审校是"重算结论"的任务：该单元已有的未处理清单会被归档再重审，
+  // 否则那条 waiting_accept 的 run 会一直挡住新审校。确认弹窗里会写明。
+  if (kind === 'review') spec.supersedeReview = true
   if (kind === 'plan') {
     const mode = opts.mode || (hasBookOutline.value ? 'volume' : 'init')
     spec.mode = mode
@@ -415,11 +353,12 @@ function runFlowStep(key: string) {
   }
 }
 
-async function accept(c: Candidate) {
+async function accept(c: Candidate, force = false) {
   try {
     // 修订候选被接受时请求服务端归档旧清单并自动复审：闭环一的最后一步。
     const accepted = await store.acceptCandidate(c.id, c.baseRevision, {
       followUpReview: c.kind === 'revise',
+      forceRiskAccept: force,
     })
     if (c.kind === 'review') view.value = 'review'
     if (c.kind === 'revise' && c.unitId) focusUnit(c.unitId)
@@ -427,7 +366,68 @@ async function accept(c: Candidate) {
     // 归档后清单从「待审候选」消失，必须在历史里还能回看。
     await Promise.all([store.loadRuns(bookId.value), store.loadCandidateHistory(bookId.value)])
     if (accepted?.followUpRunId) startRunPoll(accepted.followUpRunId)
-  } catch (e) { store.fail(e) }
+  } catch (e: any) {
+    const msg = e?.message || String(e)
+    // 定稿候选自带本地门禁阻断时，接受会被服务端拒绝。"通过并定稿"若没有这一手，
+    // 作者会在最后一步再撞一次死路——所以给一次显式越权确认，而不是只报错。
+    if (!force && c.kind === 'finalize' && /blocking|阻断/.test(msg)) {
+      if (window.confirm(`定稿检查仍有阻断：\n\n${msg}\n\n强制接受后账本照样回写，单元标为已定稿。继续吗？`)) {
+        await accept(c, true)
+      }
+      return
+    }
+    store.fail(e)
+  }
+}
+
+/**
+ * 审校通过：归档该单元全部待处理清单，并按需直接起定稿。
+ *
+ * force 是作者对"带阻断/带截断也要往前推"的显式授权：不带它时服务端会拒绝，
+ * 所以确认框里必须把要放弃的东西说清楚。
+ */
+async function closeReview(unitId: string, force: boolean) {
+  const book = store.currentBook
+  if (!book || busy.value) return
+  const lists = store.candidates.filter((c) => c.kind === 'review' && c.unitId === unitId)
+  const rows = lists.flatMap((c) => c.findings || [])
+  const blocking = rows.filter((f) => f.severity === 'blocking' && !isUnfinishedFinding(f)).length
+  const unfinished = rows.filter(isUnfinishedFinding).length
+  if (force) {
+    const detail = [
+      blocking ? `${blocking} 条阻断` : '',
+      unfinished ? `${unfinished} 处审校不完整` : '',
+    ].filter(Boolean).join('、') || '未处理的建议'
+    const ok = window.confirm(
+      `强制通过 ${unitId}？\n\n还有 ${detail}。这些结论会随清单一起归档，不会被修复，也不会进定稿账本。\n定稿后单元标为已定稿；之后只能手动改正文。`,
+    )
+    if (!ok) return
+  }
+  busy.value = true
+  try {
+    const res = await store.closeUnitReview(book.summary.id, unitId, { force, startFinalize: true })
+    await reload()
+    await Promise.all([store.loadRuns(bookId.value), store.loadCandidateHistory(bookId.value)])
+    if (res.runId) {
+      startRunPoll(res.runId)
+    } else if (res.warning) {
+      store.fail(res.warning)
+    }
+    store.note(
+      `${res.closed ? `已通过 ${res.closed} 份清单` : '已通过'}${res.runId ? '，正在定稿' : ''}`,
+    )
+  } catch (e: any) {
+    const msg = e?.message || String(e)
+    // 服务端拒绝时把"要放弃什么"摆出来，让作者决定是否强制。
+    if (!force && window.confirm(`${msg}\n\n仍要强制通过并去定稿吗？`)) {
+      busy.value = false
+      await closeReview(unitId, true)
+      return
+    }
+    store.fail(e)
+  } finally {
+    busy.value = false
+  }
 }
 
 /** 轮询一个已在服务端跑起来的 run（接受后的自动复审）。 */
@@ -517,11 +517,21 @@ async function retrySplitReview(unitId?: string) {
   const unit = selectedUnit.value
   const targetId = unitId || unit?.unitId
   if (!book || !targetId || busy.value) return
+  // 重审会用新结论替换旧结论：旧清单里尚未处理的条目随之归档。先讲清后果，
+  // 否则作者会以为"重审"只是再算一遍、旧结论还在。
+  const open = store.candidates.filter((c) => c.kind === 'review' && c.unitId === targetId)
+  if (open.length) {
+    const n = open.reduce((sum, c) => sum + (c.findings || []).length, 0)
+    const ok = window.confirm(
+      `重审 ${targetId}？\n\n该单元还有 ${n} 条未处理的审校结论（${open.length} 份清单），重审会先把它们归档作废，再重新审一遍。\n如果旧结论还要用，请先点「自动修复」或「通过」。`,
+    )
+    if (!ok) return
+  }
   busy.value = true
   try {
     const run = await store.startRun({
       kind: 'review', bookId: book.summary.id, baseRevision: book.revision,
-      unitId: targetId, splitByChapter: true,
+      unitId: targetId, splitByChapter: true, supersedeReview: true,
     })
     runDrawer.value = true
     if (pollTimer.value) clearInterval(pollTimer.value)
@@ -725,6 +735,7 @@ function roleLabel(role?: string) {
         @retry-split="retrySplitReview"
         @focus-unit="focusUnit"
         @reject-unit="rejectUnitFindings"
+        @close-review="closeReview"
       />
       <section v-else class="editor-panel panel">
         <template v-if="isProseUnit && selectedUnit">
@@ -808,16 +819,6 @@ function roleLabel(role?: string) {
       </section>
 
       <aside v-if="view === 'write'" class="context-panel">
-        <ChainPanel
-          :units="store.currentBook.units"
-          :selected-unit="selectedUnit"
-          :chain="store.chain"
-          :read-only="store.currentBook.summary.readOnly"
-          :busy="busy"
-          @start="beginChain"
-          @resume="continueChain"
-          @cancel="stopChain"
-        />
         <section class="side-card panel">
           <h4>全书下一步</h4>
           <div class="next-step">

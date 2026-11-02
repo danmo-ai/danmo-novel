@@ -24,8 +24,11 @@ type ReviewBaseline struct {
 	GenreKB     string // GenreBullets
 	PrevTail    string // 上单元文末 1200 字（只审第 1 章时用）
 	PrevSummary string // latestSummaryTail
-	LocalGate   string // 本单元本地硬门一行文本
-	Rules       string // 审校清单（本书文件 / 作者库覆盖 / 内置）
+	// LocalFindings 是整单元的本地硬门结论。按章审校时必须按章裁剪后再注入：
+	// 把整单元塞进每一次单章调用，模型会照着重报别章的问题（章号对不上→触发
+	// 一次修复重试），同一个问题也会在候选里出现两遍。
+	LocalFindings []domain.ReviewFinding
+	Rules         string // 审校清单（本书文件 / 作者库覆盖 / 内置）
 	// RulesSource names where Rules came from, so the UI can say "你改的那份正在生效".
 	RulesSource string
 }
@@ -94,20 +97,32 @@ func BuildReviewBaseline(snap domain.BookSnapshot, unit domain.UnitInfo, localFi
 		b.PrevTail = clipTail(prev.ProseRaw, 800)
 	}
 
-	if len(localFindings) > 0 {
-		var fb strings.Builder
-		for _, f := range localFindings {
-			fmt.Fprintf(&fb, "- [%s] %s: %s\n", f.Severity, f.Title, f.Evidence)
-		}
-		b.LocalGate = fb.String()
-	}
+	b.LocalFindings = append([]domain.ReviewFinding(nil), localFindings...)
 	return b
 }
 
-// chapterReviewMaxOutputTokens bounds a single-chapter review. One chapter only
-// needs 1-3 findings, so the JSON stays tiny; the rest of the budget is headroom
-// for the thinking chain, which shares max_tokens with the answer.
-const chapterReviewMaxOutputTokens = 12288
+// localGateForChapter renders only this chapter's local gate findings.
+// chapter == 0 的结论是全单元级的（例如整单元字数），每章都带上。
+func localGateForChapter(findings []domain.ReviewFinding, chapter int) string {
+	var fb strings.Builder
+	for _, f := range findings {
+		if f.Chapter != 0 && f.Chapter != chapter {
+			continue
+		}
+		fmt.Fprintf(&fb, "- [%s] %s: %s\n", f.Severity, f.Title, f.Evidence)
+	}
+	return fb.String()
+}
+
+// chapterReviewMaxOutputTokens bounds a single-chapter review.
+//
+// 不能按"一章只需要 1-3 条 findings，JSON 很小"来给预算：思考型模型的 reasoning
+// token 与答案共用 max_tokens，思维链的开销由正文长度和 reasoning effort 决定，
+// 与 findings 条数无关。12288 在 high 强度下会被思维链吃满——实测第 2 章输出
+// 正好停在 12288 处、只剩 1 条结论，却被读成"这章没问题"。
+// 所以与整单元审校同级给 32768，仍受模型 max_output clamp；真截断时 runJSON
+// 还会在重试里翻倍（见 reviewChapter 的 truncation 重试）。
+const chapterReviewMaxOutputTokens = 32768
 
 // BuildChapterReviewPacket assembles the per-chapter packet.
 // Baseline blocks are identical across chapters; the only variable parts are
@@ -161,8 +176,9 @@ func BuildChapterReviewPacket(snap domain.BookSnapshot, unit domain.UnitInfo, ch
 
 	system := novel.ReviewSystemPrompt()
 	extra := map[string]any{}
-	if baseline.LocalGate != "" {
-		extra["localFindings"] = baseline.LocalGate
+	// 只注入本章的本地硬门结论：整单元的塞进来会被模型当成"这一章的问题"重报。
+	if fb := localGateForChapter(baseline.LocalFindings, ch.Chapter); fb != "" {
+		extra["localFindings"] = fb
 	}
 	user := BuildUserPrompt("review", "", map[string]any{
 		"id": snap.Summary.ID, "unitId": unit.UnitID, "chapter": ch.Chapter,

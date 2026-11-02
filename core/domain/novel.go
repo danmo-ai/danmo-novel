@@ -57,6 +57,9 @@ const (
 	// RunRejected means the run produced a candidate and the author discarded it.
 	// 与 succeeded 区分开：运行记录里"成功"但候选被拒会掩盖一次返工。
 	RunRejected RunStatus = "rejected"
+	// RunExpired 表示候选在生成后失效（书籍被改动），既不是作者拒绝也不是
+	// 调用失败。它必须是终结态：留在 waiting_accept 会永久占住单元。
+	RunExpired RunStatus = "expired"
 )
 
 type CandidateStatus string
@@ -108,6 +111,10 @@ type TaskSpec struct {
 	SplitByChapter  bool           `json:"splitByChapter,omitempty"`
 	PreservePaths   []string       `json:"preservePaths,omitempty"` // reinit 接受时保留的既有设定/人物路径
 	ForceRiskAccept bool           `json:"forceRiskAccept,omitempty"`
+	// SupersedeReview 表示"这是一次重审"：该单元名下尚未处理的旧审校清单会被归档，
+	// 让新审校能启动。重审就是用新结论替换旧结论，不放行就只能靠作者先手动处置，
+	// 而审校清单的"处置"按钮（通过/强制通过）在旧方案里根本不存在——所以会打死结。
+	SupersedeReview bool `json:"supersedeReview,omitempty"`
 }
 
 type TextSelection struct {
@@ -176,17 +183,20 @@ type ScenePlan struct {
 }
 
 type UnitOutlineDraft struct {
-	UnitID       string           `json:"unitId"`
-	Status       UnitStatus       `json:"status"`
-	Title        string           `json:"title"`
-	Function     string           `json:"function"`
-	Desire       string           `json:"desire"`
-	Obstacle     string           `json:"obstacle"`
-	Choice       string           `json:"choice"`
-	Payoff       string           `json:"payoff"`
-	Pleasure     string           `json:"pleasure"`
-	Forbidden    string           `json:"forbidden"`
-	WordTarget   string           `json:"wordTarget"`
+	UnitID     string     `json:"unitId"`
+	Status     UnitStatus `json:"status"`
+	Title      string     `json:"title"`
+	Function   string     `json:"function"`
+	Desire     string     `json:"desire"`
+	Obstacle   string     `json:"obstacle"`
+	Choice     string     `json:"choice"`
+	Payoff     string     `json:"payoff"`
+	Pleasure   string     `json:"pleasure"`
+	Forbidden  string     `json:"forbidden"`
+	WordTarget string     `json:"wordTarget"`
+	// ChapterChars 是单章目标字数（首选写法）；WordTarget 是旧格式的单元总字数，
+	// 仅供兼容读取。两者都由 books.ChapterTarget 归一，硬门只认归一后的值。
+	ChapterChars string           `json:"chapterChars,omitempty"`
 	OnStage      []string         `json:"onStage"`
 	POV          string           `json:"pov"`
 	ChapterFrom  int              `json:"chapterFrom"`
@@ -221,6 +231,52 @@ type ReviewFinding struct {
 	EntityPath string `json:"entityPath,omitempty"`
 	VolumeID   string `json:"volumeId,omitempty"`
 	UnitID     string `json:"unitId,omitempty"`
+}
+
+// 这两条 finding 不是"意见"，是"这一章根本没审完"的标记：输出被预算截断，
+// 或分章审校里该章调用失败。它们必须是 advisory——截断的产物判不出严重度——
+// 但绝不能因此被当成"没有阻断，可以过"。
+const (
+	FindingReviewTruncated  = "review-truncated"
+	FindingReviewIncomplete = "review-incomplete"
+)
+
+// ReviewVerdict 是一份审校清单的结论分类，落盘/通过的唯一判据。
+const (
+	ReviewClean      = "clean"      // 无阻断且每章都审完了
+	ReviewBlocking   = "blocking"   // 有必须修的硬伤
+	ReviewUnfinished = "unfinished" // 有章没审完：沉默不是证据
+)
+
+// ReviewVerdict classifies one review list.
+//
+// blocking 优先于 unfinished：已知的硬伤是可执行的，审校不完整只是一个缺口。
+// 两者都不是 clean，所以"0 条 blocking"不能单独作为放行条件。
+func ReviewVerdict(findings []ReviewFinding) string {
+	unfinished := false
+	for _, f := range findings {
+		switch f.ID {
+		case FindingReviewTruncated, FindingReviewIncomplete:
+			unfinished = true
+			continue
+		}
+		if f.Severity == "blocking" {
+			return ReviewBlocking
+		}
+	}
+	if unfinished {
+		return ReviewUnfinished
+	}
+	return ReviewClean
+}
+
+// CloseReviewResult 是「通过」的响应：通过了几份清单、整体结论、
+// 以及自动起的定稿 run（可能为空——例如已有定稿候选在等接受）。
+type CloseReviewResult struct {
+	Closed  int    `json:"closed"`
+	Verdict string `json:"verdict"`
+	RunID   string `json:"runId,omitempty"`
+	Warning string `json:"warning,omitempty"`
 }
 
 type CanonChange struct {
@@ -266,8 +322,8 @@ type AcceptCommand struct {
 	AcceptFindingIDs []string `json:"acceptFindingIds,omitempty"`
 	ForceRiskAccept  bool     `json:"forceRiskAccept,omitempty"`
 	// FollowUpReview asks the server to archive the handled review findings and
-	// start one automatic re-review of the revised unit. Used by the manual loop;
-	// the chain drives its own re-review and must leave this false.
+	// start one automatic re-review of the revised unit. 默认 false：只有审校页的
+	// 手动「确认落盘」请求它，服务端不会自己再开一轮。
 	FollowUpReview bool `json:"followUpReview,omitempty"`
 }
 
@@ -299,7 +355,6 @@ type Run struct {
 	CallsUsed      int          `json:"callsUsed"`
 	Calls          []CallRecord `json:"calls"`
 	CandidateID    string       `json:"candidateId,omitempty"`
-	ReviewCursor   int          `json:"reviewCursor,omitempty"`
 	ContextSummary []string     `json:"contextSummary,omitempty"`
 	Error          string       `json:"error,omitempty"`
 	CreatedAt      time.Time    `json:"createdAt"`
@@ -347,8 +402,12 @@ type UnitInfo struct {
 	HasProse    bool       `json:"hasProse"`
 	OutlinePath string     `json:"outlinePath"`
 	ProsePath   string     `json:"prosePath"`
-	OutlineRaw  string     `json:"outlineRaw,omitempty"`
-	ProseRaw    string     `json:"proseRaw,omitempty"`
+	// ChapterTarget 是派生出来的单章目标字数（books.ChapterTarget）。
+	// UI 直接用它显示，不再自己解析细纲的 word_target——那个字段是单元总数，
+	// 曾被标成「字/章」，把 30000/6 显示成 30000 字每章。
+	ChapterTarget int    `json:"chapterTarget"`
+	OutlineRaw    string `json:"outlineRaw,omitempty"`
+	ProseRaw      string `json:"proseRaw,omitempty"`
 }
 
 type CastCard struct {

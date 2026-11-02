@@ -162,7 +162,7 @@ user   = {
     "setback": "疑点不足以翻案",
     "cost": "承担复查责任",
     "forbidden": "不提前揭示死档",
-    "wordTarget": "15000",
+    "chapterChars": 2500,
     "onStage": ["wen-nianci", "pei-guo-dong"],
     "pov": "wen-nianci",
     "chapterFrom": 51,
@@ -298,20 +298,7 @@ Accept 写 `units/<unit>.md` 并进入 `drafted`；不更新 continuity。
 - 总纲/卷纲：`plan` 携带父级合同与追加指令，输出结构化 Markdown 候选。
 - 设定/人物/身份：`rewrite_entity` 只重写目标文件，附相关依据与受影响单元；依据只读。
 - 细纲：`outline` 只能细化当前 `UnitSeed`，不能修改父级决定。
-- 正文：按单元重写或按审校问题定向修订，重写覆盖前保留旧稿备份。
-
-### 4.3 连续单元重写（Chain）
-
-Chain 按卷内单元顺序执行：
-
-```text
-细纲 → 正文 → 审校 → 定稿 → 下一单元
-```
-
-- 与手工调用共用 `TaskSpec → Runs → Pipeline → ContextBuilder`，输入语义一致。
-- 自动 Accept 各阶段候选；失败、阻断、身份/时钟冲突或 revision 冲突进入 `waiting_manual`。
-- 重写已有正文先备份；重试修订与复审最多两轮。
-- 恢复时按当前状态决定起点：proposed→细纲、accepted→正文、drafted→审校； reviewed 不重复处理。
+- 正文：按单元重写或按审校问题定向修订。
 
 ## 5. 校验、可见性与文件职责
 
