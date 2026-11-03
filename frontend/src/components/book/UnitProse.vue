@@ -8,6 +8,10 @@ const activeChapter = ref(0)
 const copied = ref<number | null>(null)
 const copiedAll = ref(false)
 
+// 发布端单章超过这个字数通常要拆成上下两章。这里只在**展示层**标出建议切分点，
+// 不写回正文：正文仍是模型的连续输出，切分是作者发布时的人工决定。
+const SPLIT_HINT_CHARS = 5000
+
 type Chapter = { chapter: number; title: string; body: string; words: number }
 const chapters = computed<Chapter[]>(() => {
   const lines = (props.raw || '').replace(/\r\n/g, '\n').split('\n')
@@ -37,6 +41,42 @@ const chapters = computed<Chapter[]>(() => {
 const current = computed(() => chapters.value[activeChapter.value] || chapters.value[0])
 const totalWords = computed(() => chapters.value.reduce((s, c) => s + c.words, 0))
 const paragraphs = computed(() => (current.value?.body || '').split(/\n{2,}/).map((p) => p.trim()).filter(Boolean))
+
+// splitInfo 给出「这一章该在哪一段之后切开」：段落边界中离全章字数一半最近的那个。
+//
+// 只在段落之间切，不切句子——句中断开会把对话或动作截成两半，发布时还得手工缝。
+// 上下两半各自按同一口径（去掉空白）计字，作者能直接判断拆完是否还满足平台下限。
+const splitInfo = computed<{ index: number; above: number; below: number } | null>(() => {
+  const c = current.value
+  const ps = paragraphs.value
+  if (!c || c.words <= SPLIT_HINT_CHARS || ps.length < 2) return null
+  const half = c.words / 2
+  let acc = 0
+  let index = -1
+  let bestDiff = Infinity
+  for (let i = 0; i < ps.length - 1; i++) {
+    acc += ps[i].replace(/\s/g, '').length
+    const diff = Math.abs(acc - half)
+    if (diff < bestDiff) {
+      bestDiff = diff
+      index = i
+    }
+  }
+  if (index < 0) return null
+  let above = 0
+  for (let i = 0; i <= index; i++) above += ps[i].replace(/\s/g, '').length
+  return { index, above, below: Math.max(c.words - above, 0) }
+})
+// 模板里用扁平值，避免在每个属性表达式里重复判空。
+const splitIndex = computed(() => splitInfo.value?.index ?? -1)
+const splitLabel = computed(() => {
+  const s = splitInfo.value
+  return s ? `建议在此切成上下两章 · 上 ${s.above.toLocaleString()} 字 / 下 ${s.below.toLocaleString()} 字` : ''
+})
+const splitAria = computed(() => {
+  const s = splitInfo.value
+  return s ? `建议切分点，上 ${s.above} 字，下 ${s.below} 字` : ''
+})
 
 function copyText(text: string) {
   if (navigator.clipboard?.writeText) return navigator.clipboard.writeText(text)
@@ -99,10 +139,20 @@ async function copyAll() {
         </button>
       </div>
       <div class="chapter-body">
-        <p v-for="(p, i) in paragraphs" :key="i">{{ p }}</p>
+        <template v-for="(p, i) in paragraphs" :key="i">
+          <p>{{ p }}</p>
+          <div v-if="i === splitIndex" class="split-mark" role="separator" :aria-label="splitAria">
+            <span class="split-line" />
+            <small>{{ splitLabel }}</small>
+            <span class="split-line" />
+          </div>
+        </template>
       </div>
       <footer class="chapter-foot">
-        <span>{{ current.words.toLocaleString() }} 字</span>
+        <span>
+          {{ current.words.toLocaleString() }} 字
+          <em v-if="splitInfo" class="split-note">超过 {{ SPLIT_HINT_CHARS.toLocaleString() }} 字 · 正文中已标建议切分点</em>
+        </span>
         <div>
           <button v-if="activeChapter > 0" @click="activeChapter--">← 上一章</button>
           <button v-if="activeChapter < chapters.length - 1" @click="activeChapter++">下一章 →</button>
@@ -135,6 +185,11 @@ async function copyAll() {
 .chapter-body { padding: 28px 34px; max-height: 66vh; overflow-y: auto; }
 .chapter-body p { font-family: var(--font-prose); font-size: 17px; line-height: 2.05; color: var(--ink); margin: 0 0 1.3em; text-indent: 2em; }
 .chapter-body p:last-child { margin-bottom: 0; }
+/* 建议切分点：展示层的辅助线，不是正文的一部分——不参与复制、不写回文件。 */
+.split-mark { display: flex; align-items: center; gap: 12px; margin: 1.9em 0; }
+.split-mark small { color: var(--ink-soft); font-size: 11px; letter-spacing: .02em; text-align: center; }
+.split-line { flex: 1 1 24px; min-width: 16px; height: 0; border-top: 1px dashed var(--line); }
+.split-note { margin-left: 10px; padding: 2px 7px; border-radius: 6px; background: rgba(15,107,92,.08); color: var(--accent); font-size: 10px; font-style: normal; }
 .chapter-foot { display: flex; justify-content: space-between; align-items: center; padding: 14px 28px; border-top: 1px solid var(--line); color: var(--ink-soft); font-size: 12px; }
 .chapter-foot div { display: flex; gap: 8px; }
 .empty { color: var(--ink-soft); padding: 24px; }
@@ -142,6 +197,10 @@ async function copyAll() {
   .prose-view { padding: 16px 14px 20px; gap: 16px; }
   .chapter-body { padding: 20px; }
   .chapter-body p { font-size: 16px; }
+  .split-mark { gap: 8px; }
+  .split-mark small { font-size: 10px; line-height: 1.7; }
+  .split-line { flex: 1 1 8px; min-width: 8px; }
+  .chapter-foot { flex-wrap: wrap; gap: 8px; }
   .chapter-title-row { padding: 16px 18px; }
   .prose-head { flex-direction: column; align-items: flex-start; }
 }
