@@ -79,6 +79,11 @@ Signing flow on macOS (`scripts/pack_desktop_macos.sh`):
 - Our custom DMG (with the Chinese install notes) is built after Tauri's own, so it is
   notarized and stapled separately.
 
+Tauri notarizes the `.app` inside `tauri build`. Apple's notary queue is the slow part:
+the build itself takes ~4 minutes, while app notarization has been observed taking 33
+minutes. The macOS job is capped at 90 minutes for that reason — do not read a long
+"Build macOS desktop" step as a hang until it passes that.
+
 Updater endpoint (clients poll this):
 
 `https://github.com/danmo-ai/danmo-novel/releases/latest/download/latest.json`

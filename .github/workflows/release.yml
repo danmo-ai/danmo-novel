@@ -24,6 +24,9 @@ jobs:
   macos-desktop:
     name: macOS desktop
     runs-on: macos-latest
+    # 正常 10 分钟；Apple 公证队列偶尔要 30 分钟以上（实测一次 33 分钟），
+    # 给足余量但别用默认的 6 小时——真卡住时占着 runner 白烧配额。
+    timeout-minutes: 90
     steps:
       - name: Checkout
         uses: actions/checkout@v4
