@@ -51,13 +51,19 @@ Required repo secrets (all optional except the updater key if you want auto-upda
 | `APPLE_PASSWORD` | App-specific password (`abcd-efgh-ijkl-mnop`) |
 | `APPLE_TEAM_ID` | 10-character Team ID |
 
-Set them all interactively (p12 path as the only argument):
+Set them all interactively — no p12 file needed, the certificate is exported straight from
+your login keychain:
 
 ```bash
-make set-release-secrets P12=~/certs/developer-id.p12
+make set-release-secrets
 # or
-scripts/gh_set_release_secrets.sh ~/certs/developer-id.p12
+scripts/gh_set_release_secrets.sh
 ```
+
+The script reads `CN` from the keychain identity for `APPLE_SIGNING_IDENTITY`, `OU` (or the
+trailing `(TEAMID)` in the CN) for `APPLE_TEAM_ID`, and exports the identity as a p12 with a
+random password for `APPLE_CERTIFICATE` — so you only type your Apple ID and app-specific
+password. If the identity is not in the keychain, pass `--p12 <path>` instead.
 
 Without the `APPLE_*` secrets the macOS job still builds — the bundle is ad-hoc signed, so
 the DMG ships with right-click-to-open instructions and the app is not distributable.

@@ -21,7 +21,7 @@ help:
 	@echo "  make test             go test ./..."
 	@echo "  make build            frontend + server"
 	@echo "  make pack-macos-desktop | pack-linux-desktop | pack-windows-desktop"
-	@echo "  make set-release-secrets P12=~/certs/x.p12   写入发布用 GitHub secrets"
+	@echo "  make set-release-secrets                    写入发布 secrets（证书从钥匙串导出）"
 
 dev start:
 	@chmod +x scripts/*.sh
@@ -76,10 +76,10 @@ pack-windows-desktop: pack-prereqs frontend-build
 	@chmod +x scripts/*.sh
 	@RELEASE_VERSION=$(RELEASE_VERSION) ./scripts/pack_desktop_windows.sh
 
-# 写入发布 secrets：make set-release-secrets P12=~/certs/developer-id.p12
+# 写入发布 secrets（证书从钥匙串导出，无需 p12）：make set-release-secrets
 set-release-secrets:
 	@chmod +x scripts/*.sh
-	@./scripts/gh_set_release_secrets.sh "$(P12)"
+	@./scripts/gh_set_release_secrets.sh $(if $(P12),--p12 "$(P12)")
 
 clean:
 	rm -rf $(OUT_DIR)
