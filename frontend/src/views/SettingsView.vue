@@ -10,6 +10,7 @@ const {
   appVersion,
   status: updaterStatus,
   availableVersion,
+  updateNotes,
   errorMessage: updaterError,
   downloadPercent,
   isBusy: updaterBusy,
@@ -345,6 +346,13 @@ async function saveReviewSettings() {
           <span class="version-value">{{ versionLabel }}</span>
           <span class="muted">{{ updaterStatusText }}</span>
         </div>
+        <!-- 更新内容是决定「现在升还是等写完这章再升」的唯一依据，不放出来等于让作者盲选。 -->
+        <p v-if="updateNotes && (updaterStatus === 'available' || updaterBusy)" class="update-notes">{{ updateNotes }}</p>
+        <div v-if="updaterStatus === 'downloading'" class="update-progress" role="progressbar"
+          :aria-valuenow="downloadPercent ?? undefined" aria-valuemin="0" aria-valuemax="100">
+          <span :style="{ width: `${downloadPercent ?? 30}%` }" />
+        </div>
+        <p v-if="updaterStatus === 'error' && updaterError" class="update-error">{{ updaterError }}</p>
         <div class="row-actions" style="margin-top:14px">
           <button :disabled="!isDesktop() || updaterBusy" @click="onCheckUpdate">
             {{ updaterStatus === 'checking' ? '检查中…' : '检查更新' }}
@@ -357,7 +365,15 @@ async function saveReviewSettings() {
           >
             安装并重启
           </button>
+          <button v-else-if="updaterBusy" class="primary" disabled>
+            {{ updaterStatus === 'downloading'
+              ? `下载中${downloadPercent != null ? ` ${downloadPercent}%` : '…'}`
+              : '安装中…' }}
+          </button>
         </div>
+        <p v-if="!isDesktop()" class="muted" style="margin-top:10px">
+          网页版没有自升级；桌面版会在启动时静默检查，点标题栏的版本号即可升级。
+        </p>
       </section>
     </div>
 
@@ -615,6 +631,21 @@ async function saveReviewSettings() {
   font-size: 12px; font-weight: 700; color: var(--accent);
   border: 1px solid var(--accent); border-radius: 999px; padding: 2px 10px;
 }
+/* 更新说明可能是多段 Markdown 文本，保留换行即可；不渲染 HTML。 */
+.update-notes {
+  margin: 10px 0 0; padding: 10px 12px; border-radius: 10px;
+  background: var(--surface-soft, rgba(0,0,0,.03));
+  font-size: 12px; color: var(--ink-soft); white-space: pre-wrap;
+  max-height: 180px; overflow: auto;
+}
+.update-progress {
+  margin-top: 10px; height: 6px; border-radius: 999px; overflow: hidden;
+  background: var(--line, #e6e9e7);
+}
+.update-progress > span {
+  display: block; height: 100%; background: var(--accent); transition: width .2s ease;
+}
+.update-error { margin: 10px 0 0; font-size: 12px; color: var(--bad); word-break: break-word; }
 .preset-row { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 16px; }
 .preset-chip { font-size: 12px; padding: 6px 12px; }
 .provider-row { display: flex; justify-content: space-between; gap: 10px; padding: 12px 0; border-top: 1px solid var(--line); }

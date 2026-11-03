@@ -88,6 +88,27 @@ Updater endpoint (clients poll this):
 
 `https://github.com/danmo-ai/danmo-novel/releases/latest/download/latest.json`
 
+## Self-upgrade (in-app)
+
+The desktop app upgrades itself through `tauri-plugin-updater`; nothing extra to install.
+
+| Entry point | Behaviour |
+|---|---|
+| Version badge in the top bar | Click = check. When an update exists the badge turns accent-coloured with a dot and the tooltip names the new version; click again to confirm, download, install and relaunch. |
+| Settings → 版本 | Same check/install buttons, plus update notes, a download progress bar and the error message. |
+| App start | One silent check ~2.5 s after launch. A failure stays quiet (offline / GitHub unreachable) so it never blocks the bookshelf. |
+
+Flow details:
+
+- Nothing installs without an explicit click, and the confirm dialog lists the release notes — installing restarts the app, which must not happen mid-chapter.
+- Browser builds have no updater; `isTauriRuntime()` short-circuits and the version badge stays a label.
+- `latest.json` urls must equal the uploaded asset names. GitHub rewrites spaces to dots, which is why the publish job renames space-containing artifacts before generating the manifest (`Normalize artifact names`).
+- Payloads are verified with minisign against `plugins.updater.pubkey`. If the release was signed with a different key than the app trusts, every client silently rejects the update — check that `updater.key.pub` equals the `pubkey` in `tauri.conf.json` (the secrets script warns about this).
+
+To verify a published payload yourself, decompress the `.sig` and check the ED25519 signature over `BLAKE2b-512(file)` using the `pubkey` from `tauri.conf.json`.
+
+Multiple endpoints are supported — Tauri tries them in order, so a mirror can be prepended for networks where GitHub is slow. Only `https` endpoints are allowed by default.
+
 ## Dev desktop
 
 ```bash
