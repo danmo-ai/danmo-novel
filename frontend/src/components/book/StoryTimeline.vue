@@ -21,7 +21,8 @@ const events = computed(() => units.value.map((u) => {
   return {
     unit,
     day: scalar(raw, 'story_day'),
-    gap: scalar(raw, 'gap_from_prev'),
+    // gap_days 才是天数；gap_from_prev 是承接说明长文本，纯数字是历史字段写错的数据。
+    gap: gapLabel(scalar(raw, 'gap_days'), scalar(raw, 'gap_from_prev')),
     label: scalar(raw, 'time_label'),
     flashback: scalar(raw, 'flashback') === 'true',
     title: u.title || scalar(raw, 'title_working') || '未完成单元',
@@ -29,6 +30,16 @@ const events = computed(() => units.value.map((u) => {
     missing: !scalar(raw, 'story_day') && !scalar(raw, 'time_label'),
   }
 }))
+/**
+ * 卡片页脚的间隔标记。只显示能读懂的东西：结构化 gap_days 优先；没有时只在
+ * gap_from_prev 是纯数字（历史数据把天数写进了这个字段）时当作间隔，其余情况
+ * 一律不显示——把「衔接说明 1」这种半截话铺在时间轴上只会误导。
+ */
+function gapLabel(gapDays: string, gapFromPrev: string) {
+  const days = gapDays || (/^\d+$/.test(gapFromPrev.trim()) ? gapFromPrev : '')
+  if (!days) return ''
+  return Number(days) === 0 ? '紧接上一单元' : `间隔 ${days} 天`
+}
 function dayLabel(e: any) {
   // 优先 story_day（短、机读）；time_label 仅作短标签补充，长说明不进 marker。
   if (e.day && e.day !== 'null') return `故事第 ${e.day} 天`

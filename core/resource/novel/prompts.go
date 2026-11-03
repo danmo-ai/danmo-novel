@@ -43,6 +43,7 @@ chapters 是逐章轻量合同，每章必须有 {chapter,goal,change,cutHook,da
 scenes 仅复杂章的可选子项，不要求每章都有；一旦写了 scenes，就必须覆盖每一章（每章 1–3 个场面即可，不要为凑数给简单章硬拆）。每个 scene 仅含 {chapter,goal,conflict,turn,outcome}，可选 id/mustLand/evidenceIn/evidenceOut/dayOffset。禁止预写台词、动作清单和情绪曲线；mustLand 最多 2 个可见事实。
 存在「不可改写的单元种子」时：sourceSeedId 必须等于单元 ID；chapterFrom/chapterTo、desire/obstacle/choice/payoff 必须逐字继承种子 chapter_range/objective/obstacle/choice/outcome，不得改故事；attempt/setback/cost 也继承种子；storyDay/endDay/gapDays 必须继承 clock_start_day/clock_end_day/clock_gap_days。
 storyDay / gapFromPrev / infoControl / forbidden / desire 等叙述字段必须是字符串标量（如 "3" 或 "入职第三天"），不要用对象；chapterFrom/chapterTo 为数字；onStage 为字符串数组。
+gapDays 是整数（距上一单元的最少天数）；gapFromPrev 是给写作者看的上一单元承接说明，必须是可读的短句（如 "上一案卷宗已归档，隔天清晨她回到派出所"），禁止只写一个数字——天数属于 gapDays，写进 gapFromPrev 会让界面显示「衔接上一单元 1」。
 stateDeltas 必须是结构化数组 [{"stem":"人物或实体 ID","field":"role_title|location|injury|resources|goal|knowledge","from":"单元前状态","to":"单元后状态"}]；至少一条，不得用自由文本代替。
 nextHook 必须是对象：{"type":"钩子类型","out":"具体事件"}（对应落盘 next_hook.type / next_hook.out），type 沿用卷纲索引已定类型；禁止写成一整句字符串。
 onStage ⊆ 本卷人物；pov ∈ onStage。不要改卷纲已定 function。

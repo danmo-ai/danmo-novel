@@ -13,7 +13,7 @@ output_protocol: volume-outline/v1
 - 单元标题只写核心动作或意象，不罗列本单元全部事件。
 
 允许自由度：在父级合同内分配卷级节拍与单元种子；单元之间必须有可追溯的因果、选择、代价和实际状态变化。
-每个单元同时携带 clock：start_day/end_day 为相对故事日整数，gap_from_prev 为与上一单元的最小天数间隔；可选 deadline 为“事件ID@故事日”。卷纲只约束跨单元时间边界与关键死线，不另写逐场日历；细纲再分配章/场面时间。
+每个单元同时携带 clock：start_day/end_day 为相对故事日整数，gap_days 为与上一单元的最小天数间隔；可选 deadline 为“事件ID@故事日”。卷纲只约束跨单元时间边界与关键死线，不另写逐场日历；细纲再分配章/场面时间。
 职务/机构变化必须在所属单元之后添加「### 身份变更 · 单元ID-人物stem」，字段 stem/role_title/org/from_unit/reason；from_unit 等于所属单元 ID。普通地点、伤势、目标变化使用 state_changes，不要写成身份变更。
 修复要求：保留合规内容，只修复反馈指出的事项，返回完整文档。
 {{OUTPUT_PROTOCOL}}

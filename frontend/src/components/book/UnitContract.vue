@@ -44,13 +44,39 @@ const meta = computed(() => {
     items.push(`每章 ${target} 字 · 共约 ${(target * chapters).toLocaleString()} 字`)
   }
   const day = scalar(r, 'story_day'); if (day && day !== 'null') items.push(`故事第 ${day} 天`)
+  // 间隔天数只有 gap_days 是权威字段；gap_from_prev 是承接说明（长文本）。
+  // 早期生成把天数写进了承接说明（"1"），别让它在元数据里变成一句没头没尾的话。
+  const gapDays = gapIntervalDays.value
+  if (gapDays !== null) items.push(gapDays === 0 ? '紧接上一单元' : `距上一单元 ${gapDays} 天`)
   if (scalar(r, 'flashback') === 'true') items.push('闪回')
   const hook = section(r, 'next_hook').match(/type:\s*(.*)/)?.[1]?.trim().replace(/^['"]|['"]$/g, '')
   if (hook) items.push(`下一钩：${hook}`)
   return items
 })
+/**
+ * 与上一单元的间隔天数。gap_days 是结构化字段（整数），优先使用；没有时退回到
+ * gap_from_prev——但只在它确实是个纯数字时才算数（那种数据是生成时把天数写错
+ * 了字段）。两者都没有就返回 null，不显示任何间隔信息。
+ */
+const gapIntervalDays = computed<number | null>(() => {
+  const structured = scalar(raw.value, 'gap_days')
+  const bare = isBareNumber(raw.value) ? scalar(raw.value, 'gap_from_prev') : ''
+  const picked = structured || bare
+  if (!picked) return null
+  const n = Number(picked)
+  return Number.isFinite(n) && n >= 0 ? n : null
+})
+/** 纯数字 = 天数，不是承接说明；这类值不能当长文本段落渲染。 */
+function isBareNumber(value: string) {
+  return /^\d+(?:\.\d+)?$/.test(value.trim())
+}
 // 衔接说明是长文本，独立成段，不塞进元数据 chip。
-const gapFromPrev = computed(() => scalar(raw.value, 'gap_from_prev'))
+// 只在它真的是说明文字时才渲染：纯数字是字段写错（天数进了承接说明），
+// 上面已按间隔天数显示，这里渲染成「衔接上一单元 1」只会是噪音。
+const gapFromPrev = computed(() => {
+  const v = scalar(raw.value, 'gap_from_prev')
+  return isBareNumber(v) ? '' : v
+})
 const onStage = computed(() => list(raw.value, 'on_stage').split(',').map((s) => s.trim()).filter(Boolean))
 const infoControl = computed(() => scalar(raw.value, 'info_control'))
 
@@ -239,8 +265,6 @@ const hasContent = computed(() => fields.value.length > 0 || chapterPlans.value.
 .contract-meta { display: flex; flex-wrap: wrap; gap: 6px; }
 .meta-chip { font-size: 11px; padding: 4px 10px; border-radius: 8px; background: rgba(20,35,31,.05); color: var(--ink-soft); }
 .stage-chip { background: rgba(15,107,92,.08); color: var(--accent); }
-.gap-note { margin: 0; padding: 10px 14px; background: rgba(15,107,92,.04); border-radius: 10px; font-size: 12px; line-height: 1.75; color: var(--ink-soft); }
-.gap-note small { display: block; color: var(--accent); font-size: 10px; font-weight: 700; margin-bottom: 4px; }
 .gap-note { margin: 0; padding: 10px 14px; background: rgba(15,107,92,.04); border-radius: 10px; font-size: 12px; line-height: 1.75; color: var(--ink-soft); }
 .gap-note small { display: block; color: var(--accent); font-size: 10px; font-weight: 700; margin-bottom: 4px; }
 .contract-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
