@@ -195,11 +195,29 @@ put APPLE_TEAM_ID "$TMP/team"
 
 echo
 echo "[附加] Tauri 更新包签名"
+DEFAULT_KEY="$ROOT/desktop/src-tauri/keys/updater.key"
 if [[ -z "$KEY_PATH" ]]; then
-  KEY_PATH="$(ask "updater.key 路径（回车跳过）" "")"
+  # 私钥就在仓库里的固定位置（已 gitignore），给成默认值，回车即可。
+  # 目录里没有就给空默认——回车等于跳过这项。
+  def_key=""
+  [[ -f "$DEFAULT_KEY" ]] && def_key="desktop/src-tauri/keys/updater.key"
+  KEY_PATH="$(ask "updater.key 路径（回车跳过）" "$def_key")"
+  # 先展开 ~，再按仓库根解析相对路径：顺序反了会把 ~/x 拼成 <repo>/~/x。
+  KEY_PATH="${KEY_PATH/#\~/$HOME}"
+  [[ -z "$KEY_PATH" || "$KEY_PATH" == /* ]] || KEY_PATH="$ROOT/$KEY_PATH"
 fi
 KEY_PATH="${KEY_PATH/#\~/$HOME}"
 if [[ -f "$KEY_PATH" ]]; then
+  # 私钥必须和 tauri.conf.json 里的 updater.pubkey 配对，否则客户端收到的更新包
+  # 验签必然失败——而这要等用户端点「更新」时才发现。生成的 .pub 就在私钥旁边。
+  pub_file="$KEY_PATH.pub"
+  conf_pub="$(sed -n 's/.*"pubkey":[[:space:]]*"\([^"]*\)".*/\1/p' "$ROOT/desktop/src-tauri/tauri.conf.json" 2>/dev/null | head -1)"
+  if [[ -f "$pub_file" && -n "$conf_pub" ]]; then
+    if [[ "$(tr -d '\r\n' < "$pub_file")" != "$conf_pub" ]]; then
+      echo "  ! 这把私钥的公钥与 tauri.conf.json 的 updater.pubkey 不一致" >&2
+      echo "  ! 用它签出的更新包，客户端会验签失败。确认没拿错 key 再继续。" >&2
+    fi
+  fi
   tr -d '\r' < "$KEY_PATH" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' -e 's/^"//' -e 's/"$//' > "$TMP/key"
   put TAURI_SIGNING_PRIVATE_KEY "$TMP/key"
   pw="$(ask_secret "密钥密码（没设就直接回车）：")"
