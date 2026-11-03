@@ -278,7 +278,7 @@ func dropTopLevelKeys(raw string, keys []string) string {
 	return strings.TrimSpace(strings.Join(out, "\n"))
 }
 
-func BuildOutlinePacket(snap domain.BookSnapshot, volume int, unitIDs []string, instruction string, modelMaxOut int) domain.ContextPacket {
+func BuildOutlinePacket(snap domain.BookSnapshot, volume int, unitIDs []string, instruction string) domain.ContextPacket {
 	policy := DefaultPolicy(domain.TaskOutline, 0)
 	volTag := fmt.Sprintf("v%02d", volume)
 	var volRaw string
@@ -344,13 +344,48 @@ func BuildOutlinePacket(snap domain.BookSnapshot, volume int, unitIDs []string, 
 	return packet
 }
 
-func BuildPlanPacket(snap domain.BookSnapshot, volume int) domain.ContextPacket {
-	return BuildPlanPacketWithMode(snap, volume, domain.PlanModeVolume, "", 0)
+// BuildIdeaPacket builds the context for 创意扩写（立项之前）。
+//
+// 只读作者意图：立项输入、bible、平台定位、风格指纹。不读已接受的总纲/人物，
+// 因为在首次立项时它们还不存在；重新扩写时也不该让旧总纲把方向锁死——
+// 换方向正是这一步存在的理由。
+func BuildIdeaPacket(snap domain.BookSnapshot, instruction string) domain.ContextPacket {
+	policy := DefaultPolicy(domain.TaskIdea, 0)
+	blocks := []domain.ContextBlock{}
+	hashes := map[string]string{}
+	add := func(id, label, source string) {
+		content := strings.TrimSpace(snap.Files[source])
+		if content == "" {
+			return
+		}
+		blocks = append(blocks, domain.ContextBlock{ID: id, Label: label, Source: source, Content: content, Bytes: len(content)})
+		hashes[source] = shortHash(content)
+	}
+	add("idea", "立项输入与现有创意提案", domain.IdeaPath)
+	add("bible", "作者意图 bible", "book-bible.md")
+	add("platform", "平台定位", "canon/platform-positioning.md")
+	add("style", "风格指纹", "canon/style-fingerprint.md")
+
+	bookMeta := map[string]any{
+		"id": snap.Summary.ID, "title": snap.Summary.Title,
+		"genre": snap.Summary.Genre, "subgenre": snap.Summary.Subgenre,
+	}
+	inst := strings.TrimSpace(instruction)
+	if inst == "" {
+		inst = "把立项输入扩成一份可立项的创意提案：明确推荐主线，并覆盖一句话故事、读者承诺、主角、对抗力量、世界规则、开篇钩子、转折与结局方向。"
+	}
+	system := novel.IdeaExpandSystemPrompt()
+	user := BuildUserPrompt("idea", "", bookMeta, inst, blocks, nil)
+	return domain.ContextPacket{
+		ContractVersion: ContractVersion, TaskKind: domain.TaskIdea, BookID: snap.Summary.ID,
+		InputHashes: hashes, Blocks: blocks, KnowledgeVersion: novel.KnowledgeVersion,
+		EstPromptTokens: (len([]rune(system)) + len([]rune(user))) / 2, Policy: policy,
+		SystemPrompt: system, UserPrompt: user,
+	}
 }
 
 // BuildPlanPacketWithMode builds the context for 立项 / 重新立项 / 重写卷纲.
-// modelMaxOut is the assigned model's catalog max_output (0 = unknown).
-func BuildPlanPacketWithMode(snap domain.BookSnapshot, volume int, mode, instruction string, modelMaxOut int) domain.ContextPacket {
+func BuildPlanPacketWithMode(snap domain.BookSnapshot, volume int, mode, instruction string) domain.ContextPacket {
 	if mode == "" {
 		if strings.TrimSpace(snap.Files["outline/book_outline.md"]) == "" {
 			mode = domain.PlanModeInit
@@ -360,9 +395,6 @@ func BuildPlanPacketWithMode(snap domain.BookSnapshot, volume int, mode, instruc
 	}
 	policy := DefaultPolicy(domain.TaskPlan, 0)
 	full := mode == domain.PlanModeInit || mode == domain.PlanModeReinit
-	if full {
-	} else {
-	}
 
 	blocks := []domain.ContextBlock{}
 	hashes := map[string]string{}
@@ -374,25 +406,37 @@ func BuildPlanPacketWithMode(snap domain.BookSnapshot, volume int, mode, instruc
 		blocks = append(blocks, domain.ContextBlock{ID: id, Label: label, Source: source, Content: content, Bytes: len(content)})
 		hashes[source] = shortHash(content)
 	}
+	addFile("idea", "作者已确认的创意提案（第一依据）", domain.IdeaPath)
 	addFile("bible", "作者意图 bible", "book-bible.md")
 	if full {
-		addFile("world", "世界观", "canon/world.md")
-		addFile("goldfinger", "金手指", "canon/goldfinger.md")
-		addFile("platform", "平台定位", "canon/platform-positioning.md")
-		addFile("rules", "写作规则", "canon/writing-rules.md")
-		addFile("style", "风格指纹", "canon/style-fingerprint.md")
-		addFile("reveal", "揭示计划", "canon/reveal-schedule.md")
-		addFile("author-lore", "作者底牌", "canon/author-lore.md")
-		addFile("locked", "锁词", "canon/locked-terms.yaml")
-		addFile("book-outline", "全书总纲", "outline/book_outline.md")
-		for _, c := range snap.Cast {
-			src := "canon/cast/" + c.Stem + ".md"
-			blocks = append(blocks, domain.ContextBlock{ID: "cast-" + c.Stem, Label: "人物·" + CleanName(c.Name), Source: src, Content: clip(c.Raw, 1800), Bytes: len(clip(c.Raw, 1800))})
-			hashes[src] = shortHash(c.Raw)
+		if mode == domain.PlanModeReinit {
+			// 重新立项要把已接受的总纲派生层作为「现状」交给模型，它才知道
+			// 哪些事实已经被作者确认、不能凭空改写。
+			addFile("world", "世界观", "canon/world.md")
+			addFile("goldfinger", "金手指", "canon/goldfinger.md")
+			addFile("platform", "平台定位", "canon/platform-positioning.md")
+			addFile("rules", "写作规则", "canon/writing-rules.md")
+			addFile("style", "风格指纹", "canon/style-fingerprint.md")
+			addFile("reveal", "揭示计划", "canon/reveal-schedule.md")
+			addFile("author-lore", "作者底牌", "canon/author-lore.md")
+			addFile("locked", "锁词", "canon/locked-terms.yaml")
+			addFile("book-outline", "全书总纲", "outline/book_outline.md")
+			for _, c := range snap.Cast {
+				src := "canon/cast/" + c.Stem + ".md"
+				blocks = append(blocks, domain.ContextBlock{ID: "cast-" + c.Stem, Label: "人物·" + CleanName(c.Name), Source: src, Content: clip(c.Raw, 1800), Bytes: len(clip(c.Raw, 1800))})
+				hashes[src] = shortHash(c.Raw)
+			}
+		} else {
+			// 首次立项只给作者意图层（idea / bible / 平台 / 风格）。
+			// 世界、金手指、揭示计划、底牌这些文件此刻要么不存在，要么是
+			// 脚手架占位符——把它们当既有 canon 注入，模型会把「- 谁能做什么：」
+			// 这种空模板当成需要保留的设定，反而写不出真正的故事。
+			addFile("platform", "平台定位", "canon/platform-positioning.md")
+			addFile("style", "风格指纹", "canon/style-fingerprint.md")
 		}
 	}
 	volID := ""
-	bookMeta := map[string]any{"id": snap.Summary.ID, "genre": snap.Summary.Genre}
+	bookMeta := map[string]any{"id": snap.Summary.ID, "title": snap.Summary.Title, "genre": snap.Summary.Genre, "subgenre": snap.Summary.Subgenre}
 	if !full {
 		if volume < 1 {
 			volume = 1
@@ -473,9 +517,9 @@ func BuildPlanPacketWithMode(snap domain.BookSnapshot, volume int, mode, instruc
 	if inst == "" {
 		switch mode {
 		case domain.PlanModeInit:
-			inst = "首次立项：生成全书总纲、全部设定与人物。不要写卷纲。"
+			inst = "首次立项：以「创意提案」为第一依据，生成全书总纲、全部设定与人物。不要写卷纲。提案给了多个方向时采用推荐主线；作者追加指令指定的方向优先。"
 		case domain.PlanModeReinit:
-			inst = "重新立项：在保留故事骨架前提下，重写总纲、全部设定与人物。不要写卷纲，不触碰已有单元/正文。"
+			inst = "重新立项：以「创意提案」为第一依据，在保留故事骨架前提下，重写总纲、全部设定与人物。不要写卷纲，不触碰已有单元/正文。"
 		default:
 			if volume >= 2 {
 				inst = fmt.Sprintf("生成/重写第 %d 卷卷纲：承接上一卷终局与公开账本截取，延续未回收伏笔；不要复述正文，不要改总纲/设定/人物卡。", volume)
@@ -525,7 +569,7 @@ func BuildFinalizePacket(snap domain.BookSnapshot, unit domain.UnitInfo) domain.
 // 模型看到什么。以前这里手搓 blocks，结果少了在场关系/风格/锁词/题材约束，
 // 又把未裁剪的单元合同整份塞进去——切到整单元审校后，POV、锁词、AI 味这几类
 // 意见会莫名消失，同时作者台账（continuity_risks / observations）漏进提示词。
-func BuildReviewPacket(snap domain.BookSnapshot, unit domain.UnitInfo, localFindings []domain.ReviewFinding, modelMaxOut int, libraryRules string) domain.ContextPacket {
+func BuildReviewPacket(snap domain.BookSnapshot, unit domain.UnitInfo, localFindings []domain.ReviewFinding, libraryRules string) domain.ContextPacket {
 	policy := DefaultPolicy(domain.TaskReview, 0)
 
 	baseline := BuildReviewBaseline(snap, unit, localFindings, libraryRules)
@@ -596,7 +640,7 @@ func BuildReviewPacket(snap domain.BookSnapshot, unit domain.UnitInfo, localFind
 // BuildRewriteEntityPacket builds a single-entity rewrite packet.
 // 总纲派生设定（人物/揭示/世界/底牌等）必须携带总纲与相关结构作依据；
 // 工艺类只带规则与风格。Accept 只写目标文件，依据只读。
-func BuildRewriteEntityPacket(snap domain.BookSnapshot, spec domain.TaskSpec, modelMaxOut int) domain.ContextPacket {
+func BuildRewriteEntityPacket(snap domain.BookSnapshot, spec domain.TaskSpec) domain.ContextPacket {
 	policy := DefaultPolicy(domain.TaskRevise, 0)
 	policy.MaxCalls = 2
 	policy.AllowOneRepair = true

@@ -120,6 +120,8 @@ export interface Candidate {
   baseChapters?: ChapterDraft[]
   unitOutlines?: UnitOutline[]
   mode?: string
+  /** reinit 接受时保留的既有路径（不覆盖）。 */
+  preservePaths?: string[]
   planMarkdown?: Record<string, string>
   planSettings?: Record<string, string>
   replacement?: string

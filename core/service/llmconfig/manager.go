@@ -33,12 +33,6 @@ func NewManager(store Store, modelCfg *ModelRegistry) *Manager {
 	return &Manager{store: store, modelCfg: modelCfg, presets: DefaultPresets()}
 }
 
-func (m *Manager) SetPresets(presets []domain.LLMProviderPreset) {
-	if len(presets) > 0 {
-		m.presets = presets
-	}
-}
-
 func (m *Manager) Presets() []domain.LLMProviderPreset {
 	out := make([]domain.LLMProviderPreset, len(m.presets))
 	copy(out, m.presets)

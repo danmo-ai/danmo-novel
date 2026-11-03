@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAppStore } from '@/stores/app'
 import { api } from '@/api/client'
@@ -8,25 +8,77 @@ const store = useAppStore()
 const router = useRouter()
 const importPath = ref('')
 const showCreate = ref(false)
-const form = ref({ bookId: '', title: '', genre: '玄幻' })
 const importReadOnly = ref(true)
 const createTab = ref<'new' | 'import'>('new')
+
+/**
+ * 立项表单：基本信息 + 创意种子。
+ *
+ * 这两组字段都会写进 outline/idea.md 的「立项输入」，扩写与结构化立项都读它。
+ * 空白项保持空白——模板不会替作者编造「平台」「读者」这类决定生产的事实。
+ */
+const form = ref({
+  bookId: '',
+  title: '',
+  genre: '玄幻',
+  subgenre: '',
+  platform: '',
+  audience: '',
+  length: '',
+  chapterChars: '',
+  idea: '',
+  tone: '',
+  pleasure: '',
+  protagonist: '',
+  conflict: '',
+  ending: '',
+  taboos: '',
+  references: '',
+  pov: '',
+})
+const bookIdTouched = ref(false)
+const GENRES = ['玄幻', '仙侠', '都市', '悬疑', '言情']
 
 onMounted(async () => {
   await store.loadBooks()
   await store.loadLLM().catch(() => {})
 })
 
+function slugify(s: string) {
+  return s
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+}
+// 书名变化时同步一个可用的 book id；中文书名 slug 为空就退回时间戳，
+// 作者仍可手改。手动改过之后就不再覆盖。
+watch(() => form.value.title, (title) => {
+  if (bookIdTouched.value) return
+  const slug = slugify(title)
+  form.value.bookId = slug || (title.trim() ? `book-${Date.now().toString(36).slice(-6)}` : '')
+})
+
 function openCreate() {
   showCreate.value = true
+}
+
+function resetForm() {
+  form.value = {
+    bookId: '', title: '', genre: '玄幻', subgenre: '', platform: '', audience: '',
+    length: '', chapterChars: '', idea: '', tone: '', pleasure: '', protagonist: '',
+    conflict: '', ending: '', taboos: '', references: '', pov: '',
+  }
+  bookIdTouched.value = false
 }
 
 async function createBook() {
   try {
     const res = await api.post<any>('/api/books', form.value)
     showCreate.value = false
-    form.value = { bookId: '', title: '', genre: '玄幻' }
+    resetForm()
     await store.loadBooks()
+    // 新书没有总纲，BookView 会落在「立项」工作台：先扩写创意再生成结构化立项。
     router.push(`/books/${res.summary.id}`)
   } catch (e) { store.fail(e) }
 }
@@ -87,16 +139,40 @@ function primaryLabel(b: any) {
       </div>
       <template v-if="createTab === 'new'">
         <h2>立项</h2>
-        <label>书 ID（英文/数字/连字符）<input v-model="form.bookId" placeholder="my-novel" /></label>
-        <label>书名<input v-model="form.title" placeholder="书名" /></label>
-        <label>题材
-          <select v-model="form.genre">
-            <option>玄幻</option><option>都市</option><option>悬疑</option><option>言情</option>
-          </select>
-        </label>
+        <p class="form-note">先填基础信息与创意种子。创建后进入立项工作台：先扩写创意提案，确认后再生成总纲与设定。</p>
+
+        <h3 class="group-head">基本信息</h3>
+        <div class="form-grid">
+          <label class="span2">书名<input v-model="form.title" placeholder="书名" /></label>
+          <label>书 ID（英文/数字/连字符）<input v-model="form.bookId" placeholder="my-novel" @input="bookIdTouched = true" /></label>
+          <label>题材
+            <select v-model="form.genre">
+              <option v-for="g in GENRES" :key="g">{{ g }}</option>
+            </select>
+          </label>
+          <label>子题材<input v-model="form.subgenre" placeholder="如：刑侦探案 / 年代刑侦" /></label>
+          <label>平台 / 频道<input v-model="form.platform" placeholder="如：番茄 · 男频" /></label>
+          <label>目标读者<input v-model="form.audience" placeholder="如：18–30 男性读者" /></label>
+          <label>预计篇幅<input v-model="form.length" placeholder="如：80 万字 / 3 卷" /></label>
+          <label>单章目标字数<input v-model="form.chapterChars" placeholder="如：3000" /></label>
+        </div>
+
+        <h3 class="group-head">创意种子</h3>
+        <div class="form-grid">
+          <label class="span2">一句话 idea<textarea v-model="form.idea" rows="2" placeholder="主角＋困境＋目标＋核心冲突" /></label>
+          <label>基调<input v-model="form.tone" placeholder="如：冷硬、克制、黑色幽默" /></label>
+          <label>核心爽点 / 读者承诺<input v-model="form.pleasure" placeholder="读者每次翻页得到什么" /></label>
+          <label class="span2">主角种子<input v-model="form.protagonist" placeholder="身份、欲望、伤口、不会越过的底线" /></label>
+          <label class="span2">主要对抗<input v-model="form.conflict" placeholder="持续制造压力的力量" /></label>
+          <label>结局倾向<input v-model="form.ending" placeholder="方向与代价，不写真相" /></label>
+          <label>POV<input v-model="form.pov" placeholder="如：第三人称限知" /></label>
+          <label class="span2">禁忌 / 红线<input v-model="form.taboos" placeholder="内容、时代、平台边界" /></label>
+          <label class="span2">参考作品<input v-model="form.references" placeholder="只作风格与结构参考" /></label>
+        </div>
+
         <div class="modal-actions">
           <button @click="showCreate = false">取消</button>
-          <button class="primary" :disabled="!form.bookId" @click="createBook">创建</button>
+          <button class="primary" :disabled="!form.title.trim() || !form.bookId.trim()" @click="createBook">创建并进入立项</button>
         </div>
       </template>
       <template v-else>
@@ -127,6 +203,11 @@ h1 { font-family: var(--font-prose); font-size: clamp(32px, 4.5vw, 56px); line-h
 .modal-tabs button.active { color: var(--accent); border-bottom-color: var(--accent); font-weight: 700; }
 .import-note { margin: 0; font-size: 12px; color: var(--ink-soft); line-height: 1.7; }
 .import-note code { background: rgba(20,35,31,.06); padding: 1px 5px; border-radius: 5px; font-size: 11px; }
+.form-note { margin: 0; font-size: 12px; color: var(--ink-soft); line-height: 1.7; }
+.group-head { margin: 4px 0 0; font-size: 12px; color: var(--accent); letter-spacing: .06em; }
+.form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 12px; }
+.form-grid .span2 { grid-column: 1 / -1; }
+.form-grid textarea { padding: 9px 12px; border-radius: 10px; border: 1px solid var(--line); font: inherit; resize: vertical; }
 .book-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 18px; }
 .book-card {
   text-align: left; padding: 0; overflow: hidden; border-radius: 18px; border: 1px solid var(--line);
@@ -142,15 +223,16 @@ h1 { font-family: var(--font-prose); font-size: clamp(32px, 4.5vw, 56px); line-h
 .pill { color: var(--accent); font-weight: 600; }
 .pill.warn { color: var(--warn); }
 .empty { padding: 32px; grid-column: 1 / -1; text-align: center; }
-.modal-mask { position: fixed; inset: 0; background: rgba(20,35,31,0.3); display: grid; place-items: center; z-index: 40; }
-.modal { width: min(420px, 92vw); padding: 24px; display: grid; gap: 14px; }
+.modal-mask { position: fixed; inset: 0; background: rgba(20,35,31,0.3); display: grid; place-items: center; z-index: 40; overflow: auto; padding: 24px; }
+.modal { width: min(680px, 96vw); padding: 24px; display: grid; gap: 12px; max-height: 92vh; overflow: auto; }
 .modal label { display: grid; gap: 6px; font-size: 13px; color: var(--ink-soft); }
 .modal input, .modal select { padding: 10px 12px; border-radius: 10px; border: 1px solid var(--line); }
-.modal-actions { display: flex; justify-content: flex-end; gap: 10px; }
+.modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 4px; }
 @media (max-width: 720px) {
   .shelf-hero { align-items: flex-start; flex-direction: column; padding-top: 24px; }
   .tool-row { flex-wrap: wrap; }
   .tool-row input { flex-basis: 100%; }
   .book-grid { grid-template-columns: 1fr; }
+  .form-grid { grid-template-columns: 1fr; }
 }
 </style>

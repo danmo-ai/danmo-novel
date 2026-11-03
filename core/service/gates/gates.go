@@ -264,30 +264,6 @@ func CheckUnitOutline(u domain.UnitOutlineDraft, volumeCast []string) Report {
 	return r
 }
 
-func CheckCast(cards []domain.CastCard) Report {
-	r := Report{OK: true, Counts: map[string]int{"cast": len(cards)}}
-	if len(cards) == 0 {
-		r.OK = false
-		r.Findings = append(r.Findings, finding("cast-empty", "blocking", "无人物卡"))
-		return r
-	}
-	hasProtagonist := false
-	for _, c := range cards {
-		if c.Role == "protagonist" && c.Status == domain.CastCanon {
-			hasProtagonist = true
-		}
-		if c.Role == "" {
-			r.Findings = append(r.Findings, finding("cast-role-"+c.Stem, "blocking", "缺少 role: "+c.Stem))
-			r.OK = false
-		}
-	}
-	if !hasProtagonist {
-		r.OK = false
-		r.Findings = append(r.Findings, finding("cast-protagonist", "blocking", "缺少 canon 主角"))
-	}
-	return r
-}
-
 func finding(id, sev, title string) domain.ReviewFinding {
 	return domain.ReviewFinding{ID: id, Severity: sev, Source: "local_gate", Title: title}
 }

@@ -508,7 +508,10 @@ func SetUnitStatus(root, unitID string, status domain.UnitStatus) error {
 	return os.WriteFile(path, []byte(text), 0o644)
 }
 
-// CreateBookScaffold creates a minimal book tree for init.
+// CreateBookScaffold 只用于测试夹具与旧数据构造：它一次铺满全部设定模板。
+//
+// 生产建书必须走 CreateBookFromDraft：空模板会被结构化立项当成既有 canon。
+// 测试需要这些模板存在（例如直接写卷纲/细纲），所以保留该函数。
 func CreateBookScaffold(libraryRoot, bookID, title, genre string) (string, error) {
 	root := filepath.Join(libraryRoot, "novel", bookID)
 	dirs := []string{
@@ -526,7 +529,7 @@ func CreateBookScaffold(libraryRoot, bookID, title, genre string) (string, error
 			return "", err
 		}
 	}
-	state := fmt.Sprintf("title: %q\ngenre: %q\nsubgenre: \"\"\nstage: planning\nlast_committed_ch: 0\nnext_action: plan\nactive_unit: \"\"\ntime_system: story_day\nqc_profile: general\ncontinuation_mode: false\ngates:\n  knowledge: unknown\n  asset: unknown\n  qc: unknown\nblockers: []\n", title, genre)
+	state := fmt.Sprintf("title: %q\ngenre: %q\nsubgenre: \"\"\nstage: %s\nlast_committed_ch: 0\nnext_action: plan\nactive_unit: \"\"\ntime_system: story_day\nqc_profile: general\ncontinuation_mode: false\ngates:\n  knowledge: unknown\n  asset: unknown\n  qc: unknown\nblockers: []\n", title, genre, domain.StagePlanning)
 	if err := os.WriteFile(filepath.Join(root, "novel-state.yaml"), []byte(state), 0o644); err != nil {
 		return "", err
 	}
@@ -586,8 +589,12 @@ func earliestUnfinishedVolume(snap domain.BookSnapshot) (int, bool) {
 }
 
 // SelectPrimaryAction mirrors workbench next-step rules at a coarse level.
-// Order: 无总纲→立项；有总纲无卷纲→生成卷纲；之后进入单元闭环（按单元顺序）。
+// Order: 有作者输入但无创意提案→创意扩写；无总纲→立项；有总纲无卷纲→生成卷纲；
+// 之后进入单元闭环（按单元顺序）。
 func SelectPrimaryAction(snap domain.BookSnapshot) (kind domain.TaskKind, unitID string, volume int) {
+	if !HasBookOutline(snap) && strings.TrimSpace(snap.Files[domain.IdeaPath]) != "" && !HasIdeaProposal(snap) {
+		return domain.TaskIdea, "", 1
+	}
 	if !HasBookOutline(snap) {
 		return domain.TaskPlan, "", 1
 	}

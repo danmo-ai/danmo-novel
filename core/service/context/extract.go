@@ -279,10 +279,6 @@ func NormalizeRole(role string) string {
 	}
 }
 
-func IsCanonProtagonist(card domain.CastCard) bool {
-	return card.Status == domain.CastCanon && NormalizeRole(card.Role) == "protagonist"
-}
-
 func NormalizeUnitContract(raw string) string {
 	// Keep model-facing clock fields explicit without altering source YAML.
 	day := yamlScalar(raw, "story_day")
@@ -410,8 +406,6 @@ func CleanName(name string) string {
 }
 
 func cleanName(name string) string { return CleanName(name) }
-
-func displayName(stem string) string { return stem }
 
 // ChapterBeats prefers the structured scenes list, then chapters, then raw.
 func ChapterBeats(raw string) string { return chapterBeats(raw) }

@@ -37,12 +37,32 @@ user   = {
 
 ## 3. 首次创作
 
+### 3.0 新建与创意扩写：`kind=idea`
+
+新书由立项表单建立：基本信息（书名、书 ID、题材/子题材、平台、读者、篇幅、单章目标字数）与创意种子（一句话 idea、基调、爽点、主角、对抗、结局倾向、禁忌、参考作品、POV）。创建后只生成最小树：
+
+- `novel-state.yaml`（`stage: idea`、`next_action: idea`）
+- `book-bible.md`、`canon/platform-positioning.md`（按表单预填，空白项保持空白）
+- `outline/idea.md`（「立项输入 / 一句话 idea / 创意提案」三段）
+
+**不预铺 9 个空设定模板**：它们会被结构化立项当成既有 canon，模型于是「优化」空占位符而不是写故事。
+
+`kind=idea` 是自由输出任务：模型返回纯 Markdown 创意提案，不经过 codec、不要求 JSON、不写总纲/设定/人物。候选的 `targetPath` 固定为 `outline/idea.md`，`replacement` 是**合并后的完整文档**——「立项输入」段由作者维护，模型无权覆盖。接受后写文件并把 `stage` 推进为 `idea_expanded`、`next_action` 推进为 `plan`。
+
+- 校验只有一条：输出过短（空回答或一句敷衍）时允许一次定向修复。
+- 提案给了多个方向时，结构化立项默认采用标注的「推荐主线」。
+- 「重新扩写」用同一任务、同一文件重跑；快捷方向（更黑暗 / 更强悬疑 等）写进 `instruction`，不新增字段。
+
+**下一步判定**：没有总纲、有 `outline/idea.md`、但提案段为空 → `TaskIdea`；否则仍按原规则走 `TaskPlan`。没有 `outline/idea.md` 的旧书行为不变。
+
+**界面边界**：「立项」Tab 只在**还没有全书总纲**时存在。它是 idea loop 到一次结构化立项（`mode=init`）的入口；总纲接受后 Tab 消失、页面落在大纲。此后重新立项只在大纲 Tab（带优化范围、优化目标与追加指令），单文件优化在设定 Tab，已立项书不再有创意扩写入口。理由很直接：让两个 Tab 都能重写总纲，作者就分不清该用哪个，也容易在一次优化里同时触发两条路径。
+
 ### 3.1 立项：`kind=plan, mode=init/reinit`
 
 **输入**
 
-- 作者意图 Bible 与已有设定。
-- 已存在总纲、人物卡（重新立项时）。
+- `outline/idea.md`（已确认的创意提案，第一依据）。
+- 作者意图 Bible 与平台定位（`init`）；已接受的总纲、设定、人物卡（`reinit`）。
 - 保留路径 `preservePaths`、作者追加指令和可选参考知识。
 
 **输出**
@@ -88,6 +108,20 @@ user   = {
 - 总纲/设定/人物必填，至少一个 protagonist；人物卡、揭示计划、身份字段和引用合法。
 - Accept 一次性写总纲、白名单设定、人物卡及 `canon/identity-timeline.yaml`；不写卷纲、单元或正文。
 - `reinit` 可保留精修文件，既有单元、正文、continuity 不受影响。
+
+**优化闭环（复用 `mode=reinit`，无第二套机制）**
+
+重新立项永远只有一条执行路径：`kind=plan, mode=reinit` + `preservePaths`，接受时由 `AcceptPlan` 决定写哪些文件。界面上的「优化范围」只是预填 `preservePaths` 的快捷方式：
+
+| 范围 | 保留（不覆盖） |
+|---|---|
+| 全部重写 | 无 |
+| 只优化总纲 | 全部设定 + 全部人物卡 |
+| 只优化设定 | 总纲 + 全部人物卡 |
+| 只优化人物 | 总纲 + 全部设定 |
+| 自定义 | 逐文件勾选 |
+
+「优化目标」（加强开篇钩子、提高爽点密度等）只拼进 `spec.instruction`，不改变输出协议。候选在审阅时按文件给出「新增 / 修改 / 未变 / 保留不写」与行级 diff；接受仍是原子写入。只调一个文件时不走 `reinit`：`kind=rewrite_entity` 携带对应依据，接受只写该文件。
 
 ### 3.2 生成/重写卷纲：`kind=plan, mode=volume`
 

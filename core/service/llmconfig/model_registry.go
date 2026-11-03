@@ -122,14 +122,6 @@ func (r *ModelRegistry) GenParams(modelID string) *port.ModelGenParams {
 	return p
 }
 
-func (r *ModelRegistry) AllModels() []domain.ModelConfig {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	out := make([]domain.ModelConfig, len(r.config))
-	copy(out, r.config)
-	return out
-}
-
 func splitModelID(modelID string) (provider, model string) {
 	parts := strings.SplitN(modelID, "/", 3)
 	if len(parts) >= 2 {

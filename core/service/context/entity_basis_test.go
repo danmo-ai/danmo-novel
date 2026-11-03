@@ -48,7 +48,7 @@ func TestRewriteCastCarriesOutlineBasis(t *testing.T) {
 	snap := basisSnap()
 	p := BuildRewriteEntityPacket(snap, domain.TaskSpec{
 		Kind: domain.TaskRewriteEntity, TargetPath: "canon/cast/lin.md", EntityKind: "cast",
-	}, 0)
+	})
 	ids := map[string]bool{}
 	for _, b := range p.Blocks {
 		ids[b.ID] = true
@@ -70,7 +70,7 @@ func TestRewriteCraftDoesNotCarryOutline(t *testing.T) {
 	snap := basisSnap()
 	p := BuildRewriteEntityPacket(snap, domain.TaskSpec{
 		Kind: domain.TaskRewriteEntity, TargetPath: "canon/writing-rules.md", EntityKind: "rules",
-	}, 0)
+	})
 	for _, b := range p.Blocks {
 		if strings.HasPrefix(b.ID, "basis-book-outline") {
 			t.Fatal("craft rewrite should not need outline")

@@ -21,13 +21,6 @@ func NewDefaultLLMProvider(mgr *llmconfig.Manager, modelCfg *llmconfig.ModelRegi
 	return &DefaultLLMProviderClient{mgr: mgr, modelCfg: modelCfg, timeout: DefaultChatHTTPTimeout}
 }
 
-func (c *DefaultLLMProviderClient) WithTimeout(d time.Duration) *DefaultLLMProviderClient {
-	if d > 0 {
-		c.timeout = d
-	}
-	return c
-}
-
 func (c *DefaultLLMProviderClient) chatTimeout() time.Duration {
 	if c.timeout > 0 {
 		return c.timeout

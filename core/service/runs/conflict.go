@@ -14,10 +14,10 @@ import (
 // 所以提示必须说人话。
 func taskKindLabel(kind domain.TaskKind) string {
 	switch kind {
-	case domain.TaskInit:
-		return "立项"
 	case domain.TaskPlan:
 		return "卷纲"
+	case domain.TaskIdea:
+		return "创意扩写"
 	case domain.TaskOutline:
 		return "细纲"
 	case domain.TaskWrite:

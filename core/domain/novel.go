@@ -6,7 +6,6 @@ import "time"
 type TaskKind string
 
 const (
-	TaskInit            TaskKind = "init"
 	TaskPlan            TaskKind = "plan"
 	TaskOutline         TaskKind = "outline"
 	TaskWrite           TaskKind = "write"
@@ -20,7 +19,22 @@ const (
 	TaskPolish          TaskKind = "polish"
 	TaskRewriteSel      TaskKind = "rewrite_selection"
 	TaskStructureReview TaskKind = "structure_review"
+	// TaskIdea 是立项之前的自由创意扩写：产出作者可读的创意提案，
+	// 不写总纲/设定/人物，也不参与卷纲与单元生产。
+	TaskIdea TaskKind = "idea"
 )
+
+// 立项阶段（novel-state.yaml 的 stage）。idea / idea_expanded 是本次新增的
+// 前置阶段：先有作者输入与确认过的创意提案，才允许进入结构化立项。
+const (
+	StageIdea         = "idea"
+	StageIdeaExpanded = "idea_expanded"
+	StagePlanning     = "planning"
+)
+
+// IdeaPath 是立项工作台文件：作者输入 + 创意提案。
+// 它是作者意图，不是 canon；结构化立项接受时永不覆盖。
+const IdeaPath = "outline/idea.md"
 
 // Plan modes for TaskPlan (立项 / 重新立项 / 重写卷纲).
 const (

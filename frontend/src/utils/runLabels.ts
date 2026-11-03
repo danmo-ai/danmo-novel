@@ -3,6 +3,7 @@
  */
 export const KIND_LABELS: Record<string, string> = {
   plan: '立项',
+  idea: '创意扩写',
   outline: '细纲',
   write: '正文',
   review: '审校',

@@ -89,7 +89,7 @@ func (r *Runner) runStructuredBookPlan(ctx context.Context, snap domain.BookSnap
 		spec.PreservePaths = preservePaths[0]
 	}
 	input := TaskInput{Snapshot: snap, Spec: spec}
-	packet := contextsvc.BuildPlanPacketWithMode(snap, 1, mode, instruction, r.modelMaxOut(modelID))
+	packet := contextsvc.BuildPlanPacketWithMode(snap, 1, mode, instruction)
 	payload, err := contextsvc.DecodeUserPayload(packet.UserPrompt)
 	if err != nil {
 		return Result{}, err
@@ -140,7 +140,7 @@ func (r *Runner) runStructuredVolumePlan(ctx context.Context, snap domain.BookSn
 			return domain.Candidate{ID: uuid.NewString(), Kind: domain.TaskPlan, Status: domain.CandidateOpen, Mode: domain.PlanModeVolume, VolumeID: fmt.Sprintf("v%02d", in.Spec.Chapter), PlanMarkdown: map[string]string{"volume_outline": p.VolumeOutlineMarkdown}, CreatedAt: time.Now().UTC()}
 		}}
 	input := TaskInput{Snapshot: snap, Spec: domain.TaskSpec{Kind: domain.TaskPlan, Mode: domain.PlanModeVolume, Chapter: volume, Instruction: instruction}}
-	packet := contextsvc.BuildPlanPacketWithMode(snap, volume, domain.PlanModeVolume, instruction, r.modelMaxOut(modelID))
+	packet := contextsvc.BuildPlanPacketWithMode(snap, volume, domain.PlanModeVolume, instruction)
 	payload, err := contextsvc.DecodeUserPayload(packet.UserPrompt)
 	if err != nil {
 		return Result{}, err

@@ -9,10 +9,6 @@ import (
 
 const KnowledgeVersion = "kb-novel-2026.10.1"
 
-func WriteSystemPrompt() string {
-	return WriteSystemPromptFor(domain.ChapterCharsDefault)
-}
-
 // WriteSystemPromptFor 把本章字数额度写进系统提示词。
 //
 // 字数规则以前只出现在 user payload 的一个小段落里，而且措辞是「多于 3500 字
@@ -37,12 +33,12 @@ func WriteSystemPromptFor(chapterTarget int) string {
 func OutlineSystemPrompt() string {
 	return fmt.Sprintf(`你是小说编辑。只补全单元细纲合同字段，输出严格 JSON，不要工具调用，不要只输出单个单元对象。
 输出外壳必须是：{"units":[{...},...]}；即使只改 1 个单元，也要放进 units 数组。
-每个单元字段：unitId,title,function,desire,obstacle,choice,payoff,pleasure,forbidden,chapterChars,onStage,pov,chapterFrom,chapterTo,chapters,scenes,stateDeltas,nextHook,storyDay,endDay,gapDays,timelineId,gapFromPrev,infoControl。
+每个单元字段：unitId,title,function,sourceSeedId,attempt,setback,cost,desire,obstacle,choice,payoff,pleasure,forbidden,chapterChars,onStage,pov,chapterFrom,chapterTo,chapters,scenes,stateDeltas,nextHook,storyDay,endDay,gapDays,timelineId,gapFromPrev,infoControl。
 chapterChars 是**单章**目标字数，正整数，只能落在 %d–%d；作者没特别要求就写 %d，不要自行调高。只要 chapterChars 这一个数字；不要输出 wordTarget。
 chapters 是逐章轻量合同，每章必须有 {chapter,goal,change,cutHook,dayOffset}；change 必须是可验证的状态/信息/关系/行动变化，不得只写情绪。章范围全部覆盖，day_offset 不超出单元结束日。
 scenes 仅复杂章的可选子项，不要求每章都有；一旦写了 scenes，就必须覆盖每一章（每章 1–3 个场面即可，不要为凑数给简单章硬拆）。每个 scene 仅含 {chapter,goal,conflict,turn,outcome}，可选 id/mustLand/evidenceIn/evidenceOut/dayOffset。禁止预写台词、动作清单和情绪曲线；mustLand 最多 2 个可见事实。
 存在「不可改写的单元种子」时：sourceSeedId 必须等于单元 ID；chapterFrom/chapterTo、desire/obstacle/choice/payoff 必须逐字继承种子 chapter_range/objective/obstacle/choice/outcome，不得改故事；attempt/setback/cost 也继承种子；storyDay/endDay/gapDays 必须继承 clock_start_day/clock_end_day/clock_gap_days。
-storyDay / gapFromPrev / infoControl / forbidden / desire 等叙述字段必须是字符串标量（如 "3" 或 "入职第三天"），不要用对象；chapterFrom/chapterTo 为数字；onStage 为字符串数组。
+storyDay / gapFromPrev / infoControl / forbidden / desire / sourceSeedId / attempt / setback / cost 等叙述字段必须是字符串标量（如 "3" 或 "入职第三天"），不要用对象；chapterFrom/chapterTo/endDay/gapDays 必须是 JSON 数字，不要加引号（继承种子 clock_end_day/clock_gap_days 时也转成数字）；onStage 为字符串数组。
 gapDays 是整数（距上一单元的最少天数）；gapFromPrev 是给写作者看的上一单元承接说明，必须是可读的短句（如 "上一案卷宗已归档，隔天清晨她回到派出所"），禁止只写一个数字——天数属于 gapDays，写进 gapFromPrev 会让界面显示「衔接上一单元 1」。
 stateDeltas 必须是结构化数组 [{"stem":"人物或实体 ID","field":"role_title|location|injury|resources|goal|knowledge","from":"单元前状态","to":"单元后状态"}]；至少一条，不得用自由文本代替。
 nextHook 必须是对象：{"type":"钩子类型","out":"具体事件"}（对应落盘 next_hook.type / next_hook.out），type 沿用卷纲索引已定类型；禁止写成一整句字符串。
@@ -52,8 +48,28 @@ onStage ⊆ 本卷人物；pov ∈ onStage。不要改卷纲已定 function。
 		domain.ChapterCharsMin, domain.ChapterCharsMax, domain.ChapterCharsDefault)
 }
 
-func PlanSystemPrompt() string {
-	return PlanSystemPromptForMode("volume")
+// IdeaExpandSystemPrompt 是立项前的创意扩写。
+//
+// 它与结构化立项刻意分开：这一阶段要的是发散、试方向、把作者的一句话
+// 长成一个能立项的故事，不是让模型填总纲字段。所以这里不定义任何协议、
+// 不要求 JSON——一旦要求结构化，模型就会开始发明不需要的细节，而作者
+// 还没决定要不要这个方向。
+func IdeaExpandSystemPrompt() string {
+	return `你是小说策划，正在和作者一起把一句灵感扩成能立项的故事。不要工具调用。
+输出纯 Markdown 的「创意提案」，不要 JSON，不要输出全书总纲字段、卷纲、单元或正文。
+以 user 数据包里的立项输入为硬约束：平台、读者、篇幅、基调、禁忌不得违反；作者追加指令优先于默认建议。
+提案必须包含以下小节，用小标题写出：
+1. 一句话故事：主角＋困境＋目标＋核心冲突。
+2. 读者承诺与差异化：这个题材里持续交付的阅读体验，以及它与同类作品的差别。不要堆形容词，说清「读者每次翻页得到什么」。
+3. 主角：外在欲望、内在伤口、主要方法、不会越过的底线；写成一件事而不是标签。
+4. 持续对抗力量：它如何逐卷更新压力，而不是同一个敌人重复出现。
+5. 世界与金手指：只写会改变选择的规则、代价与上限；不要罗列设定词条。
+6. 开篇三章钩子：第一章用什么具体场面立住人物与承诺，第二、三章各推进什么不可逆变化。
+7. 3–5 个不可逆转折：每个写清「因为什么行动、改变了什么」，按大致的卷位排序。
+8. 结局方向：只到方向与代价，不写真相细节。
+9. 风险与禁忌检查：与平台红线、题材常见雷点、作者禁忌逐条对照。
+可以给 2–3 个可选方向，但必须明确标出「推荐主线」，并说明为什么不选其它方向。
+不确定的地方直接写「待作者确认」，不要用编造的事实填满。`
 }
 
 // PlanSystemPromptForMode returns the system prompt for 立项/重新立项/重写卷纲.
@@ -63,6 +79,7 @@ func PlanSystemPromptForMode(mode string) string {
 	case "init", "reinit":
 		return `你是小说主编。不要写细纲 scenes，不要写正文，不要写卷纲，不要工具调用。
 只根据 user JSON 数据包产出立项结果。
+第一依据是数据包里的「创意提案」：总纲、设定与人物必须与它一致；提案给了多个方向时采用推荐主线，作者追加指令优先。平台、读者、篇幅与禁忌是硬约束。
 人物卡 status 一律 candidate；必须有 protagonist。
 人物卡字段：stem（英文小写连字符）、name（纯姓名，不含括号说明）、role（protagonist / volume_antagonist / recurring）、tagline（≤20 字）、cardMarkdown。
 cardMarkdown 第一行必须是 "# "+纯姓名，并含 ` + "`tagline`:" + ` 与 ` + "`role`:" + `。

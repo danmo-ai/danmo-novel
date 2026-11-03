@@ -28,6 +28,9 @@ export function specKnowledgeStage(spec: Record<string, any>): string {
     case 'plan':
       // 立项 / 重新立项 share one tag: the same articles shape the bible.
       return spec.mode === 'volume' ? 'volume' : 'plan'
+    case 'idea':
+      // 创意扩写与立项是同一段作者意图：立项类文章在这里同样适用。
+      return 'plan'
     case 'outline':
       return 'outline'
     case 'write':

@@ -148,7 +148,7 @@ func (r *Runner) RunOutline(ctx context.Context, snap domain.BookSnapshot, volum
 			}
 		}
 	}
-	packet := contextsvc.BuildOutlinePacket(snap, volume, unitIDs, instruction, r.modelMaxOut(modelID))
+	packet := contextsvc.BuildOutlinePacket(snap, volume, unitIDs, instruction)
 	var volCast []string
 	for _, v := range snap.Volumes {
 		if v.Volume == volume {
@@ -189,10 +189,6 @@ func (r *Runner) RunOutline(ctx context.Context, snap domain.BookSnapshot, volum
 		}
 		return rep
 	})
-}
-
-func (r *Runner) RunPlan(ctx context.Context, snap domain.BookSnapshot, volume int, modelID string) (Result, error) {
-	return r.RunPlanMode(ctx, snap, volume, modelID, domain.PlanModeVolume, "")
 }
 
 // RunPlanMode runs 立项 / 重新立项 / 重写卷纲.
@@ -242,7 +238,7 @@ func (r *Runner) RunLocalEdit(ctx context.Context, snap domain.BookSnapshot, sel
 // RunRewriteEntity rewrites one canon/setting file via a single bounded call.
 // Output is a candidate only; accept writes the normalized content back.
 func (r *Runner) RunRewriteEntity(ctx context.Context, snap domain.BookSnapshot, spec domain.TaskSpec, modelID string) (Result, error) {
-	packet := contextsvc.BuildRewriteEntityPacket(snap, spec, r.modelMaxOut(modelID))
+	packet := contextsvc.BuildRewriteEntityPacket(snap, spec)
 	return r.runJSON(ctx, snap, packet, modelID, domain.TaskRewriteEntity, "", spec.TargetPath, func(raw string, cand *domain.Candidate) error {
 		var parsed struct {
 			Content string `json:"content"`
@@ -592,12 +588,14 @@ func parseOutlineUnits(raw string) ([]domain.UnitOutlineDraft, error) {
 }
 
 var outlineStringFields = []string{
-	"unitId", "status", "title", "function", "desire", "obstacle", "choice", "payoff",
-	"pleasure", "forbidden", "wordTarget", "chapterChars", "pov", "storyDay", "gapFromPrev", "infoControl",
+	"unitId", "status", "title", "function", "sourceSeedId", "attempt", "setback", "cost",
+	"desire", "obstacle", "choice", "payoff", "pleasure", "forbidden", "wordTarget",
+	"chapterChars", "pov", "storyDay", "gapFromPrev", "infoControl",
 }
 
-// normalizeOutlineJSON coerces model drift: storyDay/gapFromPrev as objects or
-// numbers, chapterFrom/To as strings, before strict struct decode.
+// normalizeOutlineJSON coerces model drift before strict struct decode:
+// storyDay/gapFromPrev as objects or numbers, and chapterFrom/To/endDay/gapDays
+// as strings (细纲头与种子里的 clock 值是带引号的 YAML 字符串).
 func normalizeOutlineJSON(raw string) string {
 	trimmed := strings.TrimSpace(raw)
 	var root any
@@ -647,7 +645,10 @@ func coerceOutlineUnitMap(m map[string]any) {
 			m[k] = coerceToOutlineString(v)
 		}
 	}
-	for _, k := range []string{"chapterFrom", "chapterTo"} {
+	// 时钟与章号必须是 JSON 数字：细纲头和卷纲种子里的 clock_end_day /
+	// clock_gap_days 是字符串（"90"），模型会原样照抄成 "endDay":"90"，
+	// 严格 struct decode 直接失败——连父子合同校验都到不了。这里统一转回数字。
+	for _, k := range []string{"chapterFrom", "chapterTo", "endDay", "gapDays"} {
 		if v, ok := m[k]; ok {
 			m[k] = coerceToOutlineInt(v)
 		}
@@ -891,17 +892,6 @@ func scanFindingObjects(raw string) (complete []string, truncated bool) {
 		}
 	}
 	return complete, true
-}
-
-func joinFindings(fs []domain.ReviewFinding) string {
-	var b strings.Builder
-	for _, f := range fs {
-		if f.Severity != "blocking" {
-			continue
-		}
-		fmt.Fprintf(&b, "%s; ", f.Title)
-	}
-	return b.String()
 }
 
 // detailedFindings renders blocking findings with evidence + suggestion so the

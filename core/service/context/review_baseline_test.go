@@ -15,7 +15,7 @@ func TestOutlinePacketIncludesSeedAndExistingCanon(t *testing.T) {
 	volumeRaw := "# 卷纲 · v01\n- schema_version: 1\n- volume_id: v01\n\n## 单元 · v01-U1\n- title: 入门\n- chapter_range: 1-3\n- objective: 立足\n- obstacle: 质疑\n- attempt: 复查\n- setback: 证据不足\n- choice: 承担复核\n- cost: 责任\n- outcome: 获得许可\n- entry_cause: 开卷\n- exit_result: 获得许可\n- state_changes: lin.role_title=新人->复核人\n- thread_ids: main\n- event_ids: event-1\n- next_hook: 信息缺口 | 签名不合\n"
 	doc := books.ParseStructuredMarkdown(volumeRaw, books.VolumeOutlineProtocol)
 	snap := domain.BookSnapshot{Summary: domain.BookSummary{ID: "b"}, Volumes: []domain.VolumeInfo{{Volume: 1, Raw: volumeRaw, Cast: []string{"lin"}, Structured: &doc}}, Units: []domain.UnitInfo{unit}, Cast: []domain.CastCard{{Stem: "lin", Name: "林晚", Raw: "# 林晚\n"}}, Files: map[string]string{"outline/volumes/v01.md": volumeRaw, "canon/reveal-schedule.md": "# 揭示计划\n- schema_version: 1\n\n## 揭示 · R1\n- public_summary: 可公开线索\n- earliest_volume: v01\n- hint_unit_ids: v01-U1\n- confirm_unit_id: v01-U1\n- status: planted\n- locked_terms: 无\n"}}
-	packet := BuildOutlinePacket(snap, 1, []string{"v01-U1"}, "", 0)
+	packet := BuildOutlinePacket(snap, 1, []string{"v01-U1"}, "")
 	for _, want := range []string{"不可改写的单元种子", "objective", "state_changes", "人物·林晚", "story_day", "可公开线索"} {
 		if !strings.Contains(packet.UserPrompt, want) {
 			t.Fatalf("outline packet lost %q", want)
@@ -29,7 +29,7 @@ func TestStructuredCanonRetainsIdentityClockAndReveal(t *testing.T) {
 		"canon/reveal-schedule.md": "# 揭示计划\n- schema_version: 1\n\n## 揭示 · R-ORIGIN\n- public_summary: 旧刀来源\n- earliest_volume: v03\n- hint_unit_ids: v03-U1\n- confirm_unit_id: v03-U2\n- status: locked\n- locked_terms: 原主\n",
 		"canon/author-lore.md":     "未来真相禁止注入",
 	}}
-	for name, packet := range map[string]domain.ContextPacket{"write": BuildWritePacket(snap, unit, "", 0), "review": BuildReviewPacket(snap, unit, nil, 0, "")} {
+	for name, packet := range map[string]domain.ContextPacket{"write": BuildWritePacket(snap, unit, "", 0), "review": BuildReviewPacket(snap, unit, nil, "")} {
 		if !strings.Contains(packet.UserPrompt, "重案队试用") || !strings.Contains(packet.UserPrompt, "先看手") {
 			t.Fatalf("%s lost cast/identity: %s", name, packet.UserPrompt)
 		}
@@ -347,7 +347,7 @@ func TestReviewPathsCarryTheSameBaseline(t *testing.T) {
 		},
 	}
 
-	whole := BuildReviewPacket(snap, unit, nil, 0, "")
+	whole := BuildReviewPacket(snap, unit, nil, "")
 	baseline := BuildReviewBaseline(snap, unit, nil, "")
 	narrow := BuildChapterReviewPacket(snap, unit, domain.ChapterDraft{Chapter: 4, Body: "正文四"}, "", baseline, 0)
 

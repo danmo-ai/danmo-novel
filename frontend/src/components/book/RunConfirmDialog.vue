@@ -42,6 +42,7 @@ const preserve = ref<Set<string>>(new Set())
 const preserveOpen = ref(true)
 
 const isReinit = computed(() => props.spec.kind === 'plan' && props.spec.mode === 'reinit')
+const isIdea = computed(() => props.spec.kind === 'idea')
 const isLocalFinalize = computed(() => props.spec.kind === 'finalize')
 /** 重审：该单元尚未处理的旧审校清单会在启动前被归档，必须提前说明。 */
 const isSupersedeReview = computed(() => props.spec.kind === 'review' && props.spec.supersedeReview === true)
@@ -85,8 +86,11 @@ const riskNote = computed(() => {
     const n = preserve.value.size
     return `重新立项重写总纲派生层；接受只覆盖未保留项${n ? `（已保留 ${n} 项精修文件）` : ''}；不写卷纲、不改单元/正文/账本。`
   }
+  if (isIdea.value) {
+    return '创意扩写输出自由 Markdown 提案，不写总纲/设定/人物；接受后只写 outline/idea.md。'
+  }
   if (props.spec.kind === 'plan' && props.spec.mode === 'init') {
-    return '立项一次生成总纲派生层（总纲+人物+揭示+底牌+世界）；不含卷纲。'
+    return '立项一次生成总纲 + 9 个设定 + 人物，以已确认的创意提案为第一依据；不含卷纲。'
   }
   if (props.spec.kind === 'plan' && props.spec.mode === 'volume') {
     const vol = Number(String(props.spec.volumeId || 'v01').replace(/^v0*/, '')) || 1
@@ -170,10 +174,67 @@ function toggleKnowledge(id: string) {
   selectedKnowledge.value = s
 }
 function togglePreserve(path: string) {
+  activeScope.value = 'custom'
   const s = new Set(preserve.value)
   if (s.has(path)) s.delete(path)
   else s.add(path)
   preserve.value = s
+}
+
+/**
+ * 优化范围只是预填 preservePaths 的快捷方式。
+ *
+ * 重新立项永远只有一条执行路径：plan + mode=reinit，接受时由 AcceptPlan
+ * 按 preservePaths 决定写哪些文件。这里不新增 mode，也不改变接受语义。
+ */
+type ScopeId = 'all' | 'outline' | 'settings' | 'cast' | 'custom'
+const scopeOptions = computed(() => {
+  const files = store.currentBook?.files || {}
+  const settings = ['book-bible.md', 'canon/world.md', 'canon/goldfinger.md', 'canon/reveal-schedule.md',
+    'canon/author-lore.md', 'canon/platform-positioning.md', 'canon/writing-rules.md',
+    'canon/style-fingerprint.md', 'canon/locked-terms.yaml'].filter((p) => files[p])
+  const cast = (store.currentBook?.cast || []).map((c) => `canon/cast/${c.stem}.md`)
+  return {
+    outline: files['outline/book_outline.md'] ? ['outline/book_outline.md'] : [],
+    settings,
+    cast,
+  }
+})
+const activeScope = ref<ScopeId>('custom')
+const SCOPE_PRESETS: { id: ScopeId; label: string; hint: string }[] = [
+  { id: 'all', label: '全部重写', hint: '不保留任何文件' },
+  { id: 'outline', label: '只优化总纲', hint: '设定与人物保持现状' },
+  { id: 'settings', label: '只优化设定', hint: '总纲与人物保持现状' },
+  { id: 'cast', label: '只优化人物', hint: '总纲与设定保持现状' },
+  { id: 'custom', label: '自定义', hint: '逐文件勾选' },
+]
+function applyScope(id: ScopeId) {
+  activeScope.value = id
+  const { outline, settings, cast } = scopeOptions.value
+  switch (id) {
+    case 'all':
+      preserve.value = new Set()
+      break
+    case 'outline':
+      preserve.value = new Set([...settings, ...cast])
+      break
+    case 'settings':
+      preserve.value = new Set([...outline, ...cast])
+      break
+    case 'cast':
+      preserve.value = new Set([...outline, ...settings])
+      break
+    default:
+      break
+  }
+}
+
+/** 优化目标 chips：只是把作者意图写进 instruction，不改变输出协议。 */
+const OPTIMIZE_GOALS = ['加强开篇钩子', '提高爽点密度', '降低设定复杂度', '调整主角人设', '调整卷数']
+function addGoal(goal: string) {
+  const cur = instruction.value.trim()
+  if (cur.includes(goal)) return
+  instruction.value = cur ? `${cur}\n- ${goal}` : `本次优化目标：\n- ${goal}`
 }
 
 function confirm() {
@@ -219,6 +280,19 @@ function confirm() {
               </details>
             </div>
           </template>
+        </div>
+
+        <div v-if="isReinit" class="dlg-scope">
+          <span class="scope-label">优化范围</span>
+          <div class="scope-chips">
+            <button v-for="s in SCOPE_PRESETS" :key="s.id" class="scope-chip" :class="{ on: activeScope === s.id }"
+              :title="s.hint" @click="applyScope(s.id)">{{ s.label }}</button>
+          </div>
+          <p class="scope-note">范围只预填下面的「接受时保留」清单：被保留的文件不会有任何写入，其余文件由候选覆盖。</p>
+          <div class="goal-chips">
+            <span class="scope-label">优化目标</span>
+            <button v-for="g in OPTIMIZE_GOALS" :key="g" class="scope-chip" @click="addGoal(g)">{{ g }}</button>
+          </div>
         </div>
 
         <div v-if="isReinit && preserveOptions.length" class="dlg-preserve">
@@ -295,6 +369,12 @@ function confirm() {
 .dlg-head h3 { margin: 6px 0 0; font-family: var(--font-prose); font-size: 22px; }
 .dlg-close { border: none; background: transparent; font-size: 22px; color: var(--ink-soft); padding: 0 4px; }
 .dlg-risk { margin: 0 24px 12px; padding: 10px 12px; background: color-mix(in srgb, var(--accent) 10%, transparent); border-radius: 8px; color: var(--ink-soft); font-size: 13px; line-height: 1.5; }
+.dlg-scope { margin: 0 24px 10px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; display: grid; gap: 8px; }
+.scope-label { font-size: 11px; color: var(--ink-soft); }
+.scope-chips, .goal-chips { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+.scope-chip { font-size: 11px; padding: 3px 10px; border-radius: 20px; border: 1px solid var(--line); background: transparent; color: var(--ink-soft); }
+.scope-chip.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+.scope-note { margin: 0; font-size: 11px; color: var(--ink-soft); line-height: 1.6; }
 .dlg-meta { display: flex; gap: 24px; padding: 0 24px 16px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
 .meta-item { display: grid; gap: 2px; }
 .meta-item small { color: var(--ink-soft); font-size: 10px; }

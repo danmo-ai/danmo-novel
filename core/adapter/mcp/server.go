@@ -84,10 +84,11 @@ func (s *Server) registerTools() {
 	), s.handleGetBook)
 
 	s.mcp.AddTool(mcpgo.NewTool("create_book",
-		mcpgo.WithDescription("Create a new book scaffold (立项) under the library."),
+		mcpgo.WithDescription("Create a new book under the library: minimal tree plus outline/idea.md for the author's 立项 input."),
 		mcpgo.WithString("bookId", mcpgo.Required(), mcpgo.Description("Slug, e.g. my-book")),
 		mcpgo.WithString("title", mcpgo.Description("Book title")),
 		mcpgo.WithString("genre", mcpgo.Description("Genre label")),
+		mcpgo.WithString("idea", mcpgo.Description("One-line idea (optional); 立项 input can be filled in later")),
 	), s.handleCreateBook)
 
 	s.mcp.AddTool(mcpgo.NewTool("import_book",
@@ -230,7 +231,15 @@ func (s *Server) handleCreateBook(ctx context.Context, req mcpgo.CallToolRequest
 	if bookID == "" {
 		return errResult(fmt.Errorf("bookId required"))
 	}
-	root, err := books.CreateBookScaffold(s.deps.Settings.Get().LibraryRoot, bookID, req.GetString("title", ""), req.GetString("genre", ""))
+	// 与 HTTP 建书走同一条路径：最小树 + outline/idea.md。
+	// 旧的 CreateBookScaffold 会铺满 9 个空设定模板，那些占位符随后会被
+	// 结构化立项当成既有 canon，模型于是去「优化」空模板。
+	root, err := books.CreateBookFromDraft(s.deps.Settings.Get().LibraryRoot, books.DraftInput{
+		BookID: bookID,
+		Title:  req.GetString("title", ""),
+		Genre:  req.GetString("genre", ""),
+		Idea:   req.GetString("idea", ""),
+	})
 	if err != nil {
 		return errResult(err)
 	}

@@ -9,6 +9,7 @@
   book-bible.md                         作者意图与读者承诺
   novel-state.yaml                     运行状态与生产游标
   outline/
+    idea.md                            立项输入与创意提案（作者意图，非 canon）
     book_outline.md                    全书总纲与分卷合同
     volumes/
       v{{NN}}.md                       卷级节拍、单元种子与内嵌时钟

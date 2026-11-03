@@ -6,8 +6,10 @@ import { api } from '@/api/client'
 import type { Candidate, CallRecord, UnitInfo } from '@/types'
 import OutlineWorkspace from '@/components/book/OutlineWorkspace.vue'
 import BibleWorkspace from '@/components/book/BibleWorkspace.vue'
+import ProjectSetup from '@/components/book/ProjectSetup.vue'
 import ReviewWorkspace from '@/components/book/ReviewWorkspace.vue'
 import ChapterDiff from '@/components/book/ChapterDiff.vue'
+import PlanCandidateDiff from '@/components/book/PlanCandidateDiff.vue'
 import StructuredOutline from '@/components/book/StructuredOutline.vue'
 import UnitProse from '@/components/book/UnitProse.vue'
 import UnitContract from '@/components/book/UnitContract.vue'
@@ -20,7 +22,7 @@ import { parseStructuredMarkdown } from '@/utils/structuredMarkdown'
 const route = useRoute()
 const store = useAppStore()
 const bookId = computed(() => route.params.id as string)
-const view = ref<'write' | 'outline' | 'bible' | 'review'>('write')
+const view = ref<'setup' | 'write' | 'outline' | 'bible' | 'review'>('write')
 const selectedUnit = ref<UnitInfo | null>(null)
 const editorPath = ref('')
 const editorContent = ref('')
@@ -35,9 +37,13 @@ const runDrawer = ref(false)
 const pendingCandidates = computed(() => store.candidates.filter((c) => c.kind !== 'review'))
 /**
  * 审校页的修订候选已经在该单元的清单区就地展开（diff + 确认落盘），底部不再重复
- * 一份。写作/大纲/设定页仍从这里看待落盘的修订。
+ * 一份。立项页的提案/立项候选同理：ProjectSetup 里已经带 diff 与接受按钮，
+ * 底部再列一遍只会让人以为有两批待办。
  */
 const listedCandidates = computed(() => {
+  if (view.value === 'setup') {
+    return pendingCandidates.value.filter((c) => c.kind !== 'plan' && c.kind !== 'idea')
+  }
   if (view.value !== 'review') return pendingCandidates.value
   const reviewUnits = new Set(store.candidates.filter((c) => c.kind === 'review' && c.unitId).map((c) => c.unitId))
   return pendingCandidates.value.filter((c) => !(c.kind === 'revise' && c.unitId && reviewUnits.has(c.unitId)))
@@ -49,8 +55,18 @@ const customInstruction = ref('')
 const editingProse = ref(false)
 const editingOutline = ref(false)
 const isProseUnit = computed(() => Boolean(selectedUnit.value?.hasProse && selectedUnit.value.prosePath === editorPath.value))
-const stageLabels: Record<string, string> = { plan: '立项', outline: '细纲', write: '写作', review: '审校', structure_review: '结构审校', finalize: '定稿', revise: '修订', local_edit: '局部编辑', rewrite_entity: '重写设定' }
+const stageLabels: Record<string, string> = { idea: '创意扩写', plan: '立项', outline: '细纲', write: '写作', review: '审校', structure_review: '结构审校', finalize: '定稿', revise: '修订', local_edit: '局部编辑', rewrite_entity: '重写设定' }
 const hasBookOutline = computed(() => Boolean((store.currentBook?.files?.['outline/book_outline.md'] || '').trim()))
+// 立项工作台只服务「还没有总纲」的书：它是 idea loop 到一次结构化立项的入口。
+// 总纲一旦落盘，优化与重新立项都归大纲 Tab，避免两个页面做同一件事。
+const showSetupTab = computed(() => !hasBookOutline.value)
+/** 创意提案是否已确认：提案段有内容才算，空模板不算。 */
+const hasIdeaProposal = computed(() => {
+  const raw = store.currentBook?.files?.['outline/idea.md'] || ''
+  const idx = raw.split('\n').findIndex((line) => line.trim() === '## 创意提案')
+  if (idx < 0) return false
+  return raw.split('\n').slice(idx + 1).join('\n').replace(/<!--[\s\S]*?-->/g, '').trim().length > 0
+})
 const hasVolumes = computed(() => (store.currentBook?.volumes?.length || 0) > 0)
 // 单元驱动工作流：proposed→细纲 → accepted→正文 → drafted→审校 → reviewed→定稿。
 // 逐单元闭环推进，下一单元细纲才能读到最新连续性账本。
@@ -97,9 +113,12 @@ const primaryInfo = computed(() => {
   const p = store.primary
   if (!p) return { label: '继续创作', description: '选择下一步', target: '', stage: '写作' }
   const target = p.unitId || `第 ${p.volume} 卷`
+  if (p.kind === 'idea') {
+    return { label: '创意扩写', description: '先把 idea 扩成可立项的提案；提案接受后才进入结构化立项', target: '全书', stage: '创意扩写' }
+  }
   if (p.kind === 'plan') {
     if (!hasBookOutline.value) {
-      return { label: '立项', description: '一次生成总纲、全部设定与人物（不含卷纲）', target, stage: '立项' }
+      return { label: '立项', description: '以已确认的创意提案为依据，一次生成总纲、全部设定与人物（不含卷纲）', target, stage: '立项' }
     }
     return { label: `生成卷纲 · 第 ${p.volume || 1} 卷`, description: '根据总纲生成当前卷纲，并只播种缺失单元', target, stage: '卷纲' }
   }
@@ -113,6 +132,8 @@ const primaryInfo = computed(() => {
 onMounted(async () => {
   await store.loadLLM().catch(() => {})
   await reload()
+  // 还没有总纲的书先落在立项工作台：那里才是「下一步」能解释清楚的地方。
+  if (!hasBookOutline.value) view.value = 'setup'
 })
 onUnmounted(() => {
   if (pollTimer.value) clearInterval(pollTimer.value)
@@ -121,6 +142,11 @@ onUnmounted(() => {
 watch(selectedUnit, () => { editingProse.value = false; editingOutline.value = false; void openSelected() })
 watch(view, () => {
   void openSelected()
+})
+// 立项候选被接受后总纲才出现：此刻作者还停在一个已经不该存在的 Tab 上，
+// 必须在同一帧迁走，否则页面剩一片空白。
+watch(hasBookOutline, (done) => {
+  if (done && view.value === 'setup') view.value = 'outline'
 })
 
 async function reload() {
@@ -204,7 +230,7 @@ function start(kind: string, opts: { mode?: string; volumeId?: string; title?: s
   if (!book || busy.value) return
   const spec: any = { kind, bookId: book.summary.id, baseRevision: book.revision }
   // 立项/卷纲不以当前选中单元为目标，避免运行中心全显示成 U1。
-  if (selectedUnit.value && kind !== 'plan') {
+  if (selectedUnit.value && kind !== 'plan' && kind !== 'idea') {
     spec.unitId = selectedUnit.value.unitId
     if (selectedUnit.value.volume) {
       spec.volumeId = `v${String(selectedUnit.value.volume).padStart(2, '0')}`
@@ -237,6 +263,17 @@ function start(kind: string, opts: { mode?: string; volumeId?: string; title?: s
   const target = selectedUnit.value ? `${selectedUnit.value.unitId} ${selectedUnit.value.title || ''}` : `第 ${store.primary?.volume || 1} 卷`
   confirmTitle.value = `${stageLabels[kind] || kind} · ${target.trim()}`
   confirmSpec.value = spec
+}
+
+/** 创意扩写：自由 Markdown 候选，不写 canon；复用同一套确认弹窗与轮询。 */
+function startIdea(instruction = '') {
+  const book = store.currentBook
+  if (!book || busy.value) return
+  confirmTitle.value = hasIdeaProposal.value ? '重新扩写创意提案' : '创意扩写 · 把 idea 扩成可立项的提案'
+  confirmSpec.value = {
+    kind: 'idea', bookId: book.summary.id, baseRevision: book.revision,
+    instruction,
+  }
 }
 
 function startRewrite(payload: { targetPath: string; entityKind: string; title: string }) {
@@ -342,6 +379,11 @@ async function primaryAction() {
   if (p.unitId && store.currentBook) {
     const u = store.currentBook.units.find((x) => x.unitId === p.unitId)
     if (u) selectedUnit.value = u
+  }
+  if (p.kind === 'idea') {
+    view.value = 'setup'
+    startIdea()
+    return
   }
   if (p.kind === 'plan') {
     if (!hasBookOutline.value) startPlan('init')
@@ -625,6 +667,7 @@ function roleLabel(role?: string) {
     </div>
 
     <div class="tabs" role="tablist" aria-label="创作主导航">
+      <button v-if="showSetupTab" role="tab" :aria-selected="view === 'setup'" :class="{ active: view === 'setup' }" @click="view = 'setup'">立项</button>
       <button role="tab" :aria-selected="view === 'write'" :class="{ active: view === 'write' }" @click="view = 'write'">写作</button>
       <button role="tab" :aria-selected="view === 'outline'" :class="{ active: view === 'outline' }" @click="view = 'outline'">大纲</button>
       <button role="tab" :aria-selected="view === 'bible'" :class="{ active: view === 'bible' }" @click="view = 'bible'">设定</button>
@@ -672,8 +715,18 @@ function roleLabel(role?: string) {
         <div v-if="!(store.currentBook.units || []).length" class="tree-empty">还没有单元。先到大纲页完成「立项」与「生成卷纲」。</div>
       </aside>
 
+      <ProjectSetup
+        v-if="view === 'setup' && showSetupTab"
+        :busy="busy"
+        :saving="saving"
+        @save="saveFile"
+        @idea="startIdea"
+        @plan="(mode, volume) => startPlan(mode, volume)"
+        @accept="accept"
+        @reject="reject"
+      />
       <OutlineWorkspace
-        v-if="view === 'outline'"
+        v-else-if="view === 'outline'"
         :saving="saving"
         :busy="busy"
         @open-unit="selectedUnit = $event; view = 'write'"
@@ -807,10 +860,9 @@ function roleLabel(role?: string) {
             {{ castExpanded ? '收起' : `查看全部 ${store.currentBook.cast?.length} 人` }}
           </button>
         </section>
-        <section class="side-card panel side-actions">
-          <button :disabled="busy" @click="startPlan(hasBookOutline ? 'reinit' : 'init')">
-            {{ hasBookOutline ? '重新立项' : '立项' }}
-          </button>
+        <section v-if="hasBookOutline" class="side-card panel side-actions">
+          <!-- 重新立项的唯一入口在大纲 Tab；这里只是同一动作的快捷方式。 -->
+          <button :disabled="busy || store.currentBook.summary.readOnly" @click="startPlan('reinit')">重新立项</button>
         </section>
       </aside>
     </div>
@@ -844,6 +896,10 @@ function roleLabel(role?: string) {
         </template>
         <pre v-else-if="c.chapters" class="candidate-prose">{{ chapterText(c) }}</pre>
         <pre v-else-if="c.unitOutlines" class="candidate-prose">{{ JSON.stringify(c.unitOutlines, null, 2) }}</pre>
+        <template v-else-if="c.kind === 'idea'">
+          <p class="muted">自由格式的创意提案：接受后只写 outline/idea.md，不写总纲、设定或人物。</p>
+          <pre class="candidate-prose">{{ c.replacement }}</pre>
+        </template>
         <pre v-else-if="c.replacement" class="candidate-prose">{{ c.replacement }}</pre>
         <div v-else-if="c.planMarkdown || c.planSettings" class="plan-candidate">
           <p class="plan-mode"><strong>{{ planModeLabel(c.mode) }}</strong><span class="muted"> · 接受后写入 {{ planCandidateFiles(c).length }} 个文件</span></p>
@@ -860,6 +916,7 @@ function roleLabel(role?: string) {
             <p class="muted">立项只写总纲派生设定与人物；不写卷纲、不播种单元。</p>
           </template>
           <p v-if="(c as any).preservePaths?.length" class="muted">保留不覆盖：{{ ((c as any).preservePaths as string[]).join('、') }}</p>
+          <details open><summary>变更预览（相对当前 canon）</summary><PlanCandidateDiff :candidate="c" :files="store.currentBook?.files || {}" /></details>
           <details><summary>将覆盖的文件（已排除保留项）</summary><ul class="plan-files"><li v-for="p in planCandidateFiles(c)" :key="p">{{ p }}</li></ul></details>
         </div>
         <div v-if="c.findings?.length" class="candidate-findings">

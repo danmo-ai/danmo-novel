@@ -53,6 +53,7 @@ function target(run: Run) {
     if (spec.mode === 'volume' || spec.volumeId) return spec.volumeId || '当前卷'
     return '全书'
   }
+  if (run.kind === 'idea') return 'outline/idea.md'
   if (run.kind === 'rewrite_entity') return spec.targetPath || '设定'
   if (run.kind === 'outline' && spec.volumeId && !spec.unitId) return spec.volumeId
   return spec.unitId || spec.volumeId || (spec.chapter ? `第 ${spec.chapter} 章` : '全书')

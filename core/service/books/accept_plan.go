@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"strconv"
 	"strings"
 	"time"
 
@@ -174,7 +173,7 @@ func acceptPlanBook(root string, cand domain.Candidate) error {
 		writes[IdentityTimelinePath] = identityBody
 	}
 	return commitPlanWrites(root, writes, map[string]string{
-		"stage": "planning", "next_action": "plan",
+		"stage": domain.StagePlanning, "next_action": "plan",
 	})
 }
 
@@ -431,57 +430,6 @@ func renderCastCard(c planCast) string {
 	return md
 }
 
-func ParseUnitSeeds(md, volumeID string) []UnitSeed {
-	var out []UnitSeed
-	seen := map[string]bool{}
-	for _, line := range strings.Split(md, "\n") {
-		if !strings.HasPrefix(strings.TrimSpace(line), "|") || strings.Contains(line, "---") {
-			continue
-		}
-		cells := strings.Split(strings.Trim(strings.TrimSpace(line), "|"), "|")
-		if len(cells) < 3 {
-			continue
-		}
-		for i := range cells {
-			cells[i] = strings.TrimSpace(cells[i])
-		}
-		if cells[0] == "" || strings.Contains(cells[0], "unit_id") || strings.EqualFold(cells[0], "unit") || cells[0] == "单元" {
-			continue
-		}
-		id := cells[0]
-		if regexp.MustCompile(`^U\d+$`).MatchString(id) {
-			id = volumeID + "-" + id
-		}
-		if !regexp.MustCompile(`(?i)^v\d{2,}-U\d+$`).MatchString(id) {
-			continue
-		}
-		from, to := parseChapterRange(cells[1])
-		if from == 0 || seen[id] {
-			continue
-		}
-		seen[id] = true
-		fn := cells[2]
-		if len(cells) > 3 && fn == "" {
-			fn = cells[3]
-		}
-		out = append(out, UnitSeed{UnitID: id, Title: cells[2], Function: fn, From: from, To: to})
-	}
-	return out
-}
-
-func parseChapterRange(s string) (int, int) {
-	re := regexp.MustCompile(`(\d+)\s*[-–—~至到]\s*(\d+)`)
-	if m := re.FindStringSubmatch(s); len(m) == 3 {
-		a, _ := strconv.Atoi(m[1])
-		b, _ := strconv.Atoi(m[2])
-		return a, b
-	}
-	n, _ := strconv.Atoi(regexp.MustCompile(`\d+`).FindString(s))
-	return n, n
-}
-
-var roleAnnotationRe = regexp.MustCompile(`\s*[（(][^）)]*(?:protagonist|antagonist|recurring|villain|hero|main|主角|反派|配角)[^）)]*[）)]\s*`)
-
 func normalizeRole(role string) string {
 	switch strings.ToLower(strings.TrimSpace(role)) {
 	case "protagonist", "hero", "main":
@@ -516,6 +464,12 @@ func SeedCandidateCast(root, stem string, onStageExisting []string) error {
 		return err
 	}
 	return os.WriteFile(path, []byte(md), 0o644)
+}
+
+// UpdateState 是 updateState 的导出包装，供 runs 在任务接受时推进 novel-state。
+// 只改顶层标量键，不动注释与其它字段。
+func UpdateState(root string, fields map[string]string) error {
+	return updateState(root, fields)
 }
 
 func updateState(root string, fields map[string]string) error {

@@ -66,7 +66,7 @@ func (s *Service) resolveModel(spec domain.TaskSpec) string {
 	}
 	role := domain.StageWrite
 	switch spec.Kind {
-	case domain.TaskPlan, domain.TaskInit:
+	case domain.TaskPlan, domain.TaskIdea:
 		role = domain.StagePlan
 	case domain.TaskOutline:
 		role = domain.StageOutline
@@ -191,6 +191,8 @@ func (s *Service) execute(ctx context.Context, run domain.Run, snap domain.BookS
 			}
 		}
 		res, err = runner.RunOutline(ctx, snap, vnum, ids, run.Spec.Instruction, modelID)
+	case domain.TaskIdea:
+		res, err = runner.RunIdeaExpand(ctx, snap, run.Spec.Instruction, modelID)
 	case domain.TaskPlan:
 		mode := strings.TrimSpace(run.Spec.Mode)
 		if mode == "" {
@@ -361,7 +363,9 @@ func (s *Service) PreviewPacket(_ context.Context, spec domain.TaskSpec) (domain
 		if len(ids) == 0 && spec.UnitID != "" {
 			ids = []string{spec.UnitID}
 		}
-		return contextsvc.BuildOutlinePacket(snap, vnum, ids, spec.Instruction, s.modelMaxOut(s.resolveModel(spec))), nil
+		return contextsvc.BuildOutlinePacket(snap, vnum, ids, spec.Instruction), nil
+	case domain.TaskIdea:
+		return contextsvc.BuildIdeaPacket(snap, spec.Instruction), nil
 	case domain.TaskPlan:
 		mode := strings.TrimSpace(spec.Mode)
 		if mode == "" {
@@ -380,7 +384,7 @@ func (s *Service) PreviewPacket(_ context.Context, spec domain.TaskSpec) (domain
 		} else if mode == domain.PlanModeVolume && len(snap.Volumes) > 0 {
 			vnum = snap.Volumes[len(snap.Volumes)-1].Volume
 		}
-		packet := contextsvc.BuildPlanPacketWithMode(snap, vnum, mode, spec.Instruction, s.modelMaxOut(s.resolveModel(spec)))
+		packet := contextsvc.BuildPlanPacketWithMode(snap, vnum, mode, spec.Instruction)
 		return s.Pipeline.ResolvePlanPreview(snap, mode, packet)
 	case domain.TaskReview:
 		unit, ok := findUnit(snap, spec.UnitID)
@@ -393,7 +397,7 @@ func (s *Service) PreviewPacket(_ context.Context, spec domain.TaskSpec) (domain
 		if s.reviewSplit(spec) {
 			chapters := gates.ParseProseChapters(unit.ProseRaw)
 			if len(chapters) == 0 {
-				return contextsvc.BuildReviewPacket(snap, unit, nil, s.modelMaxOut(s.resolveModel(spec)), s.loadReviewChecklist()), nil
+				return contextsvc.BuildReviewPacket(snap, unit, nil, s.loadReviewChecklist()), nil
 			}
 			local := gates.CheckProseWithRules(chapters, books.ChapterTarget(unit), s.Pipeline.DeslopRules)
 			baseline := contextsvc.BuildReviewBaseline(snap, unit, local.Findings, s.loadReviewChecklist())
@@ -401,7 +405,7 @@ func (s *Service) PreviewPacket(_ context.Context, spec domain.TaskSpec) (domain
 			packet.Policy.MaxCalls = len(chapters) * 2
 			return packet, nil
 		}
-		return contextsvc.BuildReviewPacket(snap, unit, nil, s.modelMaxOut(s.resolveModel(spec)), s.loadReviewChecklist()), nil
+		return contextsvc.BuildReviewPacket(snap, unit, nil, s.loadReviewChecklist()), nil
 	case domain.TaskFinalize:
 		unit, ok := findUnit(snap, spec.UnitID)
 		if !ok {
@@ -420,7 +424,7 @@ func (s *Service) PreviewPacket(_ context.Context, spec domain.TaskSpec) (domain
 		if spec.TargetPath == "" {
 			return domain.ContextPacket{}, fmt.Errorf("targetPath required")
 		}
-		return contextsvc.BuildRewriteEntityPacket(snap, spec, s.modelMaxOut(s.resolveModel(spec))), nil
+		return contextsvc.BuildRewriteEntityPacket(snap, spec), nil
 	default:
 		return domain.ContextPacket{}, fmt.Errorf("preview not supported for kind: %s", spec.Kind)
 	}
@@ -602,6 +606,28 @@ func (s *Service) Accept(ctx context.Context, cmd domain.AcceptCommand) (domain.
 					return domain.Candidate{}, err
 				}
 			}
+		}
+	case domain.TaskIdea:
+		// 创意提案只写 outline/idea.md：它是作者意图，不是 canon。
+		if strings.TrimSpace(cand.Replacement) == "" {
+			return domain.Candidate{}, fmt.Errorf("missing idea proposal")
+		}
+		if cand.TargetPath == "" {
+			cand.TargetPath = domain.IdeaPath
+		}
+		if cand.TargetPath != domain.IdeaPath {
+			return domain.Candidate{}, fmt.Errorf("创意扩写只能写 %s", domain.IdeaPath)
+		}
+		full := filepath.Join(root, filepath.FromSlash(cand.TargetPath))
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			return domain.Candidate{}, err
+		}
+		if err := os.WriteFile(full, []byte(cand.Replacement), 0o644); err != nil {
+			return domain.Candidate{}, err
+		}
+		// 有提案才允许结构化立项；next_action 直接指向 plan。
+		if err := books.UpdateState(root, map[string]string{"stage": domain.StageIdeaExpanded, "next_action": "plan"}); err != nil {
+			return domain.Candidate{}, err
 		}
 	case domain.TaskPlan:
 		if !cmd.ForceRiskAccept {

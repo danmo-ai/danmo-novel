@@ -17,7 +17,8 @@ Markdown 是总纲、卷纲和设定的事实源；解析对象只在内存/API 
 
 | 实体 | 位置 | 职责与关键字段 | 写回时机 |
 |---|---|---|---|
-| 运行状态 | `novel-state.yaml` | 阶段、当前单元、章游标、下一动作 | 定稿/流程推进 |
+| 运行状态 | `novel-state.yaml` | 阶段、当前单元、章游标、下一动作；阶段含 `idea / idea_expanded / planning` | 定稿/流程推进 |
+| 立项工作台 | `outline/idea.md` | 作者填写的立项输入 + LLM 扩写的创意提案；作者意图，不是 canon | 创意扩写 Accept（只写本文件） |
 | 作者意图 | `book-bible.md` | 读者承诺、logline、主角目标、故事引擎、终局方向 | 立项/重新立项 Accept |
 | 全书总纲 | `outline/book_outline.md` | 故事线、分卷起终状态、转折、兑现、故事线迁移、揭示边界 | 立项/重新立项 Accept |
 | 卷纲 | `outline/volumes/vNN.md` | 卷目标、节拍、人物、完整单元种子、内嵌时钟、卷末交接 | 卷纲 Accept |
@@ -93,6 +94,8 @@ Markdown 是总纲、卷纲和设定的事实源；解析对象只在内存/API 
 - 简单修改直接编辑 Markdown 源区间，保存前完整复验和 revision 检查。
 - 复杂修改通过追加指令生成候选，Accept 复验后写入。
 - 卷纲 Accept 原子写当前卷、缺失单元种子与身份变更，不覆盖已有细纲/正文/账本。
+- 创意扩写 Accept 只写 `outline/idea.md`（保留作者填写的立项输入）并推进 `stage`；不写总纲/设定/人物。
+- 重新立项与首次立项共用同一条执行路径（`plan + preservePaths`），范围选项只是预填保留清单。
 - 正文 Accept 只写正文；审校接受只归档问题；修订 Accept 写修订正文；定稿 Accept 才写 continuity。
 
 ## 8. 关键实现索引
@@ -100,6 +103,7 @@ Markdown 是总纲、卷纲和设定的事实源；解析对象只在内存/API 
 | 职责 | 位置 |
 |---|---|
 | 结构化 Markdown 解析与源区间 | `core/service/books/outline_markdown.go` |
+| 立项输入与创意提案 | `core/service/books/draft.go`、`core/service/pipeline/idea.go` |
 | 总纲/卷纲校验与引用 | `core/service/books/outline_validate.go`、`core/service/pipeline/plan_validate.go` |
 | 细纲章合同与父子校验 | `core/service/pipeline/outline_validate.go` |
 | 卷纲/章时钟校验 | `core/service/books/clock_contract.go` |

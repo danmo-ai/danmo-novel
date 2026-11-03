@@ -2,7 +2,6 @@ package llm
 
 import (
 	"context"
-	"fmt"
 	"os"
 	"strings"
 	"sync"
@@ -13,22 +12,9 @@ import (
 
 var _ port.LLMProvider = (*MockClient)(nil)
 
-type mockToolCall struct {
-	Name string
-	Args map[string]any
-}
-
 type callStep struct {
-	ToolCalls []mockToolCall
-	Text      string
-	Reasoning string
-	Delay     time.Duration
-}
-
-// ParallelCall is one tool_call inside a parallel batch step.
-type ParallelCall struct {
-	Name string
-	Args map[string]any
+	Text  string
+	Delay time.Duration
 }
 
 // MockClient is an in-process LLM used by tests and demos.
@@ -44,52 +30,11 @@ type MockProvider = MockClient
 
 func NewMock() *MockClient { return &MockClient{} }
 
-func (p *MockClient) AddToolCall(tool string, args map[string]any) *MockClient {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.steps = append(p.steps, callStep{ToolCalls: []mockToolCall{{Name: tool, Args: args}}})
-	return p
-}
-
-// AddParallelToolCalls queues one model step that returns multiple tool_calls
-// in a single assistant message (LLM parallel tool-call contract).
-func (p *MockClient) AddParallelToolCalls(calls ...ParallelCall) *MockClient {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	step := callStep{ToolCalls: make([]mockToolCall, 0, len(calls))}
-	for _, c := range calls {
-		step.ToolCalls = append(step.ToolCalls, mockToolCall{Name: c.Name, Args: c.Args})
-	}
-	p.steps = append(p.steps, step)
-	return p
-}
-
-func (p *MockClient) AddToolCallWithReasoning(tool string, args map[string]any, reasoning string) *MockClient {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.steps = append(p.steps, callStep{
-		ToolCalls: []mockToolCall{{Name: tool, Args: args}},
-		Reasoning: reasoning,
-	})
-	return p
-}
-
 func (p *MockClient) AddText(content string) *MockClient {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.steps = append(p.steps, callStep{Text: content})
 	return p
-}
-
-func (p *MockClient) AddTextWithReasoning(content, reasoning string) *MockClient {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.steps = append(p.steps, callStep{Text: content, Reasoning: reasoning})
-	return p
-}
-
-func (p *MockClient) Finish(summary string) *MockClient {
-	return p.AddText(summary)
 }
 
 // AddTextWithDelay queues a text step that waits for d (or context
@@ -137,19 +82,5 @@ func (p *MockClient) Chat(ctx context.Context, req port.LLMChatRequest) (port.LL
 		}
 	}
 
-	if step.Text != "" {
-		return port.LLMChatResponse{Content: step.Text, ReasoningContent: step.Reasoning, Done: true}, nil
-	}
-	tcs := make([]port.ChatToolCall, len(step.ToolCalls))
-	for i, tc := range step.ToolCalls {
-		id := tc.Name + "-id"
-		if len(step.ToolCalls) > 1 {
-			id = fmt.Sprintf("%s-id-%d", tc.Name, i)
-		}
-		tcs[i] = port.ChatToolCall{ID: id, Name: tc.Name, Arguments: tc.Args}
-	}
-	return port.LLMChatResponse{
-		ReasoningContent: step.Reasoning,
-		ToolCalls:        tcs,
-	}, nil
+	return port.LLMChatResponse{Content: step.Text, Done: true}, nil
 }

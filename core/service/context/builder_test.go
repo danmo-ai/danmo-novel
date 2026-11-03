@@ -298,7 +298,7 @@ func TestStageInstructionAppended(t *testing.T) {
 		t.Fatalf("empty instruction must not change prompt: %q", plainPayload.Instruction)
 	}
 
-	outline := BuildOutlinePacket(snap, 1, []string{unit.UnitID}, "细纲追加XYZ", 0)
+	outline := BuildOutlinePacket(snap, 1, []string{unit.UnitID}, "细纲追加XYZ")
 	op, err := DecodeUserPayload(outline.UserPrompt)
 	if err != nil {
 		t.Fatal(err)

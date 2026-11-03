@@ -385,16 +385,16 @@ func registerBooks(api *gin.RouterGroup, app *App) {
 		c.JSON(200, out)
 	})
 	api.POST("/books", func(c *gin.Context) {
-		var body struct{ BookID, Title, Genre string }
+		var body books.DraftInput
 		if err := c.BindJSON(&body); err != nil {
 			c.JSON(400, gin.H{"error": err.Error()})
 			return
 		}
-		if body.BookID == "" {
+		if strings.TrimSpace(body.BookID) == "" {
 			c.JSON(400, gin.H{"error": "bookId required"})
 			return
 		}
-		root, err := books.CreateBookScaffold(app.Settings.Get().LibraryRoot, body.BookID, body.Title, body.Genre)
+		root, err := books.CreateBookFromDraft(app.Settings.Get().LibraryRoot, body)
 		if err != nil {
 			c.JSON(400, gin.H{"error": err.Error()})
 			return

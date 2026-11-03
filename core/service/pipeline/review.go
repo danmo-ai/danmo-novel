@@ -351,7 +351,7 @@ func (r *Runner) RunReview(ctx context.Context, snap domain.BookSnapshot, unit d
 	chapters := gates.ParseProseChapters(unit.ProseRaw)
 	target := books.ChapterTarget(unit)
 	local := gates.CheckProseWithRules(chapters, target, r.proseRules())
-	packet := contextsvc.BuildReviewPacket(snap, unit, local.Findings, r.modelMaxOut(modelID), r.ReviewChecklist)
+	packet := contextsvc.BuildReviewPacket(snap, unit, local.Findings, r.ReviewChecklist)
 	res, err := r.runJSON(ctx, snap, packet, modelID, domain.TaskReview, unit.UnitID, unit.ProsePath, func(raw string, cand *domain.Candidate) error {
 		findings, err := parseReviewResponse(raw, 0)
 		if err != nil {

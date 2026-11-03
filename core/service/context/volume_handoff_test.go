@@ -139,7 +139,7 @@ func TestBuildPlanPacketVolumeIncludesPrevHandoff(t *testing.T) {
 		}},
 		Cast: []domain.CastCard{{Stem: "lin", Name: "林尘", Role: "protagonist", Raw: "# 林尘\n"}},
 	}
-	packet := BuildPlanPacketWithMode(snap, 2, domain.PlanModeVolume, "", 0)
+	packet := BuildPlanPacketWithMode(snap, 2, domain.PlanModeVolume, "")
 	ids := map[string]bool{}
 	for _, b := range packet.Blocks {
 		ids[b.ID] = true
