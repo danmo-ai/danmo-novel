@@ -6,6 +6,7 @@ import { useAppStore } from '@/stores/app'
 import { STATUS_LABELS } from '@/utils/runLabels'
 import { VERDICT_LABEL, isBlockingFinding, isUnfinishedFinding, reviewVerdict } from '@/utils/reviewState'
 import type { Candidate, ReviewFinding, UnitInfo } from '@/types'
+import ChapterDiff from './ChapterDiff.vue'
 
 const props = defineProps<{ selectedUnit: UnitInfo | null; busy?: boolean; readOnly?: boolean }>()
 const emit = defineEmits<{
@@ -13,10 +14,55 @@ const emit = defineEmits<{
   retrySplit: [unitId?: string]
   focusUnit: [unitId: string]
   rejectUnit: [unitId: string, candidateIds: string[]]
+  /** 修订候选落盘：候选写正文、摘掉本次修掉的问题。 */
+  accept: [c: Candidate]
+  /** 丢弃这次修复：正文不变，清单原样留下。 */
+  rejectCandidate: [c: Candidate]
 }>()
 const store = useAppStore()
 
 type Row = ReviewFinding & { candidateId: string; unitId?: string }
+
+/**
+ * 审校页一次只显示「当前这一步」：清单 → 修复中 → diff 待落盘。
+ *
+ * 以前清单和页面底部的「待审候选」diff 同时存在：同一个单元的同一批问题在页面
+ * 首尾各出现一次，作者点完「自动修复」得往下滚几屏才找得到产物，还能在 diff
+ * 等待期间再点一次「自动修复」撞上服务端冲突。按单元就地切换后，问题清单在
+ * 修复待落盘时让位给 diff，落盘或拒绝后再回来。
+ */
+function latestRevise(unitId: string): Candidate | null {
+  let latest: Candidate | null = null
+  for (const c of store.candidates) {
+    if (c.kind !== 'revise' || c.unitId !== unitId) continue
+    if (!latest || new Date(c.createdAt) > new Date(latest.createdAt)) latest = c
+  }
+  return latest
+}
+
+/** 修订候选本身不记「修了哪几条」，唯一可信来源是它对应 run 的 IssueIDs。 */
+function addressedIds(c: Candidate): Set<string> {
+  const run = store.runs.find((r) => r.id === c.runId)
+  return new Set((run?.spec?.issueIds as string[] | undefined) || [])
+}
+
+/**
+ * 修复卡片副标题：说清这次修了哪几条、还有多少没勾（落盘后仍可继续修）。
+ * run 记录缺失时退回一句中性描述，不谎报「针对 0 条」。
+ */
+function reviseSummary(g: { addressedRows: Row[]; remaining: number }) {
+  const parts: string[] = []
+  if (g.addressedRows.length) parts.push(`针对 ${g.addressedRows.length} 条`)
+  if (g.remaining) parts.push(`另有 ${g.remaining} 条未勾选，落盘后仍在清单里`)
+  return parts.join(' · ') || '落盘后本次修掉的问题从清单摘掉'
+}
+
+/** 正在生成修复的单元：还没产出候选，但这一处也已经进入「只显示这一步」。 */
+function runningRevise(unitId: string) {
+  const r = store.activeRun
+  if (!r || r.kind !== 'revise' || r.spec?.unitId !== unitId) return null
+  return r.status === 'running' || r.status === 'pending' ? r : null
+}
 
 // 全书范围：只渲染选中单元会让作者在审完 v02-U1 后看到"没有待处理问题"，
 // 因为他打开书时默认停在 v01-U1。按单元分组后，每个单元都能独立处理。
@@ -33,18 +79,28 @@ const groups = computed(() => {
     }
   }
   return [...byUnit.entries()]
-    .map(([unitId, g]) => ({
-      unitId,
-      rows: g.rows,
-      candidateIds: g.candidateIds,
-      // 只数会真正阻断的条目：标题上的「N 阻断」必须与 verdict 用同一口径，
-      // 否则会出现徽章说「7 阻断」、判定却认为可以前进的矛盾显示。
-      blocking: g.rows.filter(isBlockingFinding).length,
-      // 截断/分章失败的标记：有它就不是"没有问题"，而是"这章没审完"。
-      unfinished: g.rows.filter(isUnfinishedFinding).length,
-      verdict: reviewVerdict(g.rows),
-      chapters: [...new Set(g.rows.map((f) => f.chapter).filter(Boolean))].sort((a, b) => (a as number) - (b as number)) as number[],
-    }))
+    .map(([unitId, g]) => {
+      const revise = latestRevise(unitId)
+      const addressed = revise ? addressedIds(revise) : new Set<string>()
+      const addressedRows = g.rows.filter((f) => addressed.has(f.id))
+      return {
+        unitId,
+        rows: g.rows,
+        candidateIds: g.candidateIds,
+        // 只数会真正阻断的条目：标题上的「N 阻断」必须与 verdict 用同一口径，
+        // 否则会出现徽章说「7 阻断」、判定却认为可以前进的矛盾显示。
+        blocking: g.rows.filter(isBlockingFinding).length,
+        // 截断/分章失败的标记：有它就不是"没有问题"，而是"这章没审完"。
+        unfinished: g.rows.filter(isUnfinishedFinding).length,
+        verdict: reviewVerdict(g.rows),
+        chapters: [...new Set(g.rows.map((f) => f.chapter).filter(Boolean))].sort((a, b) => (a as number) - (b as number)) as number[],
+        revise,
+        addressedRows,
+        // 落盘后还能继续修的：这次没勾选、也不是「没审完」标记的条目。
+        remaining: g.rows.filter((f) => !addressed.has(f.id) && !isUnfinishedFinding(f)).length,
+        running: runningRevise(unitId),
+      }
+    })
     .sort((a, b) => a.unitId.localeCompare(b.unitId))
 })
 
@@ -186,7 +242,7 @@ function archivedAt(c: Candidate) {
       <div>
         <p class="eyebrow">Quality</p>
         <h2>审校与定稿</h2>
-        <p>审校只出问题清单，出口只有两个：勾选后「自动修复」看 diff 再确认落盘（落盘即完成这一轮修订，清单里没勾的仍留着可继续修）；或者「拒绝」——不同意这些结论，丢弃清单，之后需要时自己重新发起审校。定稿是写作页的独立步骤，不在审校面板上。</p>
+        <p>审校只出问题清单，出口只有两个：勾选后「自动修复」——diff 就地展开在该单元里，确认落盘才写正文（落盘即完成这一轮修订，清单里没勾的仍留着可继续修）；或者「拒绝」——不同意这些结论，丢弃清单，之后需要时自己重新发起审校。定稿是写作页的独立步骤，不在审校面板上。</p>
       </div>
       <div class="review-totals">
         <span><strong>{{ totalBlocking }}</strong> 阻断</span>
@@ -252,26 +308,64 @@ function archivedAt(c: Candidate) {
           <span class="muted">{{ g.rows.length }} 条 · {{ g.chapters.length }} 章 · {{ g.candidateIds.length }} 份清单</span>
         </div>
         <div class="unit-actions">
-          <select v-if="g.chapters.length > 1" :value="filterOf(g.unitId)"
-            @change="chapterFilter[g.unitId] = ($event.target as HTMLSelectElement).value === 'all' ? 'all' : Number(($event.target as HTMLSelectElement).value)">
-            <option value="all">全部章节</option>
-            <option v-for="ch in g.chapters" :key="ch" :value="ch">第 {{ ch }} 章</option>
-          </select>
-          <span class="muted">已选 {{ issueIdsOf(g).length }}/{{ selectableRows(g).length }}</span>
-          <button class="ghost" :disabled="props.busy || props.readOnly"
-            title="不同意这些审校结论：丢弃整份清单，正文不变。之后需要时自己重新发起审校"
-            @click="emit('rejectUnit', g.unitId, g.candidateIds)">
-            拒绝
-          </button>
-          <button class="primary" :disabled="props.busy || props.readOnly || !issueIdsOf(g).length"
-            :title="issueIdsOf(g).length ? '按勾选问题自动修复，产出可 diff 的候选等你确认' : '先勾选要修的问题'"
-            @click="emit('revise', g.unitId, issueIdsOf(g))">
-            {{ props.busy ? '运行中…' : '自动修复' }}
-          </button>
+          <!-- 修复生成中/待落盘：这一组只处理当前这一步，勾选与「自动修复」先收起。 -->
+          <span v-if="g.revise || g.running" class="muted">
+            {{ g.running ? '正在生成修复…' : '修复待确认落盘' }}
+          </span>
+          <template v-else>
+            <select v-if="g.chapters.length > 1" :value="filterOf(g.unitId)"
+              @change="chapterFilter[g.unitId] = ($event.target as HTMLSelectElement).value === 'all' ? 'all' : Number(($event.target as HTMLSelectElement).value)">
+              <option value="all">全部章节</option>
+              <option v-for="ch in g.chapters" :key="ch" :value="ch">第 {{ ch }} 章</option>
+            </select>
+            <span class="muted">已选 {{ issueIdsOf(g).length }}/{{ selectableRows(g).length }}</span>
+            <button class="ghost" :disabled="props.busy || props.readOnly"
+              title="不同意这些审校结论：丢弃整份清单，正文不变。之后需要时自己重新发起审校"
+              @click="emit('rejectUnit', g.unitId, g.candidateIds)">
+              拒绝
+            </button>
+            <button class="primary" :disabled="props.busy || props.readOnly || !issueIdsOf(g).length"
+              :title="issueIdsOf(g).length ? '按勾选问题自动修复，产出可 diff 的候选等你确认' : '先勾选要修的问题'"
+              @click="emit('revise', g.unitId, issueIdsOf(g))">
+              {{ props.busy ? '运行中…' : '自动修复' }}
+            </button>
+          </template>
         </div>
       </header>
 
-      <div class="finding-list">
+      <!-- 待落盘的修订：清单区改成这一轮的 diff，不再和问题清单并排出现。 -->
+      <section v-if="g.revise" class="revise-pending">
+        <header class="revise-head">
+          <div class="revise-title">
+            <strong>本次修复 · 待确认落盘</strong>
+            <span class="muted">{{ reviseSummary(g) }}</span>
+          </div>
+          <div class="revise-actions">
+            <button class="ghost" :disabled="props.busy || props.readOnly"
+              title="丢弃这次修复：正文不变，清单原样留下"
+              @click="emit('rejectCandidate', g.revise)">拒绝这次修复</button>
+            <button class="primary" :disabled="props.busy || props.readOnly"
+              @click="emit('accept', g.revise)">确认落盘</button>
+          </div>
+        </header>
+        <p class="revise-note">下面是相对现有正文的改动。确认无误再落盘：本次针对的问题会从清单摘掉，未勾选的仍留着可继续修。不认可这次改动就拒绝，正文不变。</p>
+        <ChapterDiff :base="g.revise.baseChapters" :revised="g.revise.chapters || []" />
+        <details v-if="g.addressedRows.length" class="revise-issues">
+          <summary>本次针对的 {{ g.addressedRows.length }} 条问题（落盘后从清单摘掉）</summary>
+          <ul>
+            <li v-for="f in g.addressedRows" :key="f.id">
+              <span class="sev">{{ f.severity === 'blocking' ? '阻断' : '建议' }}</span>
+              {{ f.title }}<span v-if="f.chapter" class="muted"> · 第 {{ f.chapter }} 章</span>
+            </li>
+          </ul>
+        </details>
+      </section>
+      <section v-else-if="g.running" class="revise-pending running">
+        <strong>正在按勾选生成修复…</strong>
+        <p class="muted">生成期间这一组只显示这一步。完成后这里直接变成 diff，确认落盘才写正文。</p>
+      </section>
+
+      <div v-else class="finding-list">
         <!-- 全选按"当前筛选 + 可修"生效：筛到第 2 章只选第 2 章，截断标记不参与。 -->
         <div class="list-tools">
           <button class="ghost" :disabled="props.busy || props.readOnly || !selectableRows(g).length"
@@ -381,6 +475,22 @@ function archivedAt(c: Candidate) {
 .rules-actions { flex-shrink: 0; display: flex; gap: 8px; flex-wrap: wrap; }
 .ghost-link { font-size: 12px; color: var(--accent); text-decoration: none; padding: 6px 12px; border: 1px solid var(--line); border-radius: 8px; white-space: nowrap; }
 .ghost-link:hover { border-color: var(--accent); }
+/* 待落盘的修复：这一组此刻只显示这一步，diff 和落盘按钮同屏，不再和清单并排。 */
+.revise-pending { display: grid; gap: 10px; padding: 14px 18px 16px; }
+.revise-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; flex-wrap: wrap; }
+.revise-title { display: grid; gap: 3px; }
+.revise-title strong { font-size: 14px; color: var(--accent); }
+.revise-note { margin: 0; color: var(--ink-soft); font-size: 12px; line-height: 1.7; }
+.revise-actions { display: flex; gap: 8px; flex-wrap: wrap; flex-shrink: 0; }
+.revise-actions .ghost { background: transparent; border: 1px solid var(--line); color: var(--ink-soft); }
+.revise-actions .ghost:hover:not(:disabled) { color: var(--bad); border-color: rgba(163,59,50,.35); }
+.revise-issues { border: 1px solid var(--line); border-radius: 10px; padding: 8px 12px; background: rgba(255,255,255,.5); }
+.revise-issues summary { cursor: pointer; font-size: 12px; color: var(--ink-soft); }
+.revise-issues ul { margin: 8px 0 0; padding-left: 18px; font-size: 12px; line-height: 1.8; color: var(--ink-soft); }
+.revise-issues .sev { font-weight: 600; margin-right: 4px; }
+.revise-pending.running { padding: 18px; }
+.revise-pending.running strong { color: var(--accent); font-size: 13px; }
+.revise-pending.running p { margin: 4px 0 0; }
 .finding-list { padding: 4px 18px 12px; }
 .list-tools { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 10px 0 8px; border-bottom: 1px solid var(--line); }
 .list-tools .ghost { background: transparent; border: 1px solid var(--line); color: var(--ink-soft); padding: 4px 10px; font-size: 12px; }

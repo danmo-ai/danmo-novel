@@ -33,6 +33,15 @@ const runDrawer = ref(false)
  * 审校页。两处都渲染同一批 findings 只会让作者在两份列表之间来回跳。
  */
 const pendingCandidates = computed(() => store.candidates.filter((c) => c.kind !== 'review'))
+/**
+ * 审校页的修订候选已经在该单元的清单区就地展开（diff + 确认落盘），底部不再重复
+ * 一份。写作/大纲/设定页仍从这里看待落盘的修订。
+ */
+const listedCandidates = computed(() => {
+  if (view.value !== 'review') return pendingCandidates.value
+  const reviewUnits = new Set(store.candidates.filter((c) => c.kind === 'review' && c.unitId).map((c) => c.unitId))
+  return pendingCandidates.value.filter((c) => !(c.kind === 'revise' && c.unitId && reviewUnits.has(c.unitId)))
+})
 /** 实时日志的缓存汇总：重试（step=repair）命中率应接近 100%。 */
 function runCacheOf(run: { calls?: CallRecord[] } | null | undefined) { return cacheStat(run?.calls) }
 const pollTimer = ref<number | null>(null)
@@ -424,7 +433,7 @@ async function reviseFindings(unitId: string, issueIds: string[]) {
           pollTimer.value = null
           await store.loadCandidates(bookId.value)
           await store.loadRuns(bookId.value)
-          if (r.status === 'waiting_accept') store.note('修订候选已生成：去「待审候选」看 diff 后确认落盘')
+          if (r.status === 'waiting_accept') store.note('修订候选已生成：该单元的清单区已换成 diff，确认落盘后写正文')
           else if (r.status === 'failed') store.fail(r.error || '自动修复失败，正文未改变')
         }
       } catch (e) { store.fail(e) }
@@ -690,6 +699,8 @@ function roleLabel(role?: string) {
         @retry-split="retrySplitReview"
         @focus-unit="focusUnit"
         @reject-unit="rejectUnitFindings"
+        @accept="accept"
+        @reject-candidate="reject"
       />
       <section v-else class="editor-panel panel">
         <template v-if="isProseUnit && selectedUnit">
@@ -804,14 +815,16 @@ function roleLabel(role?: string) {
       </aside>
     </div>
 
-    <section v-if="pendingCandidates.length" class="candidates">
+    <section v-if="listedCandidates.length" class="candidates">
       <h2>待审候选</h2>
       <!--
         只列「接受后会写文件」的候选。审校清单不在这里：它不写正文，唯一归属地是
-        审校页。也不在这里放"另有 N 条审校结论"的跳转提示——那既不能处理问题，
-        又让人以为清单丢了一份，属于噪音；整块为空时直接不渲染。
+        审校页。修订候选在审校页按单元就地展开 diff（清单区切换成当前这一步），
+        所以这里只在其他页面列它，避免同一份 diff 在页面首尾各出现一次。
+        也不放"另有 N 条审校结论"的跳转提示——那既不能处理问题，又让人以为清单
+        丢了一份，属于噪音；整块为空时直接不渲染。
       -->
-      <article v-for="c in pendingCandidates" :key="c.id" class="candidate panel">
+      <article v-for="c in listedCandidates" :key="c.id" class="candidate panel">
         <header>
           <div>
             <strong>{{ c.kind === 'plan' ? planModeLabel(c.mode) : (stageLabels[c.kind] || c.kind) }} · {{ candidateTarget(c) }}</strong>
