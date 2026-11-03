@@ -14,7 +14,6 @@ import UnitContract from '@/components/book/UnitContract.vue'
 import UnitFlowActions from '@/components/book/UnitFlowActions.vue'
 import RunConfirmDialog from '@/components/book/RunConfirmDialog.vue'
 import { planModeLabel as sharedPlanModeLabel, runKindLabel } from '@/utils/runLabels'
-import { isUnfinishedFinding } from '@/utils/reviewState'
 import { cacheStat, callCacheText, hitRateText } from '@/utils/tokenStats'
 import { parseStructuredMarkdown } from '@/utils/structuredMarkdown'
 
@@ -29,6 +28,11 @@ const saving = ref(false)
 const busy = ref(false)
 const modelId = ref('')
 const runDrawer = ref(false)
+/**
+ * 待审候选 = 「接受后会写文件」的候选。审校清单不在其中：它不写正文，唯一归属地是
+ * 审校页。两处都渲染同一批 findings 只会让作者在两份列表之间来回跳。
+ */
+const pendingCandidates = computed(() => store.candidates.filter((c) => c.kind !== 'review'))
 /** 实时日志的缓存汇总：重试（step=repair）命中率应接近 100%。 */
 function runCacheOf(run: { calls?: CallRecord[] } | null | undefined) { return cacheStat(run?.calls) }
 const pollTimer = ref<number | null>(null)
@@ -355,16 +359,14 @@ function runFlowStep(key: string) {
 
 async function accept(c: Candidate, force = false) {
   try {
-    // 接受修订就是交付终点：正文落盘、清单归档，不再自动起一轮复审。
+    // 接受修订就是交付终点：正文落盘、已修的问题从清单摘掉，不再自动起审校。
     //
     // 实测（同单元连续 6 轮）复审报出的"新问题"有 96%+ 落在这次没改过的原文上——
     // 是前几轮没扫到的旧账，不是修复引入的回归。自动复审会把这个循环无限延长，
-    // 作者也分不清"修好了"和"又发现一批旧的"。想再查就用「重审」，那是显式操作。
+    // 作者也分不清"修好了"和"又发现一批旧的"。真要重来就重新审校整个单元。
     await store.acceptCandidate(c.id, c.baseRevision, {
-      followUpReview: false,
       forceRiskAccept: force,
     })
-    if (c.kind === 'review') view.value = 'review'
     if (c.kind === 'revise' && c.unitId) focusUnit(c.unitId)
     await reload()
     // 归档后清单从「待审候选」消失，必须在历史里还能回看。
@@ -383,57 +385,7 @@ async function accept(c: Candidate, force = false) {
   }
 }
 
-/**
- * 审校通过：归档该单元全部待处理清单，并按需直接起定稿。
- *
- * force 是作者对"带阻断/带截断也要往前推"的显式授权：不带它时服务端会拒绝，
- * 所以确认框里必须把要放弃的东西说清楚。
- */
-async function closeReview(unitId: string, force: boolean) {
-  const book = store.currentBook
-  if (!book || busy.value) return
-  const lists = store.candidates.filter((c) => c.kind === 'review' && c.unitId === unitId)
-  const rows = lists.flatMap((c) => c.findings || [])
-  const blocking = rows.filter((f) => f.severity === 'blocking' && !isUnfinishedFinding(f)).length
-  const unfinished = rows.filter(isUnfinishedFinding).length
-  if (force) {
-    const detail = [
-      blocking ? `${blocking} 条阻断` : '',
-      unfinished ? `${unfinished} 处审校不完整` : '',
-    ].filter(Boolean).join('、') || '未处理的建议'
-    const ok = window.confirm(
-      `强制通过 ${unitId}？\n\n还有 ${detail}。这些结论会随清单一起归档，不会被修复，也不会进定稿账本。\n定稿后单元标为已定稿；之后只能手动改正文。`,
-    )
-    if (!ok) return
-  }
-  busy.value = true
-  try {
-    const res = await store.closeUnitReview(book.summary.id, unitId, { force, startFinalize: true })
-    await reload()
-    await Promise.all([store.loadRuns(bookId.value), store.loadCandidateHistory(bookId.value)])
-    if (res.runId) {
-      startRunPoll(res.runId)
-    } else if (res.warning) {
-      store.fail(res.warning)
-    }
-    store.note(
-      `${res.closed ? `已通过 ${res.closed} 份清单` : '已通过'}${res.runId ? '，正在定稿' : ''}`,
-    )
-  } catch (e: any) {
-    const msg = e?.message || String(e)
-    // 服务端拒绝时把"要放弃什么"摆出来，让作者决定是否强制。
-    if (!force && window.confirm(`${msg}\n\n仍要强制通过并去定稿吗？`)) {
-      busy.value = false
-      await closeReview(unitId, true)
-      return
-    }
-    store.fail(e)
-  } finally {
-    busy.value = false
-  }
-}
-
-/** 轮询一个已在服务端跑起来的 run（例如「通过并定稿」起的定稿）。 */
+/** 轮询一个已在服务端跑起来的 run（例如定稿）。 */
 function startRunPoll(runId: string) {
   if (pollTimer.value) clearInterval(pollTimer.value)
   runDrawer.value = true
@@ -484,7 +436,7 @@ async function reviseFindings(unitId: string, issueIds: string[]) {
   }
 }
 
-/** 把选中单元切到指定单元（审校页点单元 ID 或在候选卡片点「去修订」）。 */
+/** 把选中单元切到指定单元（审校页点单元 ID 时用）。 */
 function focusUnit(unitId: string) {
   const u = store.currentBook?.units.find((x) => x.unitId === unitId)
   if (u) selectedUnit.value = u
@@ -514,19 +466,19 @@ async function rejectUnitFindings(unitId: string, candidateIds: string[]) {
   }
 }
 
-/** 截断后重试：改用按章审校，每章一次调用，不会撞输出预算。 */
+/** 重新审校整个单元：先用新结论替换旧清单（归档），再按章重审一遍。 */
 async function retrySplitReview(unitId?: string) {
   const book = store.currentBook
   const unit = selectedUnit.value
   const targetId = unitId || unit?.unitId
   if (!book || !targetId || busy.value) return
-  // 重审会用新结论替换旧结论：旧清单里尚未处理的条目随之归档。先讲清后果，
-  // 否则作者会以为"重审"只是再算一遍、旧结论还在。
+  // 重新审校会用新结论替换旧结论：旧清单里尚未处理的条目随之归档。先讲清后果，
+  // 否则作者会以为只是再算一遍、旧结论还在。
   const open = store.candidates.filter((c) => c.kind === 'review' && c.unitId === targetId)
   if (open.length) {
     const n = open.reduce((sum, c) => sum + (c.findings || []).length, 0)
     const ok = window.confirm(
-      `重审 ${targetId}？\n\n该单元还有 ${n} 条未处理的审校结论（${open.length} 份清单），重审会先把它们归档作废，再重新审一遍。\n如果旧结论还要用，请先点「自动修复」或「通过」。`,
+      `重新审校 ${targetId}？\n\n该单元还有 ${n} 条未处理的审校结论（${open.length} 份清单），重新审校会先把它们归档作废，再按章重审一遍。\n如果旧结论还要用，请先在审校页勾选「自动修复」，或确认后丢弃。`,
     )
     if (!ok) return
   }
@@ -738,7 +690,6 @@ function roleLabel(role?: string) {
         @retry-split="retrySplitReview"
         @focus-unit="focusUnit"
         @reject-unit="rejectUnitFindings"
-        @close-review="closeReview"
       />
       <section v-else class="editor-panel panel">
         <template v-if="isProseUnit && selectedUnit">
@@ -853,28 +804,29 @@ function roleLabel(role?: string) {
       </aside>
     </div>
 
-    <section class="candidates">
+    <section v-if="pendingCandidates.length" class="candidates">
       <h2>待审候选</h2>
-      <p v-if="!store.candidates.length" class="muted">生成结果会先到这里，接受后才进入正文。</p>
-      <article v-for="c in store.candidates" :key="c.id" class="candidate panel">
+      <!--
+        只列「接受后会写文件」的候选。审校清单不在这里：它不写正文，唯一归属地是
+        审校页。也不在这里放"另有 N 条审校结论"的跳转提示——那既不能处理问题，
+        又让人以为清单丢了一份，属于噪音；整块为空时直接不渲染。
+      -->
+      <article v-for="c in pendingCandidates" :key="c.id" class="candidate panel">
         <header>
           <div>
             <strong>{{ c.kind === 'plan' ? planModeLabel(c.mode) : (stageLabels[c.kind] || c.kind) }} · {{ candidateTarget(c) }}</strong>
             <span class="muted"> · {{ new Date(c.createdAt).toLocaleString() }}</span>
           </div>
           <div>
-            <button v-if="c.kind === 'review' && c.unitId" class="primary" @click="focusUnit(c.unitId); view = 'review'">去修订</button>
             <button v-if="c.kind === 'structure_review' && c.findings?.some((f) => f.severity === 'blocking')" class="primary" @click="repairStructure(c)">按问题修复</button>
             <button @click="reject(c)">拒绝</button>
-            <button v-if="c.kind !== 'review'" class="primary" @click="accept(c)">{{ c.kind === 'revise' ? '确认落盘' : '接受' }}</button>
+            <button class="primary" @click="accept(c)">{{ c.kind === 'revise' ? '确认落盘' : '接受' }}</button>
           </div>
         </header>
-        <!-- 审校候选没有"归档"：清单只有两条路——去修订，或拒绝后自己重新审校。 -->
-        <p v-if="c.kind === 'review'" class="muted">审校结论只能二选一：点「去修订」勾选问题让系统改写；或「拒绝」丢弃这份清单，之后自己重新审校。</p>
         <p v-if="c.kind === 'structure_review'" class="muted">结构编辑只审查父级继承、因果、兑现和状态。按问题修复会生成新的文档候选，接受后才会写回 Markdown。</p>
         <!-- 修订候选：先看 diff 再落盘，接受不能是盲签。 -->
         <template v-else-if="c.kind === 'revise'">
-          <p class="muted">下面是相对现有正文的改动。确认无误后点「确认落盘」覆盖正文，这次修订即告完成；落盘后不会自动再跑审校，要复查请回审校页点「重审」。</p>
+          <p class="muted">下面是相对现有正文的改动。确认无误后点「确认落盘」覆盖正文，这次修订即告完成；落盘后勾选过的问题从清单里摘掉，要复查请重新发起审校。</p>
           <ChapterDiff :base="c.baseChapters" :revised="c.chapters || []" />
         </template>
         <pre v-else-if="c.chapters" class="candidate-prose">{{ chapterText(c) }}</pre>

@@ -761,10 +761,11 @@ func chapterLengthGuidance(unit domain.UnitInfo) string {
 	b.WriteString("本章字数（合同值，不是参考值）：\n")
 	fmt.Fprintf(&b, "- 目标 %d 字，允许 %d–%d 字。\n", target, floor, ceil)
 	if scenes > 0 {
-		fmt.Fprintf(&b, "- 把目标拆到本章约 %d 个主线场面上，每场约 %d 字；写完一场再进下一场，不额外加场。\n",
-			scenes, target/scenes)
+		fmt.Fprintf(&b, "- 本章合同有 %d 个场面；每个场面 %d–%d 字，写完一场再进下一场，不额外加场。\n",
+			scenes, domain.SceneCharsMin, domain.SceneCharsMax)
 	} else {
-		fmt.Fprintf(&b, "- 把目标拆到本章 2–3 个主线场面上，每场约 %d 字；写完一场再进下一场，不额外加场。\n", target/3)
+		fmt.Fprintf(&b, "- 细纲没给场面节拍：按本章内容切 2–4 个主线场面，每个场面 %d–%d 字；写完一场再进下一场，不额外加场。\n",
+			domain.SceneCharsMin, domain.SceneCharsMax)
 	}
 	fmt.Fprintf(&b, "- 少于 %d 字会被退回重写；超过 %d 字会判为不合格并计入审校。到目标就收。\n", floor, ceil)
 	b.WriteString("- 控字数的唯一正当办法是砍冗余（同类复述、重复解释、可省的过渡），不是砍场面结果、人物关系变化或章末钩子。")

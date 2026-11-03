@@ -82,7 +82,9 @@ func acceptPlanBook(root string, cand domain.Candidate) error {
 			return fmt.Errorf("不允许的设定路径: %s", path)
 		}
 	}
-	for path := range cand.PlanSettings {
+	// 遍历 map 只是为了找出不允许的路径；返回的必须是稳定的第一条，
+	// 否则同一份候选两次校验会给出不同的报错文本（那段文本会进 repair 提示词）。
+	for _, path := range sortedStringKeys(cand.PlanSettings) {
 		if !IsPlanSettingsPath(path) {
 			return fmt.Errorf("不允许的设定路径: %s", path)
 		}
@@ -523,7 +525,10 @@ func updateState(root string, fields map[string]string) error {
 		return err
 	}
 	text := string(b)
-	for key, value := range fields {
+	// 键序必须稳定：map 顺序随机，追加新键时会让 novel-state.yaml 的字节序漂移，
+	// computeRevision 随之改变，下游以 revision 为键的缓存整片失效。
+	for _, key := range sortedStringKeys(fields) {
+		value := fields[key]
 		re := regexp.MustCompile(`(?m)^` + regexp.QuoteMeta(key) + `:\s*.*$`)
 		if re.MatchString(text) {
 			text = re.ReplaceAllString(text, key+": "+value)

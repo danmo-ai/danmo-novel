@@ -91,32 +91,6 @@ func TestRankFindingsPutsConsensusFirst(t *testing.T) {
 	}
 }
 
-// 复审时落在改动区间之外的问题标 outOfScope：保留给作者看，但不阻断。
-func TestMarkOutOfScope(t *testing.T) {
-	findings := []domain.ReviewFinding{
-		finding("in", "blocking", "车斗空着，两个人正从车上往下搬纸箱。", "车斗空着却在卸"),
-		finding("out", "blocking", "他推开门。", "开头太直接"),
-	}
-	scoped := map[int][]string{6: {"车斗空着，两个人正从车上往下搬纸箱。"}}
-	got := markOutOfScope(findings, scoped)
-	if got[0].OutOfScope {
-		t.Fatalf("anchored-to-change finding must stay in scope: %+v", got[0])
-	}
-	if !got[1].OutOfScope {
-		t.Fatalf("finding outside changed spans must be outOfScope: %+v", got[1])
-	}
-}
-
-// 范围外的 blocking 不阻断通过，范围外的 advisory 也不影响判定。
-func TestReviewVerdictIgnoresOutOfScope(t *testing.T) {
-	out := []domain.ReviewFinding{
-		{ID: "x", Severity: "blocking", RoundsHit: 3, OutOfScope: true},
-	}
-	if v := domain.ReviewVerdict(out); v != domain.ReviewClean {
-		t.Fatalf("verdict=%s want clean (out-of-scope does not block)", v)
-	}
-}
-
 // 单轮 blocking 不阻断：实测同一章两次调用给出的 blocking 完全不同，
 // 单轮即可阻断会让清单永远关不掉。两轮以上才阻断。
 func TestReviewVerdictRequiresConsensus(t *testing.T) {

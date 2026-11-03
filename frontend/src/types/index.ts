@@ -93,11 +93,6 @@ export interface ReviewFinding {
    * 只有 roundsHit >= 2 的 blocking 才会阻断通过。
    */
   roundsHit?: number
-  /**
-   * 复审时发现的、但不在本次改动范围内的旧问题。
-   * 仍显示给作者，但归入「历史欠账」，不阻断。
-   */
-  outOfScope?: boolean
   chapter?: number
   suggestion?: string
   entityPath?: string
@@ -132,14 +127,6 @@ export interface Candidate {
   canonChanges?: any[]
   createdAt: string
   acceptedAt?: string
-  followUpRunId?: string
-}
-/** 「通过」的响应：通过了几份清单、整体结论、自动起的定稿 run。 */
-export interface CloseReviewResult {
-  closed: number
-  verdict: 'clean' | 'blocking' | 'unfinished'
-  runId?: string
-  warning?: string
 }
 
 export interface CallRecord {

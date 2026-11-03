@@ -202,24 +202,38 @@ func TestWritePacketCarriesTheChapterLengthTarget(t *testing.T) {
 func TestChapterContractNarrowsToCurrentChapterWithoutScenes(t *testing.T) {
 	unit := domain.UnitInfo{UnitID: "v01-U1", Volume: 1, ChapterFrom: 1, ChapterTo: 2, OutlinePath: "outline/units/v01-U1.yaml", OutlineRaw: "unit_id: v01-U1\ndesire: 立足\nobstacle: 质疑\nchoice: 复查\npayoff: 获得许可\nforbidden: 禁揭\non_stage: [lin]\npov: lin\nstory_day: 3\nend_day: 4\nchapters:\n  - chapter: 1\n    goal: 第一章目标\n    change: 第一章变化\n    cut_hook: 第一章钩子\n    day_offset: 0\n  - chapter: 2\n    goal: 第二章目标\n    change: 第二章变化\n    cut_hook: 第二章钩子\n    day_offset: 1\n"}
 	packet := BuildWritePacket(domain.BookSnapshot{Summary: domain.BookSummary{ID: "b"}}, unit, "", 0)
-	narrow := NarrowBeats(packet, unit, 2)
-	if !strings.Contains(narrow.UserPrompt, "第二章目标") || strings.Contains(narrow.UserPrompt, "第一章目标") {
-		t.Fatalf("chapter-specific context was not narrowed: %s", narrow.UserPrompt)
+	narrowed, beats := NarrowBeats(packet, unit, 2)
+	if !strings.Contains(beats, "第二章目标") || strings.Contains(beats, "第一章目标") {
+		t.Fatalf("chapter-specific beats were not narrowed: %s", beats)
+	}
+	// 节拍必须离开 documents：留在里面会让后面所有块与 references 失去前缀复用。
+	if strings.Contains(narrowed.UserPrompt, "第二章目标") || strings.Contains(narrowed.UserPrompt, "第一章目标") {
+		t.Fatalf("beats must not stay in documents: %s", narrowed.UserPrompt)
 	}
 	before, err := DecodeUserPayload(packet.UserPrompt)
 	if err != nil {
 		t.Fatal(err)
 	}
-	after, err := DecodeUserPayload(narrow.UserPrompt)
+	after, err := DecodeUserPayload(narrowed.UserPrompt)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for i := range before.Documents {
-		if before.Documents[i].ID == "unit-beats" {
+	want := map[string]UserDoc{}
+	for _, d := range before.Documents {
+		if d.ID == "unit-beats" {
 			continue
 		}
-		if before.Documents[i] != after.Documents[i] {
-			t.Fatalf("chapter narrowing changed unrelated document: %+v", before.Documents[i])
+		want[d.ID] = d
+	}
+	if len(after.Documents) != len(want) {
+		t.Fatalf("documents=%d want %d (只有 unit-beats 该被摘掉)", len(after.Documents), len(want))
+	}
+	for _, d := range after.Documents {
+		if d.ID == "unit-beats" {
+			t.Fatal("unit-beats block must be removed, not rewritten")
+		}
+		if want[d.ID] != d {
+			t.Fatalf("chapter narrowing changed unrelated document: %+v", d)
 		}
 	}
 }
@@ -339,10 +353,20 @@ func TestLengthContractReachesEveryPromptSurface(t *testing.T) {
 			guidance = b.Content
 		}
 	}
-	for _, want := range []string{"目标 2500 字", "1500–3500", "会被退回重写", "判为不合格"} {
+	floor, ceil := domain.ChapterBand(2500)
+	for _, want := range []string{"目标 2500 字", fmt.Sprintf("%d–%d", floor, ceil), "会被退回重写", "判为不合格"} {
 		if !strings.Contains(guidance, want) {
 			t.Fatalf("length guidance missing %q:\n%s", want, guidance)
 		}
+	}
+	// 场面数不写死：细纲没给节拍时给区间，每场字数也有区间。
+	for _, want := range []string{"2–4 个主线场面", fmt.Sprintf("%d–%d 字", domain.SceneCharsMin, domain.SceneCharsMax)} {
+		if !strings.Contains(guidance, want) {
+			t.Fatalf("length guidance missing scene range %q:\n%s", want, guidance)
+		}
+	}
+	if strings.Contains(guidance, "3 个场面") || strings.Contains(guidance, "约 3 个") {
+		t.Fatalf("length guidance must not hardcode three scenes:\n%s", guidance)
 	}
 	// 单元章数不固定，不折算单元总量：只说这一章。
 	for _, banned := range []string{"本单元", "单元总", "共 6 章"} {

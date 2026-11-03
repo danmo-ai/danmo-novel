@@ -638,8 +638,8 @@ func TestPacketSizeBudget(t *testing.T) {
 	unit := findUnit(t, snap, "v01-U1")
 
 	wp := BuildWritePacket(snap, unit, "", 0)
-	narrowed := NarrowBeats(wp, unit, unit.ChapterFrom)
-	if sum := blockBytes(narrowed.Blocks); sum > 32*1024 {
+	narrowed, beats := NarrowBeats(wp, unit, unit.ChapterFrom)
+	if sum := blockBytes(narrowed.Blocks) + len(beats); sum > 32*1024 {
 		t.Fatalf("write packet %d B exceeds 32KB budget", sum)
 	}
 

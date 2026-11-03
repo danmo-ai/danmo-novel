@@ -106,18 +106,23 @@ func (r *Runner) RunWrite(ctx context.Context, snap domain.BookSnapshot, unit do
 	target := books.ChapterTarget(unit)
 	floor, ceil := domain.ChapterBand(target)
 	for ch := from; ch <= to; ch++ {
+		// 单章只带本章的场面节拍。节拍按章变化，因此必须进 extra（payload 尾部）
+		// 而不是留在 documents：documents 排在 references 之前，一旦中途分叉，
+		// 后面的基线块与整份参考知识都无法命中前缀缓存。
+		chapterPacket, beats := contextsvc.NarrowBeats(packet, unit, ch)
 		extra := map[string]any{
 			"chapter": ch,
 			"chapterRule": fmt.Sprintf(
 				"本次只写第 %d 章，chapters 数组只放这一章。本章为 %d 字（允许 %d–%d 字）：先按场面分配字数，写完收在目标附近，不要靠追加场景或复述把篇幅写长。",
 				ch, target, floor, ceil),
 		}
+		if beats != "" {
+			extra[contextsvc.ChapterBeatsKey] = beats
+		}
 		if len(cand.Chapters) > 0 {
 			prev := cand.Chapters[len(cand.Chapters)-1]
 			extra["previousChapter"] = map[string]any{"chapter": prev.Chapter, "body": prev.Body, "note": "仅供承接，不要重复输出"}
 		}
-		// 单章只带本章的场面节拍：整单元 20+ 个场面每章重复注入一遍纯属浪费。
-		chapterPacket := contextsvc.NarrowBeats(packet, unit, ch)
 		user := contextsvc.MergeExtraIntoUserPayload(r.withKnowledge(chapterPacket.UserPrompt), extra)
 		draft, rec, err := r.generateChapter(ctx, modelID, chapterPacket, user, ch, &calls)
 		if err != nil {
@@ -127,7 +132,7 @@ func (r *Runner) RunWrite(ctx context.Context, snap domain.BookSnapshot, unit do
 		cand.Chapters = append(cand.Chapters, draft)
 	}
 	// 按章定向修复：单章硬门不过只重生成该章，其他章不动。
-	cand.Chapters = r.repairFailedChapters(ctx, modelID, packet, cand.Chapters, target, &calls)
+	cand.Chapters = r.repairFailedChapters(ctx, modelID, packet, unit, cand.Chapters, target, &calls)
 	rep := gates.CheckProseWithRules(cand.Chapters, target, r.proseRules())
 	cand.Findings = append(cand.Findings, rep.Findings...)
 	return Result{Candidate: cand, Calls: calls, Packet: packet, LocalGate: rep}, nil
@@ -350,7 +355,7 @@ func parseChapterDraft(raw string, ch int) (domain.ChapterDraft, error) {
 //
 // target 必须与审校阶段一致（books.ChapterTarget），否则写作阶段会
 // 觉得"字数够了"而审校阶段判 blocking，白跑一轮修复。
-func (r *Runner) repairFailedChapters(ctx context.Context, modelID string, packet domain.ContextPacket, chapters []domain.ChapterDraft, target int, calls *[]domain.CallRecord) []domain.ChapterDraft {
+func (r *Runner) repairFailedChapters(ctx context.Context, modelID string, packet domain.ContextPacket, unit domain.UnitInfo, chapters []domain.ChapterDraft, target int, calls *[]domain.CallRecord) []domain.ChapterDraft {
 	rep := gates.CheckProseWithRules(chapters, target, r.proseRules())
 	if rep.OK {
 		return chapters
@@ -366,18 +371,25 @@ func (r *Runner) repairFailedChapters(ctx context.Context, modelID string, packe
 		if !ok {
 			continue
 		}
-		user := contextsvc.MergeExtraIntoUserPayload(r.withKnowledge(packet.UserPrompt), map[string]any{
+		// 用与生成该章时完全相同的包（同样的 blocks、同样的节拍位置），
+		// 修复才能直接命中刚才那次生成留下的前缀缓存；多塞一句诊断只在尾部。
+		chapterPacket, beats := contextsvc.NarrowBeats(packet, unit, ch.Chapter)
+		extra := map[string]any{
 			"chapter": ch.Chapter,
 			"repairChapter": map[string]any{
 				"findings": detailedFindings(fs),
 				"body":     ch.Body,
 				"rule":     repairRule(ch.Chapter, fs, target),
 			},
-		})
+		}
+		if beats != "" {
+			extra[contextsvc.ChapterBeatsKey] = beats
+		}
+		user := contextsvc.MergeExtraIntoUserPayload(r.withKnowledge(chapterPacket.UserPrompt), extra)
 		// 记录起点：generateChapter 自己也可能重试一次，所以要按本次新增的
 		// 调用逐条打标，否则第一次尝试会被错标成生成调用。
 		start := len(*calls)
-		fixed, _, err := r.generateChapter(ctx, modelID, packet, user, ch.Chapter, calls)
+		fixed, _, err := r.generateChapter(ctx, modelID, chapterPacket, user, ch.Chapter, calls)
 		for k := start; k < len(*calls); k++ {
 			label := fmt.Sprintf("repair-ch%d", ch.Chapter)
 			if k > start {

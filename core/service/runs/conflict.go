@@ -60,12 +60,12 @@ func activeRunConflict(active domain.Run, spec domain.TaskSpec) error {
 	switch active.Status {
 	case domain.RunWaiting:
 		// waiting_accept 才是真正会一直挡住的那个：候选不处理就永远占着。
-		// 审校清单在界面上没有"接受"，只有通过/强制通过/拒绝，所以提示必须
-		// 说这三个真实存在的动作，否则作者被告知"去接受"却找不到按钮。
+		// 审校清单在界面上只有「自动修复」和「拒绝」两个出口，所以提示必须
+		// 说这两个真实存在的动作，否则作者被告知"去通过"却找不到按钮。
 		if spec.Kind == domain.TaskReview {
 			return fmt.Errorf(
-				"单元 %s 已有一份待处理的审校清单（候选 %s）：在审校页点「通过」或「强制通过」结案，"+
-					"或点「拒绝清单」丢弃；重审会先归档旧清单再重新审校",
+				"单元 %s 已有一份待处理的审校清单（候选 %s）：在审校页勾选后点「自动修复」，"+
+					"或点「拒绝」丢弃；重新审校会先归档旧清单再重审",
 				target, shortID(active.CandidateID))
 		}
 		return fmt.Errorf(

@@ -60,6 +60,44 @@ func TestFinalizedIdentityConfirmsWithoutCreatingSegments(t *testing.T) {
 	}
 }
 
+// 边界转换必须能定稿：from 是「单元前状态」，可以等于上一段身份。
+//
+// 真实事故：v01-U1 是「内勤新警」，v01-U2 起是「刑侦线新警」，U2 的
+// state_deltas 写 from=内勤新警 / to=刑侦线新警——这正是细纲契约要求的
+// 「单元前状态 → 单元后状态」。旧校验要求 from 也等于本单元生效身份，于是
+// 整本正文写完后到定稿才被拦下，报错又指向"改时间线"，作者以为已定稿的设定要重写。
+func TestFinalizedIdentityAllowsBoundaryTransition(t *testing.T) {
+	segments := []domain.IdentitySegment{
+		{Stem: "wen-nianci", RoleTitle: "内勤新警", Org: "双桥派出所", FromUnit: "v01-U1", ToUnit: "v01-U1"},
+		{Stem: "wen-nianci", RoleTitle: "刑侦线新警", Org: "双桥派出所", FromUnit: "v01-U2", ToUnit: "v01-U8"},
+	}
+	cast := []domain.CastCard{{Stem: "wen-nianci", Status: domain.CastCanon}}
+	unit := domain.UnitInfo{
+		UnitID:     "v01-U2",
+		OutlineRaw: "on_stage: [wen-nianci]\nstate_deltas:\n  - stem: wen-nianci\n    field: role_title\n    from: 内勤新警\n    to: 刑侦线新警\n",
+	}
+	if err := ValidateFinalizedIdentity(segments, cast, unit, unit.OutlineRaw); err != nil {
+		t.Fatalf("a boundary transition described as 单元前→单元后 must be accepted: %v", err)
+	}
+
+	// to 仍必须等于本单元生效身份：写错就是真冲突，不能放行。
+	wrongTo := strings.Replace(unit.OutlineRaw, "to: 刑侦线新警", "to: 重案队试用", 1)
+	if err := ValidateFinalizedIdentity(segments, cast, unit, wrongTo); err == nil {
+		t.Fatal("to must equal the unit's effective identity")
+	}
+
+	// from 既不是上一段也不是本单元 → state_deltas 写错了，必须报出来。
+	garbage := strings.Replace(unit.OutlineRaw, "from: 内勤新警", "from: 特聘专家", 1)
+	err := ValidateFinalizedIdentity(segments, cast, unit, garbage)
+	if err == nil {
+		t.Fatal("a from that matches neither the previous nor the current segment must be rejected")
+	}
+	// 报错要给出两个可选值，作者才知道该改成什么。
+	if !strings.Contains(err.Error(), "内勤新警") || !strings.Contains(err.Error(), "刑侦线新警") {
+		t.Fatalf("error should name both candidates, got: %v", err)
+	}
+}
+
 func TestSaveIdentityTimeline(t *testing.T) {
 	root := t.TempDir()
 	if err := SaveIdentityTimeline(root, []domain.IdentitySegment{{Stem: "lin", RoleTitle: "新警", Org: "所", FromUnit: "v01-U1"}}); err != nil {

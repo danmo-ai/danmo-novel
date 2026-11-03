@@ -14,14 +14,22 @@ export function isUnfinishedFinding(f: ReviewFinding) {
 }
 
 /**
+ * 一条 finding 是否算「阻断」。单一判据，供标题计数与 verdict 共用。
+ *
+ * 与后端 domain.ReviewVerdict 逐条对应：单轮检出的 blocking 不算（同一章两次
+ * 调用给出的 blocking 完全不同，单轮即可阻断会让清单关不掉）；roundsHit 缺省
+ * （旧数据、本地硬门）按原语义阻断。
+ */
+export function isBlockingFinding(f: ReviewFinding) {
+  if (isUnfinishedFinding(f) || f.severity !== 'blocking') return false
+  return !f.roundsHit || f.roundsHit >= 2
+}
+/**
  * blocking 优先于 unfinished：已知硬伤可执行，审校不完整只是缺口。
  *
- * 判据必须与后端 domain.ReviewVerdict 完全一致，否则 UI 说"可通过"、服务端
- * 却拒绝通过，作者会卡在没有解释的报错上：
- *  - 复审范围内标记的历史欠账（outOfScope）不算阻断；
- *  - 单轮检出的 blocking 不算阻断（同一章两次调用给出的 blocking 完全不同，
- *    单轮即可阻断会让清单永远关不掉），要 2 轮以上；
- *  - roundsHit 缺省（旧数据、本地硬门）按原语义阻断，避免历史清单突然放行。
+ * 这里只决定徽章与排序，不推进任何状态（清单只有修复/拒绝两个出口，定稿在
+ * 写作页单独发起）。判据必须与后端 domain.ReviewVerdict 一致，否则徽章与实际
+ * 判定会互相矛盾。实际规则全部收敛在 isBlockingFinding。
  */
 export function reviewVerdict(findings: ReviewFinding[] = []): ReviewVerdict {
   let unfinished = false
@@ -30,14 +38,15 @@ export function reviewVerdict(findings: ReviewFinding[] = []): ReviewVerdict {
       unfinished = true
       continue
     }
-    if (f.severity !== 'blocking' || f.outOfScope) continue
-    if (!f.roundsHit || f.roundsHit >= 2) return 'blocking'
+    if (isBlockingFinding(f)) return 'blocking'
   }
   return unfinished ? 'unfinished' : 'clean'
 }
 
 export const VERDICT_LABEL: Record<ReviewVerdict, string> = {
-  clean: '可通过',
+  // 「可通过」是旧语义（面板上曾有"通过"按钮）。现在清单只有修复/拒绝两个出口，
+  // 干净只说明"没有值得修的问题了"，不推进任何状态，所以措辞改成中性的描述。
+  clean: '无待修问题',
   blocking: '有阻断',
   unfinished: '审校不完整',
 }

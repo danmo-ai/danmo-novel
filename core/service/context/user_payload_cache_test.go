@@ -77,3 +77,73 @@ func TestRepairReplacesPreviousFeedback(t *testing.T) {
 		t.Fatalf("repair message=%q", msg)
 	}
 }
+
+// 老格式（非 JSON）payload 会把 extra 直接拼成自然语言——这是唯一手写遍历
+// map 生成提示词的地方。不排序的话同一组 extra 每次得到不同字节序，
+// 前缀缓存与「同输入同输出」一起失效。
+func TestLegacyExtraMergeIsOrderStable(t *testing.T) {
+	legacy := "旧格式正文提示词"
+	extra := map[string]any{"chapter": 3, "chapterRule": "只写这一章", "previousChapter": "上一章正文", "aaa": 1}
+	first := MergeExtraIntoUserPayload(legacy, extra)
+	for i := 0; i < 50; i++ {
+		if got := MergeExtraIntoUserPayload(legacy, extra); got != first {
+			t.Fatalf("legacy merge is not order stable on run %d:\n%s\n%s", i, first, got)
+		}
+	}
+	// 键必须按字典序出现，否则上面的稳定性只说明"碰巧一样"。
+	if strings.Index(first, "aaa: 1") > strings.Index(first, "chapter: 3") {
+		t.Fatalf("extra keys are not sorted: %s", first)
+	}
+}
+
+// 分章写作的公共前缀必须撑过 documents 与整份 references。
+//
+// 这条守的是构建顺序：场面节拍是唯一按章变化的文档，一旦它留在 documents 里
+// （哪怕只是替换内容、位置不变），公共前缀就停在 documents 开头，后面的基线块
+// 和作者勾选的参考知识全部按全价重算。实测 4 章单元第 3、4 章命中 896 token
+// （≈5%）：恰好是 system + 单元合同 + 节拍开头那一点。
+func TestAdjacentWriteChaptersShareDocumentsAndReferences(t *testing.T) {
+	snap := loadFixtureCopy(t)
+	unit := findUnit(t, snap, "v01-U1")
+	packet := BuildWritePacket(snap, unit, "", 0)
+	// 参考知识在真实书里占写作 prompt 的大头（单本实测 32KB），这里按比例给。
+	refs := []string{
+		strings.Repeat("# 参考A\n办案的口语细节与现场质感。", 300),
+		strings.Repeat("# 参考B\n删掉 AI 套话与解释腔。", 300),
+	}
+
+	build := func(ch int) (system, user string) {
+		cp, beats := NarrowBeats(packet, unit, ch)
+		u := MergeKnowledgeIntoUserPayload(cp.UserPrompt, refs)
+		extra := map[string]any{"chapter": ch, "chapterRule": "本次只写这一章"}
+		if beats != "" {
+			extra[ChapterBeatsKey] = beats
+		}
+		return cp.SystemPrompt, MergeExtraIntoUserPayload(u, extra)
+	}
+
+	s1, u1 := build(1)
+	s3, u3 := build(3)
+	if s1 != s3 {
+		t.Fatal("system prompt changed between chapters; prefix cache would miss")
+	}
+	marker := `"extra":{`
+	idx := strings.Index(u3, marker)
+	if idx < 0 {
+		t.Fatalf("payload has no extra block: %s", u3[:200])
+	}
+	// 分叉点必须不早于 extra：documents / references / task / instruction 全部共享。
+	need := len(s3) + idx + len(marker)
+	shared := commonPrefixLen([]byte(s1+u1), []byte(s3+u3))
+	if shared < need {
+		t.Fatalf("shared prefix=%d B, need >=%d B: 有按章变化的内容排在 documents/references 前面", shared, need)
+	}
+	if refsAt := strings.Index(u3, `"references"`); refsAt >= 0 && len(s3)+refsAt+len(`"references"`) > shared {
+		t.Fatalf("references (%d B) fall outside the shared prefix (%d B)", len(refs), shared-len(s3))
+	}
+	// 这条是本次修复的直接回归：节拍不得进入公共前缀。
+	_, beats3 := NarrowBeats(packet, unit, 3)
+	if b := strings.Index(u3, beats3); b >= 0 && len(s3)+b < shared {
+		t.Fatalf("chapter beats start at %d B, inside the shared prefix (%d B)", len(s3)+b, shared)
+	}
+}

@@ -78,3 +78,30 @@ func TestSubgenreMatched(t *testing.T) {
 		t.Fatal("未知子类应回退到字面比较")
 	}
 }
+
+// 题材族名会直接进提示词（genre-kb 块），而别名表是 map。
+// 遍历顺序不固定的话，同一本书两次构建可能给出顺序不同的族名列表——
+// 提示词字节变了，前缀缓存就没了。
+func TestGenreFamiliesIsDeterministic(t *testing.T) {
+	inputs := []string{"都市修真", "悬疑灵异", "悬疑 / 刑侦 / 职业文", "男频·无限流·规则怪谈"}
+	first := map[string]string{}
+	for _, in := range inputs {
+		first[in] = strings.Join(GenreFamilies(in), "|")
+	}
+	for i := 0; i < 50; i++ {
+		for _, in := range inputs {
+			if got := strings.Join(GenreFamilies(in), "|"); got != first[in] {
+				t.Fatalf("GenreFamilies(%q) unstable: %q vs %q", in, got, first[in])
+			}
+		}
+	}
+}
+
+// 组合写法可能同时命中多个别名，返回哪个规范名不能由 map 顺序决定。
+func TestCanonicalSubgenreIsDeterministic(t *testing.T) {
+	for i := 0; i < 50; i++ {
+		if got := CanonicalSubgenre("年代刑侦·双主角"); got != "刑侦探案" {
+			t.Fatalf("CanonicalSubgenre unstable: %q", got)
+		}
+	}
+}

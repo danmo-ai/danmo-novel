@@ -308,6 +308,6 @@ func (p *repairProbeLLM) repairPayload(i int) string {
 func loadReviewFixture(t *testing.T) (domain.BookSnapshot, domain.UnitInfo) {
 	t.Helper()
 	snap, unit, _ := loadFixtureUnit(t)
-	unit.ProseRaw = "## 第1章 门\n\n" + strings.Repeat("雨落在青石上，他握紧了刀柄。", 120)
+	unit.ProseRaw = "## 第1章 门\n\n" + strings.Repeat("雨落在青石上，他握紧了刀柄。", 140)
 	return snap, unit
 }

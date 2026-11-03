@@ -917,25 +917,6 @@ func registerRuns(api *gin.RouterGroup, app *App) {
 		}
 		c.JSON(200, cand)
 	})
-	// 审校结案：归档该单元全部待处理清单，并按需直接起定稿。
-	// force 由作者在确认框里授权；不带 force 时服务端拒绝带阻断/不完整的清单。
-	api.POST("/books/:id/units/:unitId/close-review", func(c *gin.Context) {
-		var body struct {
-			Force         bool  `json:"force"`
-			StartFinalize *bool `json:"startFinalize"`
-		}
-		_ = c.BindJSON(&body)
-		startFinalize := true
-		if body.StartFinalize != nil {
-			startFinalize = *body.StartFinalize
-		}
-		res, err := app.Runs.CloseUnitReview(c.Request.Context(), c.Param("id"), c.Param("unitId"), body.Force, startFinalize)
-		if err != nil {
-			c.JSON(400, gin.H{"error": err.Error(), "verdict": res.Verdict, "closed": res.Closed})
-			return
-		}
-		c.JSON(200, res)
-	})
 	api.POST("/candidates/:id/reject", func(c *gin.Context) {
 		var body struct {
 			Reason string `json:"reason"`

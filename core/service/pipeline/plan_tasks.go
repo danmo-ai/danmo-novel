@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -13,6 +14,18 @@ import (
 	"github.com/danmo-ai/danmo-novel/core/service/prompt"
 	"github.com/google/uuid"
 )
+
+// sortedKeys 解决「把 map 遍历成提示词/校验文本」的顺序问题。
+// Go 的 map 迭代顺序随机，同一输入两次构建会得到不同字节序——前缀缓存与
+// 重试的可复现性都会失效。任何要进入模型上下文的 map 都必须先过这里。
+func sortedKeys(m map[string]string) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
 
 func (r *Runner) promptStore() *prompt.Store {
 	return prompt.NewStore(promptOverlayRoot())
@@ -47,7 +60,9 @@ func (r *Runner) runStructuredBookPlan(ctx context.Context, snap domain.BookSnap
 					vs = append(vs, Violation{Path: "settings.files." + path, Want: "非空", Got: "空"})
 				}
 			}
-			for path := range p.Settings.Files {
+			// 校验违规会逐条拼进 repair 提示词，所以顺序必须稳定：
+			// 直接遍历 map 会让同一次失败在两次重试里给出不同文本。
+			for _, path := range sortedKeys(p.Settings.Files) {
 				if !books.IsPlanSettingsPath(path) {
 					vs = append(vs, Violation{Path: "settings.files." + path, Want: "允许的设定路径", Got: "不允许"})
 				}

@@ -29,12 +29,6 @@ type ReviewOptions struct {
 	// 128 处里 0 处被四轮全中。多轮取并集是唯一能提覆盖率的办法。轮内串行以
 	// 复用前缀缓存，跨章仍并行。
 	Rounds int
-	// ScopedChapters 限定「复审只看改动区间」：章号 → 改动句（含前后各一句）。
-	//
-	// 非空时，落在这些句子之外的 finding 会被标成 OutOfScope：仍然如实保留
-	// 给作者看，但不参与阻断判定。实测整章重审时 96%+ 的"新问题"落在这次没
-	// 改过的原文上，它们是旧欠账而不是修复引入的回归——不区分就会永远关不掉。
-	ScopedChapters map[int][]string
 }
 
 type reviewOutcome struct {
@@ -42,6 +36,19 @@ type reviewOutcome struct {
 	findings []domain.ReviewFinding
 	calls    []domain.CallRecord
 	err      error
+}
+
+// hasBlockingFinding reports whether any finding is a blocking one.
+//
+// 本地硬门的 OK 由 findings 反推，避免两处各判一套：加了新的本地检查（身份一致性
+// 等）之后，忘了同步 OK 会让 gate 显示通过而清单里躺着 blocking。
+func hasBlockingFinding(fs []domain.ReviewFinding) bool {
+	for _, f := range fs {
+		if f.Severity == severityBlocking {
+			return true
+		}
+	}
+	return false
 }
 
 // RunReviewByChapter runs one review call per chapter, in bounded parallel.
@@ -54,6 +61,12 @@ func (r *Runner) RunReviewByChapter(ctx context.Context, snap domain.BookSnapsho
 	}
 	target := books.ChapterTarget(unit)
 	local := gates.CheckProseWithRules(chapters, target, r.proseRules())
+	// 身份一致性是确定性的本地判定，必须在审校清单里就能看见。
+	// 只在定稿查的代价是：正文全写完了才发现规划与时间线冲突，而那时"修哪个"已经很难。
+	local.Findings = append(local.Findings, books.IdentityDeltaFindings(snap.IdentitySegments, unit, unit.OutlineRaw)...)
+	if hasBlockingFinding(local.Findings) {
+		local.OK = false
+	}
 	baseline := contextsvc.BuildReviewBaseline(snap, unit, local.Findings, r.ReviewChecklist)
 
 	concurrency := opts.Concurrency
@@ -81,15 +94,6 @@ func (r *Runner) RunReviewByChapter(ctx context.Context, snap domain.BookSnapsho
 				prevTail = tailOf(chapters[idx-1].Body, 800)
 			}
 			packet := contextsvc.BuildChapterReviewPacket(snap, unit, ch, prevTail, baseline, r.modelMaxOut(modelID))
-			// 复审时把「改动区间」告诉模型：它据此知道这次该看什么，但即使它
-			// 报了范围外的问题，我们也不会丢——后面的 markOutOfScope 会标出来。
-			if scoped, ok := opts.ScopedChapters[ch.Chapter]; ok && len(scoped) > 0 {
-				packet.UserPrompt = contextsvc.MergeExtraIntoUserPayload(packet.UserPrompt, map[string]any{
-					"revisionChangedSentences": scoped,
-					"revisionScopeRule":        "本单元刚做过一次修订，只改了上面这些句子（含前后各一句）。优先判断这些位置是否被改坏；发现其它位置的问题也可以报，但会归入历史欠账。",
-				})
-				packet.EstPromptTokens = (len([]rune(packet.SystemPrompt)) + len([]rune(packet.UserPrompt))) / 2
-			}
 			fs, calls, err := r.reviewChapter(ctx, modelID, packet, ch.Chapter, opts.Rounds, ch.Body)
 			results[idx].findings = fs
 			results[idx].calls = calls
@@ -120,11 +124,6 @@ func (r *Runner) RunReviewByChapter(ctx context.Context, snap domain.BookSnapsho
 		}
 		cand.Findings = append(cand.Findings, out.findings...)
 	}
-	// 复审时把改动区间之外的发现标成 outOfScope：保留给作者看，但不阻断通过。
-	// 不标记就会把「上几轮没扫到的旧问题」当成这次修复引入的回归，清单永不收敛。
-	if len(opts.ScopedChapters) > 0 {
-		cand.Findings = markOutOfScope(cand.Findings, opts.ScopedChapters)
-	}
 	sort.SliceStable(allCalls, func(i, j int) bool { return allCalls[i].Index < allCalls[j].Index })
 
 	res := Result{Candidate: cand, Calls: allCalls, LocalGate: local}
@@ -144,7 +143,7 @@ func (r *Runner) RunReviewByChapter(ctx context.Context, snap domain.BookSnapsho
 			ID: domain.FindingReviewIncomplete, Severity: severityAdvisory, Source: "local_gate", Lens: "coverage",
 			Title:      fmt.Sprintf("审校未覆盖第 %v 章", failed),
 			Evidence:   fmt.Sprintf("%d/%d 章审校失败，其余章结论已保存。", len(failed), len(chapters)),
-			Suggestion: "先按失败章重审整个单元（重审会重新审所有章，旧清单随之归档）。",
+			Suggestion: "重新审校整个单元（会先归档旧清单，再按章重审一遍）。",
 		})
 		res.Candidate = cand
 		if firstErr != nil {

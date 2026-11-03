@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -102,7 +103,7 @@ func (s *Service) Start(ctx context.Context, spec domain.TaskSpec) (domain.Run, 
 	// 重审先用新结论替换旧结论：归档该单元未处理的审校清单，否则那条
 	// waiting_accept 的 run 会一直占着单元，重审永远起不来。
 	if spec.Kind == domain.TaskReview && spec.SupersedeReview && spec.UnitID != "" {
-		if _, cerr := s.CloseUnitReview(ctx, spec.BookID, spec.UnitID, true, false); cerr != nil {
+		if cerr := s.archiveUnitReviews(ctx, spec.BookID, spec.UnitID); cerr != nil {
 			return domain.Run{}, fmt.Errorf("归档旧审校清单失败: %w", cerr)
 		}
 	}
@@ -228,7 +229,6 @@ func (s *Service) execute(ctx context.Context, run domain.Run, snap domain.BookS
 				SplitByChapter: true,
 				Concurrency:    s.Settings.Get().Review.Concurrency,
 				Rounds:         s.Settings.Get().Review.Rounds,
-				ScopedChapters: run.Spec.ScopedChapters,
 			})
 		} else {
 			res, err = runner.RunReview(ctx, snap, unit, modelID)
@@ -529,6 +529,14 @@ func (s *Service) Accept(ctx context.Context, cmd domain.AcceptCommand) (domain.
 				return domain.Candidate{}, err
 			}
 		}
+		// 修订落盘后，把这次真正修掉的问题从审校清单里摘掉。
+		//
+		// 不摘的后果就是清单永远是原来那 81 条：已修的 5 条还留在里面，作者再点
+		// 「自动修复」会把它们再修一遍，而「还剩多少要修」这个数字永远不动。
+		// 只摘本次 IssueIDs 命中的条目：没勾的那些仍未修，必须继续可操作。
+		if cand.Kind == domain.TaskRevise {
+			s.resolveAddressedFindings(ctx, cand)
+		}
 		for _, ch := range cand.CanonChanges {
 			if ch.Locked && !cmd.ForceRiskAccept {
 				continue // locked canon needs explicit forceRiskAccept
@@ -567,6 +575,17 @@ func (s *Service) Accept(ctx context.Context, cmd domain.AcceptCommand) (domain.
 			}
 			if blocking := books.ValidateNoIntraUnitChange(u.RawYAML, u.OnStage); len(blocking) > 0 {
 				return domain.Candidate{}, fmt.Errorf("单元 %s 含身份转换，须拆到单元边界：%s", u.UnitID, strings.Join(blocking, "; "))
+			}
+			// state_deltas 与身份时间线的一致性必须在细纲落盘时就查：
+			// 这是纯本地判定，而定稿才发现意味着正文已经写完、只能返工规划。
+			if current, ok := findUnit(snap, u.UnitID); ok {
+				raw := u.RawYAML
+				if raw == "" {
+					raw = serializeUnitYAML(u)
+				}
+				if err := books.ValidateStateDeltasIdentity(snap.IdentitySegments, snap.Cast, current, raw); err != nil {
+					return domain.Candidate{}, fmt.Errorf("细纲的 state_deltas 与身份时间线冲突，不能接受：%w", err)
+				}
 			}
 			path := filepath.Join(root, "outline", "units", u.UnitID+".yaml")
 			raw := u.RawYAML
@@ -729,19 +748,10 @@ func (s *Service) Accept(ctx context.Context, cmd domain.AcceptCommand) (domain.
 		_ = s.Store.SaveRun(ctx, run)
 	}
 
-	// FollowUpReview 是显式 opt-in，默认不触发：交付流程走「审校 → 勾选 → 一次修订
-	// → diff → 落盘」就结束了，落盘之后不再自动起审校。
-	//
-	// 曾经前端每次接受修订都会传 true，于是接受后必然再起一轮。实测（同一单元连续
-	// 6 轮）复审报出的"新问题"有 96%+ 落在这次根本没改过的原文上——它们是前几轮
-	// 注意力没扫到的旧账，不是修复引入的回归。自动复审只会让作者分不清"修好了"和
-	// "又发现一批旧的"，并把调用成本翻倍。想再查就手动点「重审」，那是一次显式的
-	// 新审校，作者自己知道自己在做什么。
-	//
-	// 保留这个分支：外部客户端（MCP 等）仍可显式请求一次范围受限的复审。
-	if cmd.FollowUpReview && cand.Kind == domain.TaskRevise {
-		cand.FollowUpRunID = s.startFollowUpReview(ctx, cand, root)
-	}
+	// 交付流程到此结束：审校（多轮取并集）→ 勾选 → 一次修订 → diff → 落盘。
+	// 落盘之后不再自动起审校——实测（同一单元连续 6 轮）复审报出的"新问题"有
+	// 96%+ 落在这次根本没改过的原文上，是前几轮没扫到的旧账，不是修复引入的
+	// 回归。真要重来就重新走一遍完整审校（重新审校会先归档旧清单）。
 	_ = root
 	return cand, nil
 }
@@ -800,134 +810,88 @@ func (s *Service) ReviewGate(ctx context.Context, bookID, unitID string) (string
 	return verdict, n
 }
 
-// CloseUnitReview archives every open review list of one unit and, when asked,
-// starts the finalize run in the same call.
+// archiveUnitReviews archives every open review list of one unit.
 //
-// 这是审校的正常出口。以前清单只有两条路——"去修订"或"拒绝清单"，所以一份
-// 0 阻断的清单既不能通过也不能前进，单元永远停在 drafted。
+// 唯一用途是「重新审校前先归档旧清单」：不归档的话那条 waiting_accept 的 run
+// 会一直占着单元，新的审校永远起不来。
 //
-// force 允许带着阻断通过，但必须由调用方显式请求：服务端默认拒绝，免得
-// "没路了"变成"静默放行"。
-func (s *Service) CloseUnitReview(ctx context.Context, bookID, unitID string, force, startFinalize bool) (domain.CloseReviewResult, error) {
-	res := domain.CloseReviewResult{Verdict: domain.ReviewClean}
+// 归档必须走 Accept 而不是直接改状态：Accept 会顺带把对应 run 从 waiting_accept
+// 收尾，否则 run 会继续挡住同一单元的下一次审校。
+//
+// 「通过清单」这个动作已经没有了：审校面板只有「自动修复」和「拒绝」两个出口，
+// 定稿是写作页的独立步骤。所以这里不再判 verdict，也不再顺带起定稿。
+func (s *Service) archiveUnitReviews(ctx context.Context, bookID, unitID string) error {
 	open, err := s.Store.ListOpenCandidates(ctx, bookID)
 	if err != nil {
-		return res, err
+		return err
 	}
-	var lists []domain.Candidate
-	blocking, unfinished := 0, 0
 	for _, c := range open {
 		if c.Kind != domain.TaskReview || c.UnitID != unitID {
 			continue
 		}
-		lists = append(lists, c)
-		switch domain.ReviewVerdict(c.Findings) {
-		case domain.ReviewBlocking:
-			blocking++
-		case domain.ReviewUnfinished:
-			unfinished++
-		}
-	}
-	switch {
-	case blocking > 0:
-		res.Verdict = domain.ReviewBlocking
-	case unfinished > 0:
-		res.Verdict = domain.ReviewUnfinished
-	}
-	if !force && res.Verdict != domain.ReviewClean {
-		if blocking > 0 {
-			return res, fmt.Errorf("还有 %d 份清单带阻断结论，不能直接通过；先修复，或显式强制通过", blocking)
-		}
-		return res, fmt.Errorf("有 %d 份清单的审校不完整（输出被截断或分章失败），先重审该单元，或显式强制通过", unfinished)
-	}
-	// 归档必须走 Accept：它会顺带把对应 run 从 waiting_accept 收尾，
-	// 否则那条 run 会一直挡着同一单元的新审校/定稿。
-	for _, c := range lists {
 		if _, err := s.Accept(ctx, domain.AcceptCommand{CandidateID: c.ID}); err != nil {
-			return res, fmt.Errorf("归档 %s 失败: %w", c.ID, err)
+			return fmt.Errorf("归档 %s 失败: %w", c.ID, err)
 		}
-		res.Closed++
 	}
-	if !startFinalize {
-		return res, nil
-	}
-	root, _, err := s.Store.GetBookRoot(ctx, bookID)
-	if err != nil {
-		res.Warning = err.Error()
-		return res, nil
-	}
-	snap, err := books.LoadBook(root, false)
-	if err != nil {
-		res.Warning = err.Error()
-		return res, nil
-	}
-	unit, ok := findUnit(snap, unitID)
-	if !ok {
-		res.Warning = fmt.Sprintf("单元 %s 不存在，未启动定稿", unitID)
-		return res, nil
-	}
-	if !unit.HasProse {
-		res.Warning = "单元还没有正文，无法定稿"
-		return res, nil
-	}
-	run, err := s.Start(ctx, domain.TaskSpec{
-		Kind: domain.TaskFinalize, BookID: bookID, UnitID: unitID,
-		BaseRevision: snap.Revision,
-	})
-	if err != nil {
-		// 已有定稿候选/在跑的定稿时 Start 会冲突：通过已经成功，不能把它退回。
-		res.Warning = err.Error()
-		return res, nil
-	}
-	res.RunID = run.ID
-	return res, nil
+	return nil
 }
 
-// startFollowUpReview archives the handled review lists and starts one scoped
-// re-review of only what the revision actually changed.
+// resolveAddressedFindings removes the findings a just-accepted revision fixed
+// from the unit's open review lists.
 //
-// 只由 AcceptCommand.FollowUpReview 显式触发（默认 false）。产品默认流程在落盘
-// 就结束：实测同一单元连续 6 轮审校，复审报出的"新问题"有 96%+ 落在这次没改过
-// 的原文上，是前几轮没扫到的旧账而不是修复引入的回归。自动复审会让作者分不清
-// "修好了"和"又发现一批旧的"。这里保留能力给外部客户端显式请求。
-// 任何一步失败都只是跳过：接受本身已经成功，不能让复审把已写盘的修订退回。
+// 修订候选本身不记录"修了哪几条"，但它的 run.Spec.IssueIDs 就是作者勾选的那批，
+// 这是唯一可信的来源——不能靠比对 findings 的 title 或 anchor 去猜。
 //
-// 为什么要限定范围：实测（mindvoice-cop / v01-U2，连续 6 轮）复审报出的
-// "新问题"有 96%+ 落在这次没改过的原文上——它们是上几轮注意力没扫到的旧问题，
-// 不是修复引入的。整单元重审会把它们当成新结论不停报，清单于是永远收敛不了。
-// 只审改动区间，改动之外发现的仍保留（标 outOfScope，进「历史欠账」）。
-func (s *Service) startFollowUpReview(ctx context.Context, revised domain.Candidate, root string) string {
-	// 1. 归档该单元所有 open 的审校清单：这一轮已处理。
-	// 必须走 Accept 而不是直接改状态：Accept 会顺带把对应 run 收尾，
-	// 否则那条 run 一直停在 waiting_accept，会挡住下面的复审启动。
+// 摘完还剩条目的清单保持 open（那些问题没修，作者要继续可操作）；摘空的清单
+// 直接归档成已通过，否则它会永远挂在那里，既不能修也不能通过。
+// 任何一步失败都只跳过：正文已经落盘，不能让清单整理把这次接受退回去。
+func (s *Service) resolveAddressedFindings(ctx context.Context, revised domain.Candidate) {
+	run, err := s.Store.GetRun(ctx, revised.RunID)
+	if err != nil || len(run.Spec.IssueIDs) == 0 {
+		return
+	}
+	addressed := make(map[string]bool, len(run.Spec.IssueIDs))
+	for _, id := range run.Spec.IssueIDs {
+		addressed[id] = true
+	}
 	open, err := s.Store.ListOpenCandidates(ctx, revised.BookID)
 	if err != nil {
-		return ""
+		return
 	}
-	var handled []domain.Candidate
 	for _, c := range open {
-		if c.Kind == domain.TaskReview && c.UnitID == revised.UnitID {
-			handled = append(handled, c)
+		if c.Kind != domain.TaskReview || c.UnitID != revised.UnitID {
+			continue
+		}
+		// 只处理本次修订**之前**就存在的清单：修订只会修它当时读到的那些结论。
+		// 之后新起的清单里的同 id 条目是另一轮独立结论，不该被顺手摘掉。
+		if revised.CreatedAt.Before(c.CreatedAt) {
+			continue
+		}
+		kept := make([]domain.ReviewFinding, 0, len(c.Findings))
+		removed := 0
+		for _, f := range c.Findings {
+			// 作者勾了哪条，修订就按哪条改——包括本地硬门那类（字数不足等）。
+			// 不区分来源：勾过又被修掉的，就该从待办里消失。
+			if addressed[f.ID] {
+				removed++
+				continue
+			}
+			kept = append(kept, f)
+		}
+		if removed == 0 {
+			continue
+		}
+		c.Findings = kept
+		if len(kept) == 0 {
+			now := time.Now().UTC()
+			c.Status = domain.CandidateAccepted
+			c.AcceptedAt = &now
+		}
+		_ = s.Store.SaveCandidate(ctx, c)
+		if c.Status == domain.CandidateAccepted {
+			s.closeRun(ctx, c.RunID, domain.RunSucceeded, "全部问题已在修订中处理")
 		}
 	}
-	for _, c := range handled {
-		_, _ = s.Accept(ctx, domain.AcceptCommand{CandidateID: c.ID})
-	}
-
-	// 2. 正文已变，用新 revision 起一次分章复审，范围限定在改动区间。
-	snap, err := books.LoadBook(root, false)
-	if err != nil {
-		return ""
-	}
-	run, err := s.Start(ctx, domain.TaskSpec{
-		Kind: domain.TaskReview, BookID: revised.BookID, UnitID: revised.UnitID,
-		BaseRevision: snap.Revision, SplitByChapter: true,
-		ScopedChapters: ChangedSpans(revised.BaseChapters, revised.Chapters),
-	})
-	if err != nil {
-		return "" // 已有复审在跑：不覆盖，也不影响本次接受
-	}
-	return run.ID
 }
 
 func (s *Service) Reject(ctx context.Context, candidateID, reason string) error {
@@ -1060,8 +1024,13 @@ func (s *Service) loadKnowledge(ids []string) []string {
 		return nil
 	}
 	root := s.Settings.Get().LibraryRoot
+	// 按 id 排序后再拼 references：作者在确认框里调整勾选顺序不该改变
+	// payload 字节序，否则前缀缓存会因为"同一批文章换了个顺序"整份失效。
+	// 实测两个 run 只差这一项，命中量就从 9472 掉到 7040 token。
+	sorted := append([]string(nil), ids...)
+	sort.Strings(sorted)
 	var docs []string
-	for _, id := range ids {
+	for _, id := range sorted {
 		tags, err := knowledge.TagsOf(root, id)
 		if err != nil || tags.Audience == knowledge.AudienceAuthor {
 			continue

@@ -21,7 +21,6 @@ func WriteSystemPrompt() string {
 // 提示词里、并且给出确切目标，模型才会真的按它写。
 func WriteSystemPromptFor(chapterTarget int) string {
 	floor, ceil := domain.ChapterBand(chapterTarget)
-	scenes := 3
 	return fmt.Sprintf(`你是长篇网文写手。只根据 CONTEXT 写单元正文，不要工具调用，不要解释。
 硬规则：
 1. 输出严格 JSON：{"chapters":[{"chapter":N,"title":"...","body":"..."}]}
@@ -30,26 +29,26 @@ func WriteSystemPromptFor(chapterTarget int) string {
 4. 不得写穿 state_deltas 终局身份到开场；承接上章钩子。
 5. 少用破折号与 AI 套话；中文正文避免英文泄漏。
 6. 字数：每章 %d 字，允许 %d–%d 字。这是合同值不是参考值——少于 %d 字会被退回重写；超过 %d 字会判为不合格并计入审校。
-7. 动笔前把本章拆成约 %d 个场面，每个场面约 %d 字；写完一个再进下一个，写完最后一个就收尾——不额外加场，不为凑字复述或写过渡，也不为压缩砍掉场面结果与章末钩子。
+7. 场面：按细纲给出的场面节拍分场，每个场面 %d–%d 字；细纲没给节拍就按 2–4 个主线场面自己切，不要硬凑固定个数。写完一个再进下一个，写完最后一个就收尾——不额外加场，不为凑字复述或写过渡，也不为压缩砍掉场面结果与章末钩子。
 章标题规范：2–6 字的短意象或动作，取自本章具体物件、地点、动作或一句话（如「雪夜」「脚印会说话」「后山招供」）；不写「第X章」字样，不用「危机」「高潮」「转折」「揭秘」这类空泛词，不剧透未发生的反转，不堆砌形容词。`,
-		chapterTarget, floor, ceil, floor, ceil, scenes, chapterTarget/scenes)
+		chapterTarget, floor, ceil, floor, ceil, domain.SceneCharsMin, domain.SceneCharsMax)
 }
 
 func OutlineSystemPrompt() string {
 	return fmt.Sprintf(`你是小说编辑。只补全单元细纲合同字段，输出严格 JSON，不要工具调用，不要只输出单个单元对象。
 输出外壳必须是：{"units":[{...},...]}；即使只改 1 个单元，也要放进 units 数组。
 每个单元字段：unitId,title,function,desire,obstacle,choice,payoff,pleasure,forbidden,chapterChars,onStage,pov,chapterFrom,chapterTo,chapters,scenes,stateDeltas,nextHook,storyDay,endDay,gapDays,timelineId,gapFromPrev,infoControl。
-chapterChars 是**单章**目标字数，正整数，只能落在 %d–%d；不写则由系统补默认值。只要 chapterChars 这一个数字；不要输出 wordTarget。
+chapterChars 是**单章**目标字数，正整数，只能落在 %d–%d；作者没特别要求就写 %d，不要自行调高。只要 chapterChars 这一个数字；不要输出 wordTarget。
 chapters 是逐章轻量合同，每章必须有 {chapter,goal,change,cutHook,dayOffset}；change 必须是可验证的状态/信息/关系/行动变化，不得只写情绪。章范围全部覆盖，day_offset 不超出单元结束日。
-scenes 仅复杂章的可选子项，不要求每章都有；每个 scene 仅含 {chapter,goal,conflict,turn,outcome}，可选 id/mustLand/evidenceIn/evidenceOut/dayOffset。禁止预写台词、动作清单和情绪曲线；mustLand 最多 2 个可见事实。
+scenes 仅复杂章的可选子项，不要求每章都有；一旦写了 scenes，就必须覆盖每一章（每章 1–3 个场面即可，不要为凑数给简单章硬拆）。每个 scene 仅含 {chapter,goal,conflict,turn,outcome}，可选 id/mustLand/evidenceIn/evidenceOut/dayOffset。禁止预写台词、动作清单和情绪曲线；mustLand 最多 2 个可见事实。
 存在「不可改写的单元种子」时：sourceSeedId 必须等于单元 ID；chapterFrom/chapterTo、desire/obstacle/choice/payoff 必须逐字继承种子 chapter_range/objective/obstacle/choice/outcome，不得改故事；attempt/setback/cost 也继承种子；storyDay/endDay/gapDays 必须继承 clock_start_day/clock_end_day/clock_gap_days。
 storyDay / gapFromPrev / infoControl / forbidden / desire 等叙述字段必须是字符串标量（如 "3" 或 "入职第三天"），不要用对象；chapterFrom/chapterTo 为数字；onStage 为字符串数组。
 stateDeltas 必须是结构化数组 [{"stem":"人物或实体 ID","field":"role_title|location|injury|resources|goal|knowledge","from":"单元前状态","to":"单元后状态"}]；至少一条，不得用自由文本代替。
 nextHook 必须是对象：{"type":"钩子类型","out":"具体事件"}（对应落盘 next_hook.type / next_hook.out），type 沿用卷纲索引已定类型；禁止写成一整句字符串。
-onStage ⊆ 本卷人物；pov ∈ onStage；每章至少 2 个 scenes。不要改卷纲已定 function。
+onStage ⊆ 本卷人物；pov ∈ onStage。不要改卷纲已定 function。
 人物规则：onStage 只放有台词/有后续戏份的人物。纯功能路人（报案群众、值班民警、摊主等一次性角色）不要进 onStage，直接写在 scenes 的 who/beat 描述里（如「报案邻居」）。确需引入本卷人物表之外的新人物（如单元案受害者、嫌疑人），给出新英文 stem 并在 scenes 里体现其功能；该新 stem 会被播种为候选人物卡，作者晋升后才成为 canon。
 单元标题（title）规范：2–8 字，概括本单元的核心动作或意象（如「入门试炼」「锁定并出发」「两种手艺」）；与 function 呼应但不照抄；不用「单元」「第X」字样，不剧透终局底牌。`,
-		domain.ChapterCharsMin, domain.ChapterCharsMax)
+		domain.ChapterCharsMin, domain.ChapterCharsMax, domain.ChapterCharsDefault)
 }
 
 func PlanSystemPrompt() string {

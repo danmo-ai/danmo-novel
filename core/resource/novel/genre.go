@@ -86,19 +86,29 @@ func GenreFamilies(name string) []string {
 			add([]string{f.ID})
 		}
 	}
-	for alias, fams := range genreAliases {
-		if alias != n && strings.Contains(n, alias) {
-			add(fams)
+	// 别名表是 map：先按别名长度降序、再按字典序固定顺序，保证
+	// 「都市修真」这类能同时命中多个别名的输入每次都得到同一组家族。
+	for _, alias := range sortedAliasKeys(genreAliases) {
+		if alias == n {
+			continue
+		}
+		if strings.Contains(n, alias) {
+			add(genreAliases[alias])
 		}
 	}
 	if len(hit) > 0 {
-		sort.Slice(hit, func(i, j int) bool {
+		// 未知家族在 genreOrder 里没有序号；用名字兜底做全序，
+		// 否则相同序号的两项顺序随 map 迭代漂移。
+		sort.SliceStable(hit, func(i, j int) bool {
 			ri, iok := genreOrder[hit[i]]
 			rj, jok := genreOrder[hit[j]]
-			if iok && jok {
+			switch {
+			case iok && jok && ri != rj:
 				return ri < rj
+			case iok != jok:
+				return iok
 			}
-			return iok
+			return hit[i] < hit[j]
 		})
 		return hit
 	}
@@ -123,8 +133,7 @@ var subgenreAliases = map[string]string{
 	"社会派":  "刑侦探案",
 }
 
-// CanonicalSubgenre returns the canonical subgenre name for a book's raw
-// subgenre, or "" when the spelling maps to nothing known.
+// CanonicalSubgenre 把书里的子类写法归一到知识库标签用的规范名。
 func CanonicalSubgenre(subgenre string) string {
 	s := strings.TrimSpace(subgenre)
 	if s == "" {
@@ -134,15 +143,48 @@ func CanonicalSubgenre(subgenre string) string {
 		return c
 	}
 	// 允许「年代刑侦·双主角」这类组合写法：包含规范名或其唯一别名即归一。
-	for alias, canonical := range subgenreAliases {
-		if alias == canonical {
+	// 按长度降序 + 字典序固定遍历顺序——否则「年代刑侦」同时命中
+	// 「年代刑侦」「刑侦」时，返回哪个由 map 迭代顺序决定。
+	for _, alias := range sortedSubgenreAliases() {
+		if alias == subgenreAliases[alias] {
 			continue
 		}
 		if strings.Contains(s, alias) {
-			return canonical
+			return subgenreAliases[alias]
 		}
 	}
 	return ""
+}
+
+// sortedSubgenreAliases 返回 subgenreAliases 的稳定遍历顺序（长别名优先）。
+func sortedSubgenreAliases() []string {
+	keys := make([]string, 0, len(subgenreAliases))
+	for k := range subgenreAliases {
+		keys = append(keys, k)
+	}
+	// 长别名优先：先匹配「年代刑侦」再匹配「刑侦」，结果与输入的具体程度一致。
+	sort.Slice(keys, func(i, j int) bool {
+		if len(keys[i]) != len(keys[j]) {
+			return len(keys[i]) > len(keys[j])
+		}
+		return keys[i] < keys[j]
+	})
+	return keys
+}
+
+// sortedAliasKeys 返回 genreAliases 的稳定遍历顺序（长别名优先，同长按字典序）。
+func sortedAliasKeys(m map[string][]string) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		if len(keys[i]) != len(keys[j]) {
+			return len(keys[i]) > len(keys[j])
+		}
+		return keys[i] < keys[j]
+	})
+	return keys
 }
 
 // SubgenreMatched reports whether a tagged subgenre (article front matter) and

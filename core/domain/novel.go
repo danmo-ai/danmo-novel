@@ -121,13 +121,6 @@ type TaskSpec struct {
 	// 让新审校能启动。重审就是用新结论替换旧结论，不放行就只能靠作者先手动处置，
 	// 而审校清单的"处置"按钮（通过/强制通过）在旧方案里根本不存在——所以会打死结。
 	SupersedeReview bool `json:"supersedeReview,omitempty"`
-	// ScopedChapters 限定审校只覆盖指定章节（章号 → 改动句子）。
-	//
-	// 只用于「修订后复审」：实测 96%+ 的复审"新问题"落在这次根本没改过的原文上，
-	// 它们不是修复引入的，而是上几轮没看见的旧问题。整单元重审会把它们当成
-	// 新结论不停报出来，清单永远关不掉。限定到改动区间后，落在区间外的发现
-	// 仍会被保留，但标成 outOfScope，不参与阻断判定。
-	ScopedChapters map[int][]string `json:"scopedChapters,omitempty"`
 }
 
 type TextSelection struct {
@@ -257,10 +250,6 @@ type ReviewFinding struct {
 	EntityPath string `json:"entityPath,omitempty"`
 	VolumeID   string `json:"volumeId,omitempty"`
 	UnitID     string `json:"unitId,omitempty"`
-	// OutOfScope 标记「复审时发现的、但不在本次改动范围内」的问题。
-	// 它们在清单里如实保留，但不参与阻断判定——否则修完的问题会被上轮漏看
-	// 的旧问题永久拖住，清单永远关不掉。
-	OutOfScope bool `json:"outOfScope,omitempty"`
 }
 
 // 这两条 finding 不是"意见"，是"这一章根本没审完"的标记：输出被预算截断，
@@ -302,10 +291,6 @@ func ReviewVerdict(findings []ReviewFinding) string {
 		if f.Severity != "blocking" {
 			continue
 		}
-		// 复审范围内的旧问题不阻断：它们是上轮漏看的欠账，不是这次改动引入的。
-		if f.OutOfScope {
-			continue
-		}
 		if f.RoundsHit == 0 || f.RoundsHit >= 2 {
 			return ReviewBlocking
 		}
@@ -314,15 +299,6 @@ func ReviewVerdict(findings []ReviewFinding) string {
 		return ReviewUnfinished
 	}
 	return ReviewClean
-}
-
-// CloseReviewResult 是「通过」的响应：通过了几份清单、整体结论、
-// 以及自动起的定稿 run（可能为空——例如已有定稿候选在等接受）。
-type CloseReviewResult struct {
-	Closed  int    `json:"closed"`
-	Verdict string `json:"verdict"`
-	RunID   string `json:"runId,omitempty"`
-	Warning string `json:"warning,omitempty"`
 }
 
 type CanonChange struct {
@@ -357,9 +333,6 @@ type Candidate struct {
 	CanonChanges  []CanonChange      `json:"canonChanges,omitempty"`
 	CreatedAt     time.Time          `json:"createdAt"`
 	AcceptedAt    *time.Time         `json:"acceptedAt,omitempty"`
-	// FollowUpRunID is transient: it only appears in the Accept response so the
-	// UI can poll the automatic re-review. Never persisted.
-	FollowUpRunID string `json:"followUpRunId,omitempty"`
 }
 
 type AcceptCommand struct {
@@ -367,10 +340,6 @@ type AcceptCommand struct {
 	BaseRevision     string   `json:"baseRevision"`
 	AcceptFindingIDs []string `json:"acceptFindingIds,omitempty"`
 	ForceRiskAccept  bool     `json:"forceRiskAccept,omitempty"`
-	// FollowUpReview asks the server to archive the handled review findings and
-	// start one automatic re-review of the revised unit. 默认 false：只有审校页的
-	// 手动「确认落盘」请求它，服务端不会自己再开一轮。
-	FollowUpReview bool `json:"followUpReview,omitempty"`
 }
 
 type CallRecord struct {

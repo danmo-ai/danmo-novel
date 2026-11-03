@@ -377,7 +377,12 @@ func loadUnits(root string, files map[string]string) []domain.UnitInfo {
 		if out[i].Volume != out[j].Volume {
 			return out[i].Volume < out[j].Volume
 		}
-		return out[i].Index < out[j].Index
+		if out[i].Index != out[j].Index {
+			return out[i].Index < out[j].Index
+		}
+		// 同卷同序号理论上不该出现；用 ID 兜底，保证顺序不随 map 迭代漂移
+		// （snap.Units 的顺序会决定提示词里人物/单元的排列）。
+		return out[i].UnitID < out[j].UnitID
 	})
 	_ = root
 	return out

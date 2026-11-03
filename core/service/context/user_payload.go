@@ -3,6 +3,7 @@ package contextsvc
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/danmo-ai/danmo-novel/core/domain"
@@ -36,6 +37,11 @@ type UserRef struct {
 // 曾经 task 与 instruction 排在最前面（第 3、4 个字段），而它们恰恰是审校
 // （"review"）与修订（"revise_patch"）第一个就不同的地方——于是 13819 字的
 // 共享正文一个 token 都没命中。Repair 同理必须留在最后（见 MergeRepairIntoUserPayload）。
+//
+// 分章写作同样受这条约束支配：documents 里出现任何按章变化的内容（最典型的是
+// 场面节拍），公共前缀就会停在 documents 中间，后面的上下文块与 references
+// 全部按全价重算。所以按章切片的东西一律走 extra（见 ChapterBeatsKey），
+// **不要往 documents 里替换内容**。
 type UserPayload struct {
 	Mode        string         `json:"mode,omitempty"`
 	Book        map[string]any `json:"book"`
@@ -127,10 +133,13 @@ func MergeExtraIntoUserPayload(userPrompt string, extra map[string]any) string {
 	}
 	p, err := DecodeUserPayload(userPrompt)
 	if err != nil {
+		// 老格式（非 JSON）payload 的兜底拼装。这里是唯一把 map 直接遍历成
+		// 自然语言的地方：不排序的话，同一组 extra 每次运行都会得到不同字节序，
+		// 前缀缓存与"同输入同输出"同时失效。
 		var b strings.Builder
 		b.WriteString(userPrompt)
-		for k, v := range extra {
-			fmt.Fprintf(&b, "\n\n%s: %v", k, v)
+		for _, k := range sortedMapKeys(extra) {
+			fmt.Fprintf(&b, "\n\n%s: %v", k, extra[k])
 		}
 		return b.String()
 	}
@@ -169,33 +178,49 @@ func BuildUserPrompt(task, mode string, book map[string]any, instruction string,
 	})
 }
 
-// NarrowBeats returns a copy of a write packet whose 场面节拍 block only holds
-// one chapter's scenes. Everything else (contract, facts, cast, style) is
-// identical, so it is not rebuilt.
+// ChapterBeatsKey 是按章切片后的场面节拍在 user payload 尾部的键名。
 //
-// 分章写作时这是最大的单项浪费：6 章单元每次调用都带全部 26 个场面，
-// 而模型这一次只需要写其中一章。过滤不放宽任何约束——合同、facts、人物照旧。
-func NarrowBeats(packet domain.ContextPacket, unit domain.UnitInfo, chapter int) domain.ContextPacket {
+// 它必须落在 extra（序列化在 references 之后），不能留在 documents 里：
+// documents 排在 references 之前，而 references 是作者勾选的参考知识
+// （实测单本 32KB，占写作 prompt 的三分之二）。节拍是唯一按章变化的文档，
+// 把它留在 documents 里，公共前缀就只能停在 documents 开头——实测单章命中
+// 率 5%，等于每章把整份上下文按全价重算一遍。
+const ChapterBeatsKey = "chapterBeats"
+
+// NarrowBeats 把整单元的场面包裁剪成本章的一小段，并从 documents 中摘掉，
+// 交给调用方放进 payload 尾部（extra[ChapterBeatsKey]）。
+//
+// 返回值：去掉 unit-beats 之后的 packet 副本，以及本章的场面节拍文本
+// （原文没有节拍块时为空串，调用方此时不需要补 extra）。
+//
+// 为什么是「整块移出」而不是「原地替换内容」：替换仍然改变 documents 里
+// 那一段字节，排在它后面的每个块（人物卡、连续性、风格、揭示约束）与整份
+// references 都跟着失去复用。移出之后，documents / references / task /
+// instruction 逐字相同，分叉点只剩尾部 extra 里的章号、节拍与上一章正文。
+//
+// 过滤本身不放宽任何约束：合同、facts、人物照旧，只有节拍按章切片。
+func NarrowBeats(packet domain.ContextPacket, unit domain.UnitInfo, chapter int) (domain.ContextPacket, string) {
+	beats := BeatsForChapter(unit.OutlineRaw, chapter)
+	if strings.TrimSpace(beats) == "" {
+		return packet, ""
+	}
 	out := packet
 	out.Blocks = make([]domain.ContextBlock, 0, len(packet.Blocks))
-	changed := false
+	removed := false
 	for _, b := range packet.Blocks {
 		if b.ID == "unit-beats" {
-			if trimmed := BeatsForChapter(unit.OutlineRaw, chapter); trimmed != "" && trimmed != b.Content {
-				b.Content = trimmed
-				b.Bytes = len(trimmed)
-				changed = true
-			}
+			removed = true
+			continue
 		}
 		out.Blocks = append(out.Blocks, b)
 	}
-	if !changed {
-		return packet
+	if !removed {
+		return packet, ""
 	}
-	// 用户 payload 是从 blocks 序列化出来的，必须同步重建，否则过滤不生效。
+	// 用户 payload 是从 blocks 序列化出来的，必须同步重建，否则摘除不生效。
 	out.UserPrompt = buildUserPromptFrom(packet, out.Blocks)
-	out.EstPromptTokens = (len([]rune(out.SystemPrompt)) + len([]rune(out.UserPrompt))) / 2
-	return out
+	out.EstPromptTokens = (len([]rune(out.SystemPrompt)) + len([]rune(out.UserPrompt)) + len([]rune(beats))) / 2
+	return out, beats
 }
 
 // buildUserPromptFrom re-encodes the user payload with replacement blocks while
@@ -207,4 +232,18 @@ func buildUserPromptFrom(packet domain.ContextPacket, blocks []domain.ContextBlo
 	}
 	p.Documents = DocumentsFromBlocks(blocks)
 	return EncodeUserPayload(p)
+}
+
+// sortedMapKeys 把 map 的键排成稳定顺序。
+//
+// 凡是「把 map 遍历成提示词文本」的地方都必须走它：Go 的 map 迭代顺序是随机的，
+// 同一份输入两次构建会得到不同字节序，前缀缓存和「同输入同输出」一起失效。
+// 注意 json.Marshal 对 map 已经按键排序，只有手写拼接的路径需要这个。
+func sortedMapKeys(m map[string]any) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }

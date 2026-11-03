@@ -1,7 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import { api } from '@/api/client'
-import type { BookSnapshot, BookSummary, Candidate, CloseReviewResult, LLMModel, ProviderPublic, Run } from '@/types'
+import type { BookSnapshot, BookSummary, Candidate, LLMModel, ProviderPublic, Run } from '@/types'
 
 export const useAppStore = defineStore('app', () => {
   const books = ref<BookSummary[]>([])
@@ -65,29 +65,14 @@ export const useAppStore = defineStore('app', () => {
   async function acceptCandidate(
     id: string,
     baseRevision: string,
-    opts: { followUpReview?: boolean; forceRiskAccept?: boolean } = {},
+    opts: { forceRiskAccept?: boolean } = {},
   ) {
     const c = await api.post<Candidate>(`/api/candidates/${id}/accept`, {
       baseRevision,
-      followUpReview: opts.followUpReview === true,
       forceRiskAccept: opts.forceRiskAccept === true,
     })
-    // 默认不请求复审：接受修订就是交付终点。只有显式 opt-in 才会拿到 followUpRunId。
-    note(c.followUpRunId ? '已接受修订，已按要求复审' : '已接受候选')
+    note('已接受候选')
     return c
-  }
-  /** 审校通过：归档该单元全部待处理清单，并按需直接起定稿。 */
-  async function closeUnitReview(
-    bookId: string,
-    unitId: string,
-    opts: { force?: boolean; startFinalize?: boolean } = {},
-  ) {
-    const res = await api.post<CloseReviewResult>(`/api/books/${bookId}/units/${unitId}/close-review`, {
-      force: opts.force === true,
-      startFinalize: opts.startFinalize !== false,
-    })
-    note(res.runId ? '审校已通过，正在定稿' : '审校已通过')
-    return res
   }
   async function rejectCandidate(id: string, reason = '') { await api.post(`/api/candidates/${id}/reject`, { reason }) }
 
@@ -95,6 +80,6 @@ export const useAppStore = defineStore('app', () => {
     books, currentBook, primary, continuity, candidates, candidateHistory, runs, activeRun,
     providers, models, presets, assignments, toast, error,
     note, fail, loadBooks, loadBook, loadCandidates, loadCandidateHistory, loadRuns,
-    loadLLM, startRun, pollRun, clearActiveRun, acceptCandidate, closeUnitReview, rejectCandidate,
+    loadLLM, startRun, pollRun, clearActiveRun, acceptCandidate, rejectCandidate,
   }
 })

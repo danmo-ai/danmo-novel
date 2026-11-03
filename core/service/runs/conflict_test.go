@@ -25,10 +25,9 @@ func TestActiveRunConflictExplainsWaitingAccept(t *testing.T) {
 	for _, want := range []string{
 		"v01-U1",   // 哪个单元
 		"审校清单",     // 哪种调用（人话，不是枚举值）
-		"通过",       // 作者该做什么：界面上真实存在的动作
-		"强制通过",     //
-		"拒绝清单",     //
-		"重审",       // 另一条出路：重审会先归档旧清单
+		"自动修复",     // 作者该做什么：界面上真实存在的动作
+		"拒绝",       //
+		"重新审校",     // 另一条出路：重新审校会先归档旧清单
 		"9ecdf100", // 哪个候选（短 id，够定位到 UI）
 	} {
 		if !strings.Contains(msg, want) {

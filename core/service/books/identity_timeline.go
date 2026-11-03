@@ -50,6 +50,16 @@ func MarshalIdentityTimeline(segments []domain.IdentitySegment) ([]byte, error) 
 	return yaml.Marshal(identityFile{Version: 1, Segments: segments})
 }
 
+// sortedSegmentStems 给出身份时间线校验的稳定遍历顺序。
+func sortedSegmentStems(byStem map[string][]domain.IdentitySegment) []string {
+	stems := make([]string, 0, len(byStem))
+	for stem := range byStem {
+		stems = append(stems, stem)
+	}
+	sort.Strings(stems)
+	return stems
+}
+
 func ValidateIdentityTimeline(segments []domain.IdentitySegment, units []domain.UnitInfo) error {
 	byStem := map[string][]domain.IdentitySegment{}
 	validUnits := map[string]bool{}
@@ -71,7 +81,10 @@ func ValidateIdentityTimeline(segments []domain.IdentitySegment, units []domain.
 		}
 		byStem[s.Stem] = append(byStem[s.Stem], s)
 	}
-	for stem, rows := range byStem {
+	// 遍历顺序决定报错文本：map 顺序随机，同一份时间线两次校验会给出
+	// 不同的错误（那段文本会进 repair 提示词），所以按 stem 排序后再比。
+	for _, stem := range sortedSegmentStems(byStem) {
+		rows := byStem[stem]
 		sort.SliceStable(rows, func(i, j int) bool { return UnitOrderKey(rows[i].FromUnit) < UnitOrderKey(rows[j].FromUnit) })
 		for i := 1; i < len(rows); i++ {
 			if rows[i-1].ToUnit == "" || UnitOrderKey(rows[i].FromUnit) <= UnitOrderKey(rows[i-1].ToUnit) {
@@ -249,31 +262,133 @@ func ValidateUnitIdentity(segments []domain.IdentitySegment, onStage []string, u
 	return blocking, advisory
 }
 
+// ValidateStateDeltasIdentity checks a unit's state_deltas against the identity
+// timeline **without** requiring the unit to already have prose.
+//
+// 这是 ValidateFinalizedIdentity 的可提前调用版本：细纲生成/接受时就能跑。定稿才
+// 发现这类冲突的代价极大——正文已写完、只能返工规划；而 state_deltas 与时间线
+// 都是本地数据，判定零成本。
+func ValidateStateDeltasIdentity(segments []domain.IdentitySegment, cast []domain.CastCard, unit domain.UnitInfo, outlineRaw string) error {
+	if err := ValidateIdentityCoverage(segments, cast, unit, outlineOnStageForBooks(outlineRaw)); err != nil {
+		return err
+	}
+	_, err := stateDeltaIdentityConflict(segments, unit, outlineRaw)
+	return err
+}
+
 // ValidateFinalizedIdentity compares actual state deltas with the identity
 // effective at this unit. A finalizer may confirm, never invent, a new segment.
+//
+// `from` / `to` 的语义是「单元前状态 / 单元后状态」（见细纲契约的 stateDeltas
+// 说明），不是「本单元开场身份」。所以 role_title 这一类 delta 只有 `to` 必须
+// 等于本单元生效身份；`from` 允许是**上一段身份**——身份转换正是在单元边界发生，
+// 「内勤新警 → 刑侦线新警」这种写法本身就是对的。
+//
+// 以前这里要求 from 也等于本单元生效身份，等于要求 from == to，把契约允许的
+// 边界转换判成硬伤。实测代价很大：整本 v01-U2 的正文都写完了，到定稿才被拦下，
+// 而报错信息又指向"修时间线"，作者以为要改已定稿的设定。
 func ValidateFinalizedIdentity(segments []domain.IdentitySegment, cast []domain.CastCard, unit domain.UnitInfo, outlineRaw string) error {
 	if err := ValidateIdentityCoverage(segments, cast, unit, outlineOnStageForBooks(outlineRaw)); err != nil {
 		return err
 	}
+	_, err := stateDeltaIdentityConflict(segments, unit, outlineRaw)
+	return err
+}
+
+// stateDeltaIdentityConflict returns the first conflicting finding, if any.
+//
+// 返回 finding 而不是只返回 error：同一条规则要在三处生效——定稿拒绝接受、
+// 细纲接受拒绝落盘、审校清单里作为本地硬门显示。三处共用一份判定，措辞才不会分叉。
+func stateDeltaIdentityConflict(segments []domain.IdentitySegment, unit domain.UnitInfo, outlineRaw string) (domain.ReviewFinding, error) {
 	for _, delta := range parseStateDeltas(outlineRaw) {
 		if delta.Field != "role_title" && delta.Field != "identity" && delta.Field != "title" {
 			continue
 		}
 		identity := IdentityAt(segments, delta.Stem, unit.UnitID)
 		if identity == nil {
-			return fmt.Errorf("%s：%s 缺少本单元生效身份", unit.UnitID, delta.Stem)
+			return identityFinding(unit, delta, "", "缺少本单元生效身份"), fmt.Errorf("%s：%s 缺少本单元生效身份", unit.UnitID, delta.Stem)
 		}
-		// A role change completed at the end of a unit is a next-boundary
-		// transition. The next unit's planning Accept registers it; this unit
-		// must still be evaluated against its opening identity.
-		if delta.From != "" && delta.From != identity.RoleTitle {
-			return fmt.Errorf("%s：%s 的开场身份 %s 与时间线 %s 不一致", unit.UnitID, delta.Stem, delta.From, identity.RoleTitle)
-		}
+		// to 必须是本单元生效身份：定稿只确认时间线，不允许它顺手改写身份。
 		if delta.To != identity.RoleTitle {
-			return fmt.Errorf("%s：%s 的身份 %s 与本单元生效段 %s 不一致；请先调整规划，不允许定稿自动改身份", unit.UnitID, delta.Stem, delta.To, identity.RoleTitle)
+			return identityFinding(unit, delta, identity.RoleTitle,
+					fmt.Sprintf("state_deltas 的 to=%s 与本单元生效段 %s 不一致；请先调整规划，不允许落盘自动改身份", delta.To, identity.RoleTitle)),
+				fmt.Errorf("%s：%s 的身份 %s 与本单元生效段 %s 不一致；请先调整规划，不允许定稿自动改身份", unit.UnitID, delta.Stem, delta.To, identity.RoleTitle)
 		}
+		// from 是「单元前状态」，可以是本单元身份（单元内不变），也可以是上一段
+		// 身份（边界转换）。两者都不匹配才说明 state_deltas 写错了。
+		if delta.From == "" || delta.From == identity.RoleTitle {
+			continue
+		}
+		prev := prevRoleLabel(segments, delta.Stem, unit.UnitID)
+		if prev != "（无）" && prev == delta.From {
+			continue
+		}
+		msg := fmt.Sprintf("state_deltas 的 from=%s 既不等于上一段 %s，也不等于本单元 %s；请修正 state_deltas 或身份时间线",
+			delta.From, prev, identity.RoleTitle)
+		return identityFinding(unit, delta, identity.RoleTitle, msg),
+			fmt.Errorf("%s：%s 的单元前身份 %s 既不等于上一段 %s，也不等于本单元 %s；请修正 state_deltas 或身份时间线",
+				unit.UnitID, delta.Stem, delta.From, prev, identity.RoleTitle)
+	}
+	return domain.ReviewFinding{}, nil
+}
+
+// identityFinding renders the same conflict as a blocking local-gate finding, so
+// it shows up in the review checklist instead of only at finalize.
+func identityFinding(unit domain.UnitInfo, delta stateDelta, want, msg string) domain.ReviewFinding {
+	return domain.ReviewFinding{
+		ID:         fmt.Sprintf("identity-%s-%s", unit.UnitID, delta.Stem),
+		Severity:   "blocking",
+		Source:     "local_gate",
+		Lens:       "identity",
+		Title:      "state_deltas 与身份时间线冲突",
+		Evidence:   fmt.Sprintf("%s：%s（from=%s, to=%s，时间线=%s）", unit.UnitID, delta.Stem, delta.From, delta.To, want),
+		Suggestion: msg,
+		EntityPath: IdentityTimelinePath,
+		UnitID:     unit.UnitID,
+	}
+}
+
+// IdentityDeltaFindings exposes the identity check as review findings.
+//
+// 审校清单是修问题最便宜的阶段：那时规划刚定、正文可能还没写。把它做成本地硬门
+// 而不是让 AI 审校去"感觉"身份不对——这条判定是确定性的，无需模型参与。
+func IdentityDeltaFindings(segments []domain.IdentitySegment, unit domain.UnitInfo, outlineRaw string) []domain.ReviewFinding {
+	if f, err := stateDeltaIdentityConflict(segments, unit, outlineRaw); err != nil {
+		return []domain.ReviewFinding{f}
 	}
 	return nil
+}
+
+// identityBefore returns the segment effective immediately before the one that
+// applies at unitID — 即本单元的「单元前状态」。没有更早的段时返回 nil。
+func identityBefore(segments []domain.IdentitySegment, stem, unitID string) *domain.IdentitySegment {
+	cur := IdentityAt(segments, stem, unitID)
+	if cur == nil {
+		return nil
+	}
+	curFrom := UnitOrderKey(cur.FromUnit)
+	var best *domain.IdentitySegment
+	for i := range segments {
+		s := &segments[i]
+		if s.Stem != stem {
+			continue
+		}
+		if UnitOrderKey(s.FromUnit) >= curFrom {
+			continue
+		}
+		if best == nil || UnitOrderKey(s.FromUnit) >= UnitOrderKey(best.FromUnit) {
+			best = s
+		}
+	}
+	return best
+}
+
+// prevRoleLabel renders the previous segment's role for error messages.
+func prevRoleLabel(segments []domain.IdentitySegment, stem, unitID string) string {
+	if prev := identityBefore(segments, stem, unitID); prev != nil {
+		return prev.RoleTitle
+	}
+	return "（无）"
 }
 
 func OnStageFromOutline(raw string) []string {
