@@ -35,18 +35,43 @@ Push a tag `v*` (or run **Build Release Artifacts** workflow dispatch). The work
 
 1. Builds macOS / Linux / Windows desktop packages
 2. Signs updater payloads when `TAURI_SIGNING_PRIVATE_KEY` is set
-3. Uploads GitHub Release assets and writes `latest.json`
+3. Signs macOS bundles with Developer ID and notarizes them when the `APPLE_*` secrets are set
+4. Uploads GitHub Release assets and writes `latest.json`
 
-Required repo secrets:
+Required repo secrets (all optional except the updater key if you want auto-update):
 
 | Secret | Purpose |
 |--------|---------|
 | `TAURI_SIGNING_PRIVATE_KEY` | Minisign private key (one-line base64 contents of `updater.key`) |
 | `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | Optional password |
+| `APPLE_CERTIFICATE` | Developer ID Application `.p12`, single-line base64 |
+| `APPLE_CERTIFICATE_PASSWORD` | Password used when exporting the `.p12` |
+| `APPLE_SIGNING_IDENTITY` | e.g. `Developer ID Application: Foo (TEAMID)` — must match the cert CN |
+| `APPLE_ID` | Apple ID email for notarization |
+| `APPLE_PASSWORD` | App-specific password (`abcd-efgh-ijkl-mnop`) |
+| `APPLE_TEAM_ID` | 10-character Team ID |
+
+Set them all interactively (p12 path as the only argument):
 
 ```bash
-gh secret set TAURI_SIGNING_PRIVATE_KEY < desktop/src-tauri/keys/updater.key
+make set-release-secrets P12=~/certs/developer-id.p12
+# or
+scripts/gh_set_release_secrets.sh ~/certs/developer-id.p12
 ```
+
+Without the `APPLE_*` secrets the macOS job still builds — the bundle is ad-hoc signed, so
+the DMG ships with right-click-to-open instructions and the app is not distributable.
+
+Signing flow on macOS (`scripts/pack_desktop_macos.sh`):
+
+- `scripts/ci_import_apple_cert.sh` imports the p12 into a throwaway keychain on the runner.
+- The Go sidecar is signed **before** `tauri build`, because Tauri copies it into
+  `Contents/MacOS/`; touching a binary inside a signed bundle afterwards invalidates the
+  signature (the "app is damaged" failure mode).
+- After the build the signature is verified (`codesign --verify --deep --strict`) and the
+  job fails if it is not a Developer ID signature.
+- Our custom DMG (with the Chinese install notes) is built after Tauri's own, so it is
+  notarized and stapled separately.
 
 Updater endpoint (clients poll this):
 

@@ -11,7 +11,7 @@ export DQ_BACKEND_PORT
 export DQ_FRONTEND_PORT
 
 .PHONY: help backend dev start stop frontend-install frontend-dev frontend-build \
-	dev-desktop test build build-sidecar clean \
+	dev-desktop test build build-sidecar clean set-release-secrets \
 	pack-prereqs pack-macos-desktop pack-linux-desktop pack-windows-desktop
 
 help:
@@ -21,6 +21,7 @@ help:
 	@echo "  make test             go test ./..."
 	@echo "  make build            frontend + server"
 	@echo "  make pack-macos-desktop | pack-linux-desktop | pack-windows-desktop"
+	@echo "  make set-release-secrets P12=~/certs/x.p12   写入发布用 GitHub secrets"
 
 dev start:
 	@chmod +x scripts/*.sh
@@ -74,6 +75,11 @@ pack-linux-desktop: pack-prereqs frontend-build
 pack-windows-desktop: pack-prereqs frontend-build
 	@chmod +x scripts/*.sh
 	@RELEASE_VERSION=$(RELEASE_VERSION) ./scripts/pack_desktop_windows.sh
+
+# 写入发布 secrets：make set-release-secrets P12=~/certs/developer-id.p12
+set-release-secrets:
+	@chmod +x scripts/*.sh
+	@./scripts/gh_set_release_secrets.sh "$(P12)"
 
 clean:
 	rm -rf $(OUT_DIR)
