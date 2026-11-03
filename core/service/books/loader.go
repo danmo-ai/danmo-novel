@@ -210,11 +210,26 @@ func loadVolumes(root string, files map[string]string) []domain.VolumeInfo {
 // castStemRe 是人物卡 stem 的唯一合法形态：小写字母、数字、连字符。
 var castStemRe = regexp.MustCompile(`^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$`)
 
-// parseVolumeCast extracts only machine-readable stem lines from 本卷人物.
-// Prose lines (人物弧描述、卷情绪、说明文字) are not stems and are dropped —
-// 卷纲是给人读的，stem 列表必须是 "- wen-nianci" 这种纯标识行。
+// parseVolumeCast extracts the machine-readable stem list of a volume.
+//
+// 两种写法都要认：卷根字段的 `- cast: a,b,c`（/ `- cast: [a, b]`），以及
+// `## 本卷人物` 下的 `- a：说明` 列表。以前只认后者，于是用前一种写法生成的
+// 卷纲解析出空 cast —— 细纲 prompt 里一张人物卡都没有，gates.CheckUnitOutline
+// 的 `onStage ⊆ 本卷人物` 也因 volumeCast 为空被静默跳过。播种细纲头走的是
+// `doc.Root.Value("cast")`，两条路径口径从此不一致。
+//
+// Prose lines (人物弧描述、卷情绪、说明文字) are not stems and are dropped.
 func parseVolumeCast(md string) []string {
 	var out []string
+	seen := map[string]bool{}
+	add := func(stem string) {
+		stem = strings.Trim(strings.TrimSpace(stem), "`\"'")
+		// 只接受合法 stem（英文小写连字符）；中文人名/散文一律跳过。
+		if castStemRe.MatchString(stem) && !seen[stem] {
+			seen[stem] = true
+			out = append(out, stem)
+		}
+	}
 	grab := false
 	for _, line := range strings.Split(md, "\n") {
 		s := strings.TrimSpace(line)
@@ -222,24 +237,46 @@ func parseVolumeCast(md string) []string {
 			grab = strings.Contains(s, "本卷人物")
 			continue
 		}
-		if !grab {
-			continue
-		}
 		if !strings.HasPrefix(s, "-") {
 			continue
 		}
-		stem := strings.TrimSpace(strings.TrimPrefix(s, "-"))
-		stem = strings.Trim(stem, "`")
+		item := strings.TrimSpace(strings.TrimPrefix(s, "-"))
+		if rest, ok := castFieldValue(item); ok {
+			for _, stem := range strings.FieldsFunc(rest, func(r rune) bool {
+				return r == ',' || r == '，' || r == '、' || r == ' '
+			}) {
+				add(stem)
+			}
+			continue
+		}
+		if !grab {
+			continue
+		}
+		stem := strings.Trim(item, "`")
 		// stem 后常接说明：空格 / 中英文冒号 / 括号。只取标识本身。
 		if i := strings.IndexAny(stem, " \t：:（("); i > 0 {
 			stem = stem[:i]
 		}
-		// 只接受合法 stem（英文小写连字符）；中文人名/散文一律跳过。
-		if castStemRe.MatchString(stem) {
-			out = append(out, stem)
-		}
+		add(stem)
 	}
 	return out
+}
+
+// castFieldValue 解析 `cast: a,b,c` / `cast: [a, b]` 这种根字段写法。
+func castFieldValue(item string) (string, bool) {
+	const key = "cast"
+	if !strings.HasPrefix(item, key) {
+		return "", false
+	}
+	rest := strings.TrimSpace(item[len(key):])
+	if !strings.HasPrefix(rest, ":") && !strings.HasPrefix(rest, "：") {
+		return "", false
+	}
+	rest = strings.TrimPrefix(rest, ":")
+	rest = strings.TrimPrefix(rest, "：")
+	rest = strings.TrimSpace(rest)
+	rest = strings.Trim(rest, "[]")
+	return strings.TrimSpace(rest), true
 }
 
 // unitOutline 是 outline/units/vNN-U#.yaml 里本应用关心的字段。

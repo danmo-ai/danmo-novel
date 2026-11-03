@@ -138,6 +138,21 @@ func ValidateUnitSeedInheritance(unit domain.UnitOutlineDraft, seed domain.Markd
 			vs = append(vs, Violation{Path: pair.path, Want: "继承卷纲：" + pair.want, Got: pair.got})
 		}
 	}
+	// function 与 desire 同源于种子的 objective（见 books.UnitSeed.Function）。
+	// 提示词一直写着「不得改卷纲已定 function」，但校验只比了 desire，于是模型
+	// 改写 function 而保留 desire 时无人发现——单元在卷里的功能定位就这样漂了。
+	if want := strings.TrimSpace(seed.Value("objective")); want != "" && strings.TrimSpace(unit.Function) != want {
+		vs = append(vs, Violation{Path: "function", Want: "继承卷纲：" + want, Got: unit.Function})
+	}
+	// 卷纲种子的 next_hook 是「类型 | 事件」，单位是写作阶段选钩子的依据；
+	// 同理一直只靠提示词约束，从未校验。
+	if hook := strings.SplitN(seed.Value("next_hook"), "|", 2); len(hook) == 2 {
+		if want := strings.TrimSpace(hook[0]); want != "" {
+			if got := outlineNextHookType(unit.NextHook); got != want {
+				vs = append(vs, Violation{Path: "nextHook.type", Want: "继承卷纲：" + want, Got: got})
+			}
+		}
+	}
 	if unit.StateDeltas == nil {
 		vs = append(vs, Violation{Path: "stateDeltas", Want: "继承卷纲 state_changes 的结构化数组", Got: "缺失"})
 	}
@@ -158,6 +173,19 @@ func ValidateUnitSeedInheritance(unit domain.UnitOutlineDraft, seed domain.Markd
 func mustAtoi(value string) int {
 	n, _ := strconv.Atoi(strings.TrimSpace(value))
 	return n
+}
+
+// outlineNextHookType 读 nextHook["type"]，把缺失/非标量统一成空串，
+// 免得报错信息里出现 "<nil>"。
+func outlineNextHookType(hook map[string]any) string {
+	if hook == nil {
+		return ""
+	}
+	v, ok := hook["type"]
+	if !ok || v == nil {
+		return ""
+	}
+	return strings.TrimSpace(fmt.Sprint(v))
 }
 
 func outlineOnStage(raw string) []string {

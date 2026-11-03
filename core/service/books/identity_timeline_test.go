@@ -137,12 +137,20 @@ func TestLoadIdentityTimeline(t *testing.T) {
 	}
 }
 
-func TestValidateNoIntraUnitChange(t *testing.T) {
-	if blocking := ValidateNoIntraUnitChange("state_deltas:\n  wen-nianci: 晋升为特聘专家\n", []string{"wen-nianci"}); len(blocking) == 0 {
-		t.Fatal("intra-unit identity change should be blocked")
+// 单元内部身份恒定靠 state_deltas 的结构化比对判定，不靠关键词。
+// 回归：合法的「不推晋升」口径与普通地点变化都不能被拦。
+func TestIntraUnitIdentityUsesStructuredDeltas(t *testing.T) {
+	segments := []domain.IdentitySegment{{Stem: "wen-nianci", RoleTitle: "见习警员", Org: "分局", FromUnit: "v01-U1"}}
+	unit := domain.UnitInfo{UnitID: "v01-U2", Volume: 1}
+	// 只是提到「晋升」这个词，身份没变 → 放行。
+	pass := "state_deltas:\n  - stem: wen-nianci\n    field: goal\n    from: 不想晋升\n    to: 不推晋升、不给借调\n"
+	if err := ValidateStateDeltasIdentity(segments, nil, unit, pass); err != nil {
+		t.Fatalf("关键词不是身份转换，不该拦：%v", err)
 	}
-	if blocking := ValidateNoIntraUnitChange("state_deltas:\n  wen-nianci position: 市局\n", []string{"wen-nianci"}); len(blocking) != 0 {
-		t.Fatal("ordinary location should pass")
+	// 真的改了 role_title → 拦。
+	block := "state_deltas:\n  - stem: wen-nianci\n    field: role_title\n    from: 见习警员\n    to: 特聘专家\n"
+	if err := ValidateStateDeltasIdentity(segments, nil, unit, block); err == nil {
+		t.Fatal("role_title 改写必须被拦下")
 	}
 }
 

@@ -364,6 +364,80 @@ func UnitContractForSeed(s UnitSeed, volumeCast []string, segments []domain.Iden
 	return contract
 }
 
+// seedOwnedFields 是「细纲不拥有、由卷纲种子独占」的合同字段。
+//
+// 细纲任务只补逐章合同与场面，这几项在卷纲里定死（揭示边界、故事线归属、
+// 前因后果、状态迁移文本、死线）。但 UnitOutlineDraft 没有对应字段，序列化
+// 只写它认识的键——于是接受一次细纲就把它们从单元文件里抹掉了。实测全库
+// 772 个单元文件：proposed 状态有 163 个带 entry_cause，而 accepted/drafted/
+// reviewed 共 119 个，**一个都没有**。
+var seedOwnedFields = []string{
+	"entry_cause", "exit_result", "state_changes", "thread_ids",
+	"event_ids", "reveal_ids", "forbidden_reveal_ids", "clock_deadline",
+}
+
+// seedListFields 是种子里的 YAML 列表字段，回填时写成行内数组。
+var seedListFields = map[string]bool{
+	"thread_ids": true, "event_ids": true, "reveal_ids": true, "forbidden_reveal_ids": true,
+}
+
+// CarrySeedOwnedFields appends the seed-owned contract fields that the accepted
+// unit YAML is missing.
+//
+// 父级合同优先：文件里已经有该键就一个字都不动（作者手改过的口径不被覆盖），
+// 只补缺失的。返回追加后的文本；找不到卷纲或种子时原样返回。
+func CarrySeedOwnedFields(snap domain.BookSnapshot, volume int, unitID, raw string) string {
+	if volume < 1 || strings.TrimSpace(raw) == "" {
+		return raw
+	}
+	doc, ok := StructuredOutlineFor(snap, fmt.Sprintf("outline/volumes/v%02d.md", volume))
+	if !ok || !doc.Valid() {
+		return raw
+	}
+	seed, found := doc.Entity("单元", unitID)
+	if !found {
+		return raw
+	}
+	var b strings.Builder
+	b.WriteString(strings.TrimRight(raw, "\n"))
+	b.WriteString("\n")
+	added := false
+	for _, key := range seedOwnedFields {
+		if hasUnitField(raw, key) {
+			continue
+		}
+		value := strings.TrimSpace(seed.Value(key))
+		if value == "" {
+			continue
+		}
+		if seedListFields[key] {
+			items := splitList(value)
+			if len(items) == 0 {
+				continue
+			}
+			fmt.Fprintf(&b, "%s: [%s]\n", key, strings.Join(items, ", "))
+		} else {
+			// %q 给的是合法的 YAML 双引号标量，中文原样保留。
+			fmt.Fprintf(&b, "%s: %q\n", key, value)
+		}
+		added = true
+	}
+	if !added {
+		return raw
+	}
+	return b.String()
+}
+
+// hasUnitField 判断单元 YAML 是否已有该顶层键。
+func hasUnitField(raw, key string) bool {
+	for _, line := range strings.Split(raw, "\n") {
+		if strings.HasPrefix(line, key+":") {
+			return true
+		}
+	}
+	return false
+}
+
 func commitPlanWrites(root string, writes map[string][]byte, state map[string]string) error {
 	stamp := time.Now().UTC().Format("20060102-150405")
 	backupRoot := filepath.Join(root, "backups", "pre-accept-"+stamp)

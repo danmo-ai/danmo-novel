@@ -232,11 +232,15 @@ type UnitOutlineDraft struct {
 	Flashback    bool             `json:"flashback,omitempty"`
 	InfoControl  string           `json:"infoControl,omitempty"`
 	StateDeltas  any              `json:"stateDeltas,omitempty"`
-	RawYAML      string           `json:"rawYaml,omitempty"`
-	SourceSeedID string           `json:"sourceSeedId,omitempty"`
-	Attempt      string           `json:"attempt,omitempty"`
-	Setback      string           `json:"setback,omitempty"`
-	Cost         string           `json:"cost,omitempty"`
+	// 这里曾经有一个 RawYAML（json:"rawYaml"）：模型可以直接把一份 YAML 原文
+	// 塞进候选，Accept 时优先写它。但所有校验（父子合同、时钟、身份、stateDeltas）
+	// 都读结构体字段——校验的和写盘的可以不是同一份文本，等于开了个后门。它从未
+	// 被任何生产代码赋值，只是一条没人用却一直敞着的通路，已删除。落盘只走
+	// serializeUnitYAML。
+	SourceSeedID string `json:"sourceSeedId,omitempty"`
+	Attempt      string `json:"attempt,omitempty"`
+	Setback      string `json:"setback,omitempty"`
+	Cost         string `json:"cost,omitempty"`
 }
 
 type ReviewFinding struct {

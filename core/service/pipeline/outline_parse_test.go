@@ -33,6 +33,26 @@ func TestParseOutlineUnitsCoercesStoryDayObject(t *testing.T) {
 	}
 }
 
+// 真实故障：细纲头把 end_day/gap_days 写成带引号的字符串（"90"/"1"），
+// 模型照抄进 JSON，严格 decode 直接失败，连父子合同校验都到不了。
+func TestParseOutlineUnitsCoercesStringClockFields(t *testing.T) {
+	raw := `{"units":[{"unitId":"v01-U8","title":"冷板凳入场","storyDay":"77","endDay":"90","gapDays":"1","chapterFrom":"46","chapterTo":"50","attempt":"交产业","setback":"失庇护","cost":"离人脉"}]}`
+	units, err := parseOutlineUnits(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	u := units[0]
+	if u.EndDay != 90 || u.GapDays != 1 || u.ChapterFrom != 46 || u.ChapterTo != 50 {
+		t.Fatalf("clock/range=%d/%d %d-%d", u.EndDay, u.GapDays, u.ChapterFrom, u.ChapterTo)
+	}
+	if u.StoryDay != "77" {
+		t.Fatalf("storyDay=%q", u.StoryDay)
+	}
+	if u.Attempt != "交产业" || u.Setback != "失庇护" || u.Cost != "离人脉" {
+		t.Fatalf("seed fields lost: %+v", u)
+	}
+}
+
 func TestParseOutlineUnitsCoercesStringNextHook(t *testing.T) {
 	raw := `{"units":[{"unitId":"v08-U4","title":"送上去","nextHook":"台历停在七月那一格，笔停在纸上。","chapterFrom":381,"chapterTo":390}]}`
 	units, err := parseOutlineUnits(raw)

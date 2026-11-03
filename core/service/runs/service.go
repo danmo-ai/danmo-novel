@@ -552,50 +552,62 @@ func (s *Service) Accept(ctx context.Context, cmd domain.AcceptCommand) (domain.
 			}
 		}
 	case domain.TaskOutline:
-		// 剧情时钟连续性：故事日倒退（非闪回）blocking。
-		vol := 0
-		if len(cand.UnitOutlines) > 0 {
+		// 生成期硬门的阻断结论不能靠「点接受」带过：细纲是正文的唯一合同来源，
+		// 带 blocking 落盘等于把问题推给写作阶段才发现。
+		if !cmd.ForceRiskAccept {
+			for _, f := range cand.Findings {
+				if f.Severity == "blocking" {
+					return domain.Candidate{}, fmt.Errorf("细纲仍有阻断问题，不能接受：%s（确认无误可带 forceRiskAccept 强行接受）", f.Title)
+				}
+			}
+		}
+		// 卷号只认候选自带的 volumeId。以前用 findUnit 反推，单元不在盘上时
+		// vol=0，父子合同校验会去读 v00 并不存在而**静默跳过整条继承校验**。
+		vol := volumeFromTag(cand.VolumeID)
+		if vol < 1 && len(cand.UnitOutlines) > 0 {
 			if u, ok := findUnit(snap, cand.UnitOutlines[0].UnitID); ok {
 				vol = u.Volume
 			}
 		}
+		if vol < 1 {
+			return domain.Candidate{}, fmt.Errorf("无法确定细纲所属卷（volumeId=%q），拒绝接受以免绕过父子合同；请重新生成本单元细纲", cand.VolumeID)
+		}
 		if err := pipeline.ValidateOutlineInheritance(snap, vol, cand.UnitOutlines); err != nil {
 			return domain.Candidate{}, err
 		}
-		for _, f := range books.ValidateClockContinuity(snap.Units, vol) {
+		for _, f := range books.ValidateClockContinuity(clockUnitsWithCandidate(snap, vol, cand.UnitOutlines), vol) {
 			if f.Severity == "blocking" && !cmd.ForceRiskAccept {
 				return domain.Candidate{}, fmt.Errorf("剧情时钟冲突：%s（%s）", f.Title, f.Evidence)
 			}
 		}
 		// 单元内部身份恒定：合同声明身份转换则必须拆单元。
 		for _, u := range cand.UnitOutlines {
-			if current, ok := findUnit(snap, u.UnitID); ok {
-				if err := books.ValidateIdentityCoverage(snap.IdentitySegments, snap.Cast, current, u.OnStage); err != nil {
-					return domain.Candidate{}, err
-				}
+			// 单元还没落盘时也要校验身份：身份段的判定只依赖 unitId，不是文件。
+			// 以前整段包在 findUnit 成功分支里，单元不在盘上就静默跳过。
+			current, ok := findUnit(snap, u.UnitID)
+			if !ok {
+				current = domain.UnitInfo{UnitID: u.UnitID, Volume: vol}
+			}
+			if err := books.ValidateIdentityCoverage(snap.IdentitySegments, snap.Cast, current, u.OnStage); err != nil {
+				return domain.Candidate{}, err
 			}
 			if u.StateDeltas == nil {
 				return domain.Candidate{}, fmt.Errorf("单元 %s 缺少结构化 stateDeltas，定稿无法回写状态迁移", u.UnitID)
 			}
-			if blocking := books.ValidateNoIntraUnitChange(u.RawYAML, u.OnStage); len(blocking) > 0 {
-				return domain.Candidate{}, fmt.Errorf("单元 %s 含身份转换，须拆到单元边界：%s", u.UnitID, strings.Join(blocking, "; "))
-			}
+			// 落盘文本只有一份，由结构体字段序列化而来：校验和写盘必须针对
+			// 同一份内容，否则「验过的」和「写下去的」可以不是一回事。
+			raw := serializeUnitYAML(u)
+			// 单元内部身份恒定由 state_deltas 的结构化比对来保证（见下）。
+			// 关键词扫全文的旧检查已删除：它会把「不推晋升」这类合法口径判成硬伤。
 			// state_deltas 与身份时间线的一致性必须在细纲落盘时就查：
 			// 这是纯本地判定，而定稿才发现意味着正文已经写完、只能返工规划。
-			if current, ok := findUnit(snap, u.UnitID); ok {
-				raw := u.RawYAML
-				if raw == "" {
-					raw = serializeUnitYAML(u)
-				}
-				if err := books.ValidateStateDeltasIdentity(snap.IdentitySegments, snap.Cast, current, raw); err != nil {
-					return domain.Candidate{}, fmt.Errorf("细纲的 state_deltas 与身份时间线冲突，不能接受：%w", err)
-				}
+			if err := books.ValidateStateDeltasIdentity(snap.IdentitySegments, snap.Cast, current, raw); err != nil {
+				return domain.Candidate{}, fmt.Errorf("细纲的 state_deltas 与身份时间线冲突，不能接受：%w", err)
 			}
+			// 细纲只拥有逐章合同与场面；揭示边界、故事线归属、前因后果这些
+			// 父级字段必须从卷纲种子回填，否则接受一次就永久丢失。
+			raw = books.CarrySeedOwnedFields(snap, vol, u.UnitID, raw)
 			path := filepath.Join(root, "outline", "units", u.UnitID+".yaml")
-			raw := u.RawYAML
-			if raw == "" {
-				raw = serializeUnitYAML(u)
-			}
 			if err := os.WriteFile(path, []byte(raw), 0o644); err != nil {
 				return domain.Candidate{}, err
 			}
@@ -1091,6 +1103,66 @@ func chapterCharsSource(u domain.UnitOutlineDraft) string {
 	return b.String()
 }
 
+// volumeFromTag 把 v01 / 1 这类标签解成卷号；解不出返回 0。
+func volumeFromTag(tag string) int {
+	s := strings.TrimSpace(tag)
+	if s == "" {
+		return 0
+	}
+	n, err := strconv.Atoi(strings.TrimLeft(strings.TrimPrefix(strings.ToLower(s), "v"), "0"))
+	if err != nil || n < 1 {
+		return 0
+	}
+	return n
+}
+
+// clockUnitsWithCandidate merges the candidate's unit contracts into the
+// on-disk unit list so the pre-accept clock check sees what will actually be
+// written.
+//
+// 以前这里直接传 snap.Units：那是接受前从盘上读到的文件，候选自己新写的
+// story_day 根本不在里面。首次生成时单元还不在盘上（整条「故事日倒退」检查
+// 空转），重写时校验的是被替换掉的旧值——两种情况下校验都和落盘内容无关。
+func clockUnitsWithCandidate(snap domain.BookSnapshot, volume int, outlines []domain.UnitOutlineDraft) []domain.UnitInfo {
+	pending := map[string]string{}
+	for _, u := range outlines {
+		pending[u.UnitID] = serializeUnitYAML(u)
+	}
+	out := make([]domain.UnitInfo, 0, len(snap.Units)+len(pending))
+	for _, u := range snap.Units {
+		if raw, ok := pending[u.UnitID]; ok {
+			u.OutlineRaw = raw
+			delete(pending, u.UnitID)
+		}
+		out = append(out, u)
+	}
+	for _, u := range outlines {
+		raw, ok := pending[u.UnitID]
+		if !ok {
+			continue // 已在盘上的单元，上面替换过了
+		}
+		delete(pending, u.UnitID)
+		key := books.UnitOrderKey(u.UnitID)
+		vol, idx := key/1000, key%1000
+		if vol < 1 {
+			vol, idx = volume, key%1000
+		}
+		out = append(out, domain.UnitInfo{UnitID: u.UnitID, Volume: vol, Index: idx, OutlineRaw: raw})
+	}
+	// 校验按切片顺序比较「上一单元 → 本单元」，顺序必须稳定，不能受 map 影响。
+	sort.SliceStable(out, func(i, j int) bool {
+		a, b := out[i], out[j]
+		if a.Volume != b.Volume {
+			return a.Volume < b.Volume
+		}
+		if a.Index != b.Index {
+			return a.Index < b.Index
+		}
+		return a.UnitID < b.UnitID
+	})
+	return out
+}
+
 func serializeUnitYAML(u domain.UnitOutlineDraft) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "unit_id: %s\n", u.UnitID)
@@ -1143,7 +1215,7 @@ func serializeUnitYAML(u domain.UnitOutlineDraft) string {
 	if len(u.Scenes) > 0 {
 		b.WriteString("scenes:\n")
 		for _, s := range u.Scenes {
-			writeYAMLMap(&b, s, "  ")
+			writeYAMLListItem(&b, s, "  ")
 		}
 	}
 	// 完整保留 next_hook / 故事时钟 / 信息控制。
@@ -1246,6 +1318,26 @@ func yamlQuote(s string) string {
 	s = strings.ReplaceAll(s, `"`, `\"`)
 	s = strings.ReplaceAll(s, "\n", " ")
 	return `"` + s + `"`
+}
+
+// writeYAMLListItem 把一个 map 写成 YAML 列表项（`- key: value`）。
+//
+// 以前 scenes 直接调 writeYAMLMap：多场面单元会在同一个 mapping 里重复写出
+// chapter/goal/… 这些键，产出根本不是合法 YAML——真实数据里有 8 个单元文件
+// 因此无法被严格解析器读取。读取方目前都走 yaml.Node 或局部解码，所以还没炸，
+// 但文件已经坏了。交给 yaml.Marshal 生成后再加列表前缀，键序也是稳定的。
+func writeYAMLListItem(b *strings.Builder, m map[string]any, indent string) {
+	raw, err := yaml.Marshal(m)
+	if err != nil {
+		return
+	}
+	for i, line := range strings.Split(strings.TrimRight(string(raw), "\n"), "\n") {
+		if i == 0 {
+			fmt.Fprintf(b, "%s- %s\n", indent, line)
+			continue
+		}
+		fmt.Fprintf(b, "%s  %s\n", indent, line)
+	}
 }
 
 func writeYAMLMap(b *strings.Builder, m map[string]any, indent string) {

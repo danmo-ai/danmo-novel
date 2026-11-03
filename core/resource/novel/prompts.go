@@ -38,6 +38,7 @@ chapterChars 是**单章**目标字数，正整数，只能落在 %d–%d；作�
 chapters 是逐章轻量合同，每章必须有 {chapter,goal,change,cutHook,dayOffset}；change 必须是可验证的状态/信息/关系/行动变化，不得只写情绪。章范围全部覆盖，day_offset 不超出单元结束日。
 scenes 仅复杂章的可选子项，不要求每章都有；一旦写了 scenes，就必须覆盖每一章（每章 1–3 个场面即可，不要为凑数给简单章硬拆）。每个 scene 仅含 {chapter,goal,conflict,turn,outcome}，可选 id/mustLand/evidenceIn/evidenceOut/dayOffset。禁止预写台词、动作清单和情绪曲线；mustLand 最多 2 个可见事实。
 存在「不可改写的单元种子」时：sourceSeedId 必须等于单元 ID；chapterFrom/chapterTo、desire/obstacle/choice/payoff 必须逐字继承种子 chapter_range/objective/obstacle/choice/outcome，不得改故事；attempt/setback/cost 也继承种子；storyDay/endDay/gapDays 必须继承 clock_start_day/clock_end_day/clock_gap_days。
+function 与 desire 是同一个种子值（objective）的两处落盘：必须逐字照抄，不要用自己的话改写；nextHook.type 必须等于种子 next_hook 竖线前的类型（如「信息缺口」），out 才写具体事件。
 storyDay / gapFromPrev / infoControl / forbidden / desire / sourceSeedId / attempt / setback / cost 等叙述字段必须是字符串标量（如 "3" 或 "入职第三天"），不要用对象；chapterFrom/chapterTo/endDay/gapDays 必须是 JSON 数字，不要加引号（继承种子 clock_end_day/clock_gap_days 时也转成数字）；onStage 为字符串数组。
 gapDays 是整数（距上一单元的最少天数）；gapFromPrev 是给写作者看的上一单元承接说明，必须是可读的短句（如 "上一案卷宗已归档，隔天清晨她回到派出所"），禁止只写一个数字——天数属于 gapDays，写进 gapFromPrev 会让界面显示「衔接上一单元 1」。
 stateDeltas 必须是结构化数组 [{"stem":"人物或实体 ID","field":"role_title|location|injury|resources|goal|knowledge","from":"单元前状态","to":"单元后状态"}]；至少一条，不得用自由文本代替。

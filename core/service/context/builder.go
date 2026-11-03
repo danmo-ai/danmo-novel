@@ -278,6 +278,203 @@ func dropTopLevelKeys(raw string, keys []string) string {
 	return strings.TrimSpace(strings.Join(out, "\n"))
 }
 
+// outlineSeedWindows 取本次请求单元的章范围，用于裁剪卷纲里的卷级节拍。
+// 没有指定单元（整卷细纲）时返回空，调用方按「全部保留」处理。
+func outlineSeedWindows(doc domain.StructuredMarkdown, unitIDs []string) [][2]int {
+	want := map[string]bool{}
+	for _, id := range unitIDs {
+		want[strings.TrimSpace(id)] = true
+	}
+	if len(want) == 0 {
+		return nil
+	}
+	var out [][2]int
+	for _, e := range doc.EntitiesOf("单元") {
+		if !want[e.ID] {
+			continue
+		}
+		if from, to := books.ChapterWindow(e.Value("chapter_range")); from > 0 && to >= from {
+			out = append(out, [2]int{from, to})
+		}
+	}
+	return out
+}
+
+// outlineSeedContent renders only the seeds this run can actually rewrite.
+//
+// 以前是 `json.Marshal(doc.EntitiesOf("单元"))`：请求 1 个单元也灌整卷，且每个
+// 字段都带 {line,column,byteOffset} 源码位置。实测 v01-U2 的种子块 28,245 字符，
+// 其中 58% 是 range、87% 属于别的单元，真正的合同只有 290 字。模型要在两万字
+// 噪声里找 21 个必须「逐字继承」的字段，漏字段几乎是必然的。
+//
+// 输出形态也从 [{kind,id,fields:[{name,value,range}]}] 压平成
+// [{kind,id,chapter_range,objective,...}]：字段名保持卷纲 Markdown 里的原样，
+// 因为提示词就是按这些名字要求逐字继承的。
+func outlineSeedContent(doc domain.StructuredMarkdown, unitIDs []string) (string, bool) {
+	want := map[string]bool{}
+	for _, id := range unitIDs {
+		want[strings.TrimSpace(id)] = true
+	}
+	seeds := []map[string]any{}
+	for _, e := range doc.EntitiesOf("单元") {
+		if len(want) > 0 && !want[e.ID] {
+			continue
+		}
+		seed := map[string]any{"kind": e.Kind, "id": e.ID}
+		for _, f := range e.Fields {
+			seed[f.Name] = f.Value
+		}
+		seeds = append(seeds, seed)
+	}
+	if len(seeds) == 0 {
+		return "", false
+	}
+	raw, err := json.Marshal(seeds)
+	if err != nil {
+		return "", false
+	}
+	return string(raw), true
+}
+
+// outlineIdentityContent 只给「在本次单元边界生效」的身份变更。
+//
+// 身份段决定 on_stage 里谁有生效的公开身份（UnitContractForSeed 用 IdentityAt
+// 过滤），所以细纲必须看得见它；但它是独立实体、字段与单元种子完全不同，混进
+// 种子块会把「逐字继承」的对象搞混，因此单独成块。
+func outlineIdentityContent(doc domain.StructuredMarkdown, unitIDs []string) (string, bool) {
+	want := map[string]bool{}
+	for _, id := range unitIDs {
+		want[strings.TrimSpace(id)] = true
+	}
+	if len(want) == 0 {
+		return "", false
+	}
+	var out []map[string]any
+	for _, e := range doc.EntitiesOf("身份变更") {
+		if !want[e.Value("from_unit")] {
+			continue
+		}
+		item := map[string]any{"id": e.ID}
+		for _, f := range e.Fields {
+			item[f.Name] = f.Value
+		}
+		out = append(out, item)
+	}
+	if len(out) == 0 {
+		return "", false
+	}
+	raw, err := json.Marshal(out)
+	if err != nil {
+		return "", false
+	}
+	return string(raw), true
+}
+
+// outlineVolumeForUnits 把卷纲裁成「写这几个单元」真正需要的部分。
+//
+// 保留：卷级头部（goal/central_conflict/stakes/entry_state/exit_state/cast）、
+// 章窗与请求单元相交的 `## 节拍`、以及卷末交接这类卷级段落。
+// 丢弃：`## 单元` 区段——它与 seed block 同源同内容（同一次解析、同一份文件）。
+func outlineVolumeForUnits(raw string, windows [][2]int) string {
+	if strings.TrimSpace(raw) == "" || len(windows) == 0 {
+		return raw
+	}
+	var out []string
+	var section []string
+	flush := func() {
+		if len(section) == 0 {
+			return
+		}
+		if outlineVolumeSectionKept(section, windows) {
+			out = append(out, section...)
+		}
+		section = nil
+	}
+	for _, line := range strings.Split(raw, "\n") {
+		if strings.HasPrefix(line, "## ") {
+			flush()
+		}
+		section = append(section, line)
+	}
+	flush()
+	return strings.TrimSpace(strings.Join(out, "\n"))
+}
+
+func outlineVolumeSectionKept(section []string, windows [][2]int) bool {
+	heading := strings.TrimSpace(section[0])
+	switch {
+	case !strings.HasPrefix(heading, "## "):
+		return true // 卷级头部：本卷目标、冲突、起终状态
+	case strings.HasPrefix(heading, "## 单元"):
+		return false
+	case strings.HasPrefix(heading, "## 节拍"):
+		from, to := books.ChapterWindow(outlineFieldValue(section, "chapter_window"))
+		if from <= 0 || to < from {
+			return true // 读不出章范围就不敢删
+		}
+		for _, w := range windows {
+			if from <= w[1] && to >= w[0] {
+				return true
+			}
+		}
+		return false
+	default:
+		return true // 卷末交接等卷级段落
+	}
+}
+
+// outlineCastStems 决定细纲要看哪几张人物卡。
+//
+// 优先用请求单元的 on_stage（作者已确认的在场名单）；没有任何细纲头时退回
+// 卷人物表。两种情况下都保持卷人物表的相对顺序，前缀缓存才不会因为单元顺序
+// 抖动而失效。
+func outlineCastStems(snap domain.BookSnapshot, unitIDs []string, volumeCast []string) []string {
+	onStage := map[string]bool{}
+	for _, id := range unitIDs {
+		for _, u := range snap.Units {
+			if u.UnitID != id {
+				continue
+			}
+			for _, stem := range extractOnStage(u.OutlineRaw) {
+				onStage[stem] = true
+			}
+		}
+	}
+	if len(onStage) == 0 {
+		return volumeCast
+	}
+	var out []string
+	for _, stem := range volumeCast {
+		if onStage[stem] {
+			out = append(out, stem)
+		}
+	}
+	// on_stage 里可能有卷人物表之外的 stem（新引入的单元案角色）；它们还没
+	// 人物卡，加进来也只会得到空块，所以照旧由 gates 报 advisory。
+	if len(out) == 0 {
+		return volumeCast
+	}
+	return out
+}
+
+// outlineFieldValue 读一个 Markdown 小节里的 `- key: value`。
+func outlineFieldValue(section []string, key string) string {
+	for _, line := range section {
+		s := strings.TrimSpace(line)
+		if !strings.HasPrefix(s, "- "+key) {
+			continue
+		}
+		rest := strings.TrimSpace(strings.TrimPrefix(s, "- "+key))
+		if !strings.HasPrefix(rest, ":") && !strings.HasPrefix(rest, "：") {
+			continue
+		}
+		rest = strings.TrimPrefix(rest, ":")
+		rest = strings.TrimPrefix(rest, "：")
+		return strings.TrimSpace(rest)
+	}
+	return ""
+}
+
 func BuildOutlinePacket(snap domain.BookSnapshot, volume int, unitIDs []string, instruction string) domain.ContextPacket {
 	policy := DefaultPolicy(domain.TaskOutline, 0)
 	volTag := fmt.Sprintf("v%02d", volume)
@@ -290,13 +487,27 @@ func BuildOutlinePacket(snap domain.BookSnapshot, volume int, unitIDs []string, 
 			break
 		}
 	}
-	blocks := []domain.ContextBlock{
-		{ID: "volume", Label: "卷纲", Source: "outline/volumes/" + volTag + ".md", Content: volRaw, Bytes: len(volRaw)},
+	volDoc, volStructured := books.StructuredOutlineFor(snap, "outline/volumes/"+volTag+".md")
+	var seedDoc domain.StructuredMarkdown
+	if volStructured && volDoc.Valid() {
+		seedDoc = volDoc
 	}
-	if doc, ok := books.StructuredOutlineFor(snap, "outline/volumes/"+volTag+".md"); ok && doc.Valid() {
-		if seedRaw, err := json.Marshal(doc.EntitiesOf("单元")); err == nil {
-			blocks = append(blocks, domain.ContextBlock{ID: "unit-seeds", Label: "不可改写的单元种子", Source: "outline/volumes/" + volTag + ".md#units", Content: string(seedRaw), Bytes: len(seedRaw)})
-		}
+	// 卷纲只留「这一次要写的单元」用得上的部分：卷级头部、章窗相交的卷级节拍、
+	// 卷末交接。单元区段整段丢弃——它与下面的种子块同源同内容，留着等于把同一份
+	// 合同注入两遍，还多一份散文格式让模型在两种表述之间对不齐。
+	//
+	// 以前这里注入卷纲全文：实测重写 v01-U2（第 7–10 章）时，上下文里躺着
+	// chapter_window 1-6 / 39-45 / 46-50 三个别的单元的节拍，等于在邀请模型
+	// 把别人的事件写进本单元。
+	volTrimmed := outlineVolumeForUnits(volRaw, outlineSeedWindows(seedDoc, unitIDs))
+	blocks := []domain.ContextBlock{
+		{ID: "volume", Label: "卷纲", Source: "outline/volumes/" + volTag + ".md", Content: volTrimmed, Bytes: len(volTrimmed)},
+	}
+	if seedRaw, ok := outlineSeedContent(seedDoc, unitIDs); ok {
+		blocks = append(blocks, domain.ContextBlock{ID: "unit-seeds", Label: "不可改写的单元种子", Source: "outline/volumes/" + volTag + ".md#units", Content: seedRaw, Bytes: len(seedRaw)})
+	}
+	if idRaw, ok := outlineIdentityContent(seedDoc, unitIDs); ok {
+		blocks = append(blocks, domain.ContextBlock{ID: "unit-identity", Label: "本单元生效的身份变更", Source: "outline/volumes/" + volTag + ".md#identity", Content: idRaw, Bytes: len(idRaw)})
 	}
 	for _, id := range unitIDs {
 		for _, u := range snap.Units {
@@ -307,13 +518,18 @@ func BuildOutlinePacket(snap domain.BookSnapshot, volume int, unitIDs []string, 
 			}
 		}
 	}
-	for _, stem := range cast {
+	// 人物卡只给本单元真正在场的人：已有细纲头的 on_stage 是作者确认过的名单，
+	// 直接摊开整卷人物表会让 11 张卡（每张上千字）把合同挤出注意力。
+	// 没有细纲头（新单元）时退回卷人物表——那时 on_stage 还没有人定过。
+	for _, stem := range outlineCastStems(snap, unitIDs, cast) {
 		for _, c := range snap.Cast {
-			if c.Stem == stem {
-				blocks = append(blocks, domain.ContextBlock{
-					ID: "cast-" + stem, Label: "人物·" + CleanName(c.Name), Source: "canon/cast/" + stem + ".md", Content: clip(c.Raw, 1800), Bytes: len(clip(c.Raw, 1800)),
-				})
+			if c.Stem != stem {
+				continue
 			}
+			body := clip(c.Raw, 1200)
+			blocks = append(blocks, domain.ContextBlock{
+				ID: "cast-" + stem, Label: "人物·" + CleanName(c.Name), Source: "canon/cast/" + stem + ".md", Content: body, Bytes: len(body),
+			})
 		}
 	}
 	// 细纲规划需要的连续性：重写已有单元时要知道人物当前处境，避免与已定稿前后矛盾。

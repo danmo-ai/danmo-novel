@@ -412,17 +412,14 @@ func outlineOnStageForBooks(raw string) []string {
 	return nil
 }
 
-// ValidateNoIntraUnitChange enforces 单元内部身份恒定：the unit's own
-// state_deltas must not declare an identity/role change for on_stage stems.
-// Such a change means the unit must be split at the boundary.
-func ValidateNoIntraUnitChange(outlineRaw string, onStage []string) (blocking []string) {
-	deltas := strings.ToLower(outlineRaw)
-	markers := []string{"identity_change", "role_change", "职务转换", "身份转换", "调任", "晋升", "降职"}
-	for _, m := range markers {
-		if strings.Contains(deltas, m) {
-			blocking = append(blocking, "单元内部不得职务/身份转换；请把转换点拆到单元边界（下一单元开场），并登记 identity-timeline")
-			break
-		}
-	}
-	return blocking
-}
+// 以前这里有一个 ValidateNoIntraUnitChange：扫全文找「晋升」「调任」「身份转换」
+// 等 marker，命中就判单元内部发生了身份转换。已删除，理由三条：
+//
+//  1. 它是按关键词猜语义，会误杀合法内容。实测 gaojishu-zhuixiong/v01-U13 的
+//     state_deltas 写着「不推晋升、不给借调」，rule-loophole/v01-U9 的 function
+//     写着「每晋升一层淘汰率 50%」，都会被判成身份转换。
+//  2. 它检查的是「有没有这个词」，而不是「身份到底变没变」，与真正的规则
+//     （单元内部身份恒定）不是同一件事。
+//  3. 精确版本已经存在：stateDeltaIdentityConflict 按 state_deltas 的
+//     role_title/identity 行逐条比对身份段，并允许 from = 上一段身份这种
+//     单元边界转换的合法写法。同一条规则两份实现，只会分叉。
