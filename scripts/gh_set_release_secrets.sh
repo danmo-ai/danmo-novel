@@ -60,13 +60,34 @@ echo "[1/2] macOS 签名证书"
 base64 < "$P12" | tr -d '\n' > "$TMP/p12"
 put APPLE_CERTIFICATE "$TMP/p12"
 
-printf '%s' "$(ask_secret "p12 导出密码：")" > "$TMP/p12pw"
+p12_pw="$(ask_secret "p12 导出密码：")"
+printf '%s' "$p12_pw" > "$TMP/p12pw"
 put APPLE_CERTIFICATE_PASSWORD "$TMP/p12pw"
 
-printf '%s' "$(ask "签名身份（如 Developer ID Application: Foo (TEAMID)）" "")" > "$TMP/id"
+# 签名身份和 Team ID 都在证书里，不用手输：
+#   CN 就是 APPLE_SIGNING_IDENTITY 的完整值（"Developer ID Application: Foo (TEAMID)"），
+#   OU 就是 10 位 Team ID。
+# 用 sep_multiline 而不是 RFC2253：公司名里带逗号时（"Danmo, Inc."）RFC2253 会写成
+# `Danmo\, Inc.`，按逗号切开就把 CN 截断了；多行格式每项一行，不会串。
+subject=""
+if [[ -n "$p12_pw" ]]; then
+  subject="$(openssl pkcs12 -in "$P12" -passin "pass:$p12_pw" -nokeys -clcerts 2>/dev/null \
+    | openssl x509 -noout -subject -nameopt sep_multiline 2>/dev/null || true)"
+fi
+cert_cn="$(printf '%s\n' "$subject" | sed -n 's/^[[:space:]]*CN[[:space:]]*=[[:space:]]*//p' | head -1)"
+cert_ou="$(printf '%s\n' "$subject" | sed -n 's/^[[:space:]]*OU[[:space:]]*=[[:space:]]*//p' | head -1)"
+
+if [[ -z "$cert_cn" ]]; then
+  # 解不开只提醒不退出：密码错在 CI 的 security import 那步会明确失败，
+  # 而 LibreSSL 对某些新式加密的 p12 也可能读不出来。
+  echo "  ! 读不出证书信息（密码不对或不是带私钥的 p12），下面手动填" >&2
+fi
+
+printf '%s' "$(ask "签名身份" "$cert_cn")" > "$TMP/id"
+[[ -s "$TMP/id" ]] || { echo "签名身份不能为空" >&2; exit 1; }
 put APPLE_SIGNING_IDENTITY "$TMP/id"
 
-# ---- 公证：Apple ID + App 专用密码 + Team ID ----
+# ---- 公证：Apple ID + App 专用密码（Team ID 来自证书） ----
 echo
 echo "[2/2] 公证"
 printf '%s' "$(ask "Apple ID" "")" > "$TMP/appleid"
@@ -75,7 +96,12 @@ put APPLE_ID "$TMP/appleid"
 printf '%s' "$(ask_secret "App 专用密码（abcd-efgh-ijkl-mnop）：")" > "$TMP/applepw"
 put APPLE_PASSWORD "$TMP/applepw"
 
-printf '%s' "$(ask "Team ID（10 位）" "")" > "$TMP/team"
+# OU 缺失时退回从 CN 结尾的 "(TEAMID)" 里取。
+if [[ -z "$cert_ou" ]]; then
+  cert_ou="$(printf '%s' "$cert_cn" | sed -n 's/.*(\([A-Z0-9]\{10\}\))[[:space:]]*$/\1/p')"
+fi
+printf '%s' "$(ask "Team ID" "$cert_ou")" > "$TMP/team"
+[[ -s "$TMP/team" ]] || { echo "Team ID 不能为空" >&2; exit 1; }
 put APPLE_TEAM_ID "$TMP/team"
 
 # ---- Tauri 更新包签名：release.yml 真正读的两个 ----
