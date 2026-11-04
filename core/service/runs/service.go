@@ -337,6 +337,7 @@ func (s *Service) execute(ctx context.Context, run domain.Run, snap domain.BookS
 	run.Calls = res.Calls
 	run.CallsUsed = len(res.Calls)
 	run.Policy = res.Packet.Policy
+	run.Warnings = res.Warnings
 	for _, b := range res.Packet.Blocks {
 		run.ContextSummary = append(run.ContextSummary, b.Label)
 	}

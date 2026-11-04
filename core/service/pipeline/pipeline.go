@@ -63,6 +63,8 @@ type Result struct {
 	Calls     []domain.CallRecord
 	Packet    domain.ContextPacket
 	LocalGate gates.Report
+	// Warnings 是"成功但有代价"的说明（例如整单元核对失败退回逐章）。
+	Warnings []string
 }
 
 func (r *Runner) RunWrite(ctx context.Context, snap domain.BookSnapshot, unit domain.UnitInfo, instruction string, modelID string) (Result, error) {
@@ -273,23 +275,28 @@ func (r *Runner) RunFinalize(ctx context.Context, snap domain.BookSnapshot, unit
 	// 同一份基线重复携带 N 遍，思维链也按 N 份计费）。代价是一份 JSON 承载
 	// 全单元：任何一章不合规就整份作废。所以这里先走便宜的路径，失败就退到
 	// 逐章——逐章路径的失败面只有一章，是兜底而不是主路径。
-	actuals, unitCalls, unitErr := r.reconcileUnit(ctx, snap, unit, chapters, baseline, modelID)
+	actuals, unitFindings, unitCalls, unitErr := r.reconcileUnit(ctx, snap, unit, chapters, baseline, modelID)
 	calls = append(calls, unitCalls...)
 	if unitErr == nil {
 		cand.ActualChapters = actuals
+		cand.Findings = append(cand.Findings, unitFindings...)
 		// 预算按实际走过的路径申报：整单元成功就只花了 2 次额度，报 2+N*2 会让
 		// 界面显示"调用 1/14 次"，作者无从判断这条路径到底贵不贵。
 		return Result{Candidate: cand, Calls: calls, LocalGate: local, Packet: domain.ContextPacket{TaskKind: domain.TaskFinalize, BookID: snap.Summary.ID, UnitID: unit.UnitID, Policy: domain.CallPolicy{MaxCalls: 2, AllowOneRepair: true, TimeoutSec: 600}}}, nil
 	}
 	for _, ch := range chapters {
-		actual, recs, err := r.reconcileChapter(ctx, snap, unit, ch, baseline, modelID)
+		actual, findings, recs, err := r.reconcileChapter(ctx, snap, unit, ch, baseline, modelID)
 		calls = append(calls, recs...)
 		if err != nil {
 			return Result{Candidate: cand, Calls: calls}, fmt.Errorf("整单元核对未通过（%v），逐章重试又失败：%w", unitErr, err)
 		}
 		cand.ActualChapters = append(cand.ActualChapters, actual)
+		cand.Findings = append(cand.Findings, findings...)
 	}
-	return Result{Candidate: cand, Calls: calls, LocalGate: local, Packet: domain.ContextPacket{TaskKind: domain.TaskFinalize, BookID: snap.Summary.ID, UnitID: unit.UnitID, Policy: domain.CallPolicy{MaxCalls: 2 + len(chapters)*2, AllowOneRepair: true, TimeoutSec: 600}}}, nil
+	// 退回逐章是"成功但多花了钱"，必须让作者看见：否则只会看到调用数翻倍，
+	// 不知道是模型漏章/抄错回证，还是这条路径本身不适合这本书。
+	warning := fmt.Sprintf("整单元核对未通过，已退回逐章：%v", unitErr)
+	return Result{Candidate: cand, Calls: calls, LocalGate: local, Warnings: []string{warning}, Packet: domain.ContextPacket{TaskKind: domain.TaskFinalize, BookID: snap.Summary.ID, UnitID: unit.UnitID, Policy: domain.CallPolicy{MaxCalls: 2 + len(chapters)*2, AllowOneRepair: true, TimeoutSec: 600}}}, nil
 }
 
 // generateChapter produces one chapter, returning the parsed draft.

@@ -21,10 +21,15 @@ import (
 // 不再写 facts.md：那份文件被逐轮追加成 571 KB 的散文日志，游标自相矛盾、
 // 人物快照 30 多段从不合并，读写双方还因标题后缀静默失效。状态改由
 // state.yaml 按单元段表达。
+//
+// 回证（evidence）对不上正文时**不阻断**：那只是"这段引文在正文里找不到"，
+// 而迁移本身可能是对的——硬拦会让一次引号字形差异作废整份账本。真正该做的
+// 是把它记进定稿日志，让作者知道哪几条没被核对过。
 func ApplyFinalizationLedger(root string, unit domain.UnitInfo, chapters []domain.ChapterDraft, actual []domain.ChapterActual, findings []domain.ReviewFinding, identities ...[]domain.IdentitySegment) error {
 	if len(chapters) == 0 || len(actual) != len(chapters) {
 		return fmt.Errorf("定稿必须逐章提供已核对的实际结果")
 	}
+	var unverified []string
 	for i, ch := range chapters {
 		if actual[i].Chapter != ch.Chapter || strings.TrimSpace(actual[i].Summary) == "" {
 			return fmt.Errorf("第 %d 章缺少已核对的实际摘要", ch.Chapter)
@@ -36,12 +41,11 @@ func ApplyFinalizationLedger(root string, unit domain.UnitInfo, chapters []domai
 			}
 		}
 		for _, d := range actual[i].StateDeltas {
-			if d.Confirmed && !containsVerbatim(ch.Body, d.Evidence, d.Stem) {
-				return fmt.Errorf("第 %d 章状态迁移 %s.%s 没有逐字正文证据：%s（候选中的引文在本章正文里找不到；可按正文重新生成一次定稿）",
-					ch.Chapter, d.Stem, d.Field, clipRunes(strings.TrimSpace(d.Evidence), 60))
-			}
 			if domain.CanonicalStateField(d.Field) == "" || domain.CanonicalStateField(d.Field) == "role_title" {
 				return fmt.Errorf("第 %d 章实际账本字段 %s 不合法", ch.Chapter, d.Field)
+			}
+			if d.Confirmed && !containsVerbatim(ch.Body, d.Evidence, d.Stem) {
+				unverified = append(unverified, fmt.Sprintf("第 %d 章 %s.%s", ch.Chapter, d.Stem, d.Field))
 			}
 		}
 	}
@@ -57,7 +61,7 @@ func ApplyFinalizationLedger(root string, unit domain.UnitInfo, chapters []domai
 	if err != nil {
 		return err
 	}
-	log := renderCommitLog(unit, chapters, actual, findings)
+	log := renderCommitLog(unit, chapters, actual, findings, unverified)
 	var outlineRaw []byte
 	if raw, readErr := os.ReadFile(filepath.Join(root, unit.OutlinePath)); readErr == nil {
 		outlineRaw = []byte(regexp.MustCompile(`(?m)^status:.*$`).ReplaceAllString(string(raw), "status: "+string(domain.UnitFinalized)))
@@ -81,7 +85,7 @@ func markdownCell(raw string) string {
 	return strings.NewReplacer("|", "\\|", "\r", " ", "\n", " ").Replace(strings.TrimSpace(raw))
 }
 
-func renderCommitLog(unit domain.UnitInfo, chapters []domain.ChapterDraft, actual []domain.ChapterActual, findings []domain.ReviewFinding) string {
+func renderCommitLog(unit domain.UnitInfo, chapters []domain.ChapterDraft, actual []domain.ChapterActual, findings []domain.ReviewFinding, unverified []string) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "# 定稿账本 · %s\n\n", unit.UnitID)
 	fmt.Fprintf(&b, "- 定稿时间: %s\n", time.Now().UTC().Format(time.RFC3339))
@@ -100,6 +104,14 @@ func renderCommitLog(unit domain.UnitInfo, chapters []domain.ChapterDraft, actua
 		}
 	}
 	fmt.Fprintf(&b, "- 门禁: blocking=%d advisory=%d\n", blocking, advisory)
+	// 回证没命中正文的迁移必须留痕：作者接受时看到的是 advisory，日志里要能
+	// 事后追溯"当时哪几条引文没核对上"，否则这条账本看起来一切都验过了。
+	if len(unverified) == 0 {
+		fmt.Fprintf(&b, "- 回证核对: %d 条全部命中正文\n", countDeltas(actual))
+	} else {
+		fmt.Fprintf(&b, "- 回证核对: %d 条未命中正文（已按作者确认接受）: %s\n",
+			len(unverified), strings.Join(unverified, "；"))
+	}
 	if hook := mdYAMLMapValue(unit.OutlineRaw, "next_hook", "type"); hook != "" {
 		fmt.Fprintf(&b, "- 下一钩: %s\n", hook)
 	}
@@ -113,6 +125,15 @@ func renderCommitLog(unit domain.UnitInfo, chapters []domain.ChapterDraft, actua
 }
 
 // ---- helpers ----
+
+// countDeltas is the total number of state transitions the ledger carries.
+func countDeltas(actual []domain.ChapterActual) int {
+	n := 0
+	for _, a := range actual {
+		n += len(a.StateDeltas)
+	}
+	return n
+}
 
 var chapterRowRe = regexp.MustCompile(`^\|\s*(\d+)\s*\|`)
 
@@ -189,7 +210,14 @@ func containsVerbatim(body, evidence, stem string) bool {
 	if strings.Contains(squeezedBody, squeezeSpace(evidence)) {
 		return true
 	}
-	return leadingSubjectPronounMatches(squeezedBody, evidence, stem)
+	// 标点归一：正文用 ASCII 双引号 "，模型回抄时常常写成 “ ”「」，破折号也常
+	// 换成 —/──。实测一个单元里 34 条迁移只有 2 条不过，而它们与正文逐字相同、
+	// 只差引号字形——但这种"只差字形"足以让整份整单元定稿作废并退回逐章，
+	// 多花掉一次 1.4 万 token 的调用。归一只放宽标点与空白，实词一个字都不放过。
+	if strings.Contains(foldEvidence(body), foldEvidence(evidence)) {
+		return true
+	}
+	return leadingSubjectPronounMatches(foldEvidence(body), evidence, stem)
 }
 
 // leadingSubjectPronounMatches 处理"引文把人物名换成了代词"这一类差异。
@@ -205,16 +233,16 @@ func containsVerbatim(body, evidence, stem string) bool {
 //
 // 这条检查证明的是"这段文字确实在正文里"，不负责判断它是不是在说这个人；
 // 逐字命中的那一路本来也不判归属。
-func leadingSubjectPronounMatches(squeezedBody, evidence, stem string) bool {
+func leadingSubjectPronounMatches(foldedBody, evidence, stem string) bool {
 	rest, ok := stripLeadingSubject(evidence, stem)
 	if !ok {
 		return false
 	}
-	rest = squeezeSpace(rest)
-	if utf8.RuneCountInString(rest) < 12 {
+	folded := foldEvidence(rest)
+	if utf8.RuneCountInString(folded) < 12 {
 		return false
 	}
-	return strings.Contains(squeezedBody, rest)
+	return strings.Contains(foldedBody, folded)
 }
 
 // stripLeadingSubject removes a leading subject token (the stem name or a
@@ -244,6 +272,41 @@ func squeezeSpace(s string) string {
 	for _, r := range s {
 		switch r {
 		case ' ', '\t', '\n', '\r', '\u3000', '\u00a0':
+			continue
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
+// foldEvidence squeezes whitespace and folds typographic variants of the same
+// punctuation, so 「逐字」 tolerates how a quote is typeset but not what it says.
+//
+// 逐字要求的是"这段话真的在正文里"，不是"引号必须是同一个字形"。正文里用
+// ASCII `"` 的对白，模型回抄时几乎总是写成 `“ ”`；破折号同理。这类差异会让
+// 一条正确的回证被拒，而代价是整份定稿重跑。归一只覆盖标点与空白：
+//
+//   - 引号（“”‘’「」『』）→ ' ' 直接删掉：引号位置本来就随排版变化
+//   - 破折号、连接号 → '-'
+//   - 全角 ASCII 区（！–～）→ 半角
+//
+// 任何实词、数字、语序的改动都不在归一范围内，所以编造的引文仍然过不了。
+func foldEvidence(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		switch r {
+		case ' ', '\t', '\n', '\r', '\u3000', '\u00a0', '\u00ad':
+			continue
+		case '\u2018', '\u2019', '\u201a', '\u201b', '\u201c', '\u201d', '\u201e', '\u201f',
+			'\u300c', '\u300d', '\u300e', '\u300f', '"', '\'', '`':
+			continue
+		case '\u2010', '\u2011', '\u2012', '\u2013', '\u2014', '\u2015', '\u2212', '\u2500', '\u2501':
+			b.WriteRune('-')
+			continue
+		}
+		if r >= '\uff01' && r <= '\uff5e' {
+			b.WriteRune(r - 0xfee0)
 			continue
 		}
 		b.WriteRune(r)

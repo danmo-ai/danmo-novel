@@ -441,8 +441,11 @@ type Run struct {
 	CandidateID    string       `json:"candidateId,omitempty"`
 	ContextSummary []string     `json:"contextSummary,omitempty"`
 	Error          string       `json:"error,omitempty"`
-	CreatedAt      time.Time    `json:"createdAt"`
-	UpdatedAt      time.Time    `json:"updatedAt"`
+	// Warnings 记录"跑成了但走了退路"的事实：定稿的整单元核对被拒、退回逐章，
+	// 或某条优化路径没生效。没有它，作者只看到调用数变多，不知道代价花在哪。
+	Warnings  []string  `json:"warnings,omitempty"`
+	CreatedAt time.Time `json:"createdAt"`
+	UpdatedAt time.Time `json:"updatedAt"`
 }
 
 type ModelAssignment struct {

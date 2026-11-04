@@ -20,6 +20,9 @@ type finalizeProbeLLM struct {
 	// unitValid 为真时整单元请求返回合格账本；为假时返回空 chapters，
 	// 让 RunFinalize 走逐章兜底（用来测逐章的缓存前缀）。
 	unitValid bool
+	// badEvidenceChapter > 0 时，该章的迁移回证故意抄一句正文里没有的话，
+	// 用来验证"回证对不上 → advisory 而非退回逐章"。
+	badEvidenceChapter int
 
 	systems []string
 	users   []string
@@ -54,7 +57,14 @@ func (f *finalizeProbeLLM) Chat(_ context.Context, req port.LLMChatRequest) (por
 		chapters := make([]map[string]any, 0, len(want))
 		for _, v := range want {
 			ch, _ := v.(float64)
-			chapters = append(chapters, ledgerRow(int(ch), bodies[int(ch)], planned[int(ch)]))
+			row := ledgerRow(int(ch), bodies[int(ch)], planned[int(ch)])
+			if int(ch) == f.badEvidenceChapter {
+				row["stateDeltas"] = []map[string]any{{
+					"stem": "linchen", "field": "goal", "from": "旧目标", "to": "新目标",
+					"evidence": "这句话正文里根本没有。", "confirmed": true,
+				}}
+			}
+			chapters = append(chapters, row)
 		}
 		out, _ := json.Marshal(map[string]any{"chapters": chapters})
 		return port.LLMChatResponse{Content: string(out), Done: true}, nil
@@ -153,7 +163,46 @@ func TestFinalizeUsesOneCallForTheWholeUnit(t *testing.T) {
 	}
 }
 
-// 整单元账本缺章 / 回证编造时必须退回逐章，而不是把残缺账本交给作者。
+// 回证对不上时不再整份作废：出 advisory、仍走一次调用、候选上标出来。
+// 这是产品判断——引文抄错字形不等于迁移错了，系统只负责把不确定处显式暴露。
+func TestFinalizeFlagsUnverifiedEvidenceWithoutFallingBack(t *testing.T) {
+	snap, unit, _ := loadFixtureUnit(t)
+	unit.ChapterFrom, unit.ChapterTo = 1, 3
+	fake := &finalizeProbeLLM{unitValid: true, badEvidenceChapter: 3}
+	r := New(fake)
+
+	res, err := r.RunFinalize(context.Background(), snap, unit, nil, "mock/mock-gpt-4")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(fake.unit) != 1 || len(fake.chapter) != 0 {
+		t.Fatalf("回证问题不应触发退回逐章：unit=%d chapter=%d", len(fake.unit), len(fake.chapter))
+	}
+	if len(res.Warnings) != 0 {
+		t.Fatalf("不退回逐章就不该有退路提示：%v", res.Warnings)
+	}
+	var flagged []string
+	for _, f := range res.Candidate.Findings {
+		if strings.Contains(f.Title, "回证未在正文中找到") {
+			flagged = append(flagged, f.Evidence)
+			if f.Severity != "advisory" {
+				t.Fatalf("回证问题必须是 advisory（否则会拦死接受）: %+v", f)
+			}
+			if f.Chapter != 3 {
+				t.Fatalf("flagged finding must point at its chapter: %+v", f)
+			}
+		}
+	}
+	if len(flagged) != 1 {
+		t.Fatalf("want exactly one advisory for the fabricated quote, got %v", flagged)
+	}
+	// 迁移本身仍然进账本：账本的判断权归作者，系统只标记。
+	if len(res.Candidate.ActualChapters) != 3 {
+		t.Fatalf("flagged delta must still be kept: %+v", res.Candidate.ActualChapters)
+	}
+}
+
+// 整单元账本结构性缺陷（缺章）必须退回逐章，而不是把残缺账本交给作者。
 func TestFinalizeFallsBackToPerChapterWhenUnitLedgerIsInvalid(t *testing.T) {
 	snap, unit, _ := loadFixtureUnit(t)
 	unit.ChapterFrom, unit.ChapterTo = 1, 3
@@ -176,6 +225,10 @@ func TestFinalizeFallsBackToPerChapterWhenUnitLedgerIsInvalid(t *testing.T) {
 	}
 	if res.Packet.Policy.MaxCalls != 2+3*2 {
 		t.Fatalf("fallback budget=%d want %d", res.Packet.Policy.MaxCalls, 2+3*2)
+	}
+	// 退路必须留痕：否则作者只看到调用数翻倍，不知道代价花在哪。
+	if len(res.Warnings) != 1 || !strings.Contains(res.Warnings[0], "整单元核对未通过") {
+		t.Fatalf("fallback must leave a warning, got %v", res.Warnings)
 	}
 }
 

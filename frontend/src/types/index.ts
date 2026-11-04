@@ -164,6 +164,7 @@ export interface Run {
   candidateId?: string
   contextSummary?: string[]
   error?: string
+  warnings?: string[]
   createdAt: string
 }
 export interface ProviderPublic {

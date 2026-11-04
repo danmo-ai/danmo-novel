@@ -48,6 +48,11 @@ const listedCandidates = computed(() => {
   const reviewUnits = new Set(store.candidates.filter((c) => c.kind === 'review' && c.unitId).map((c) => c.unitId))
   return pendingCandidates.value.filter((c) => !(c.kind === 'revise' && c.unitId && reviewUnits.has(c.unitId)))
 })
+/** 定稿候选里"回证未在正文中找到"的 advisory：数量要在卡片顶部点出来。 */
+function unverifiedEvidence(c: Candidate) {
+  return (c.findings || []).filter((f) => String(f.id || '').startsWith('evidence-'))
+}
+
 /** 实时日志的缓存汇总：重试（step=repair）命中率应接近 100%。 */
 function runCacheOf(run: { calls?: CallRecord[] } | null | undefined) { return cacheStat(run?.calls) }
 const pollTimer = ref<number | null>(null)
@@ -896,6 +901,12 @@ function roleLabel(role?: string) {
         </template>
         <template v-else-if="c.kind === 'finalize' && c.actualChapters?.length">
           <p class="muted">逐章核对实际正文；只有作者接受后，以下结果才进入连续性账本。</p>
+          <!-- 回证未命中不是错误：引文抄错字形不等于迁移错了。但必须让作者看见，
+               否则他会以为每条迁移都对照过正文。 -->
+          <p v-if="unverifiedEvidence(c).length" class="warn-text">
+            有 {{ unverifiedEvidence(c).length }} 条状态迁移的回证在本章正文里找不到（下面标出）。接受时会记入定稿日志；
+            请对照正文确认 from → to 是否成立，不确定就先不接受。
+          </p>
           <details v-for="ch in c.actualChapters" :key="ch.chapter" open>
             <summary>第 {{ ch.chapter }} 章 · {{ ch.summary }}</summary>
             <ul class="plan-files">
@@ -955,6 +966,7 @@ function roleLabel(role?: string) {
           #{{ c.index }} {{ c.step }} · in {{ c.promptTokens }} / out {{ c.completionTokens }} · {{ c.durationMs }}ms
           <template v-if="c.cacheReadTokens"> · 缓存 {{ callCacheText(c) }}</template>
         </div>
+        <p v-for="w in store.activeRun.warnings || []" :key="w" class="warn-text">{{ w }}</p>
         <p v-if="store.activeRun.error" class="error-text">{{ store.activeRun.error }}</p>
       </div>
       <div v-else class="muted">暂无运行</div>
@@ -1099,6 +1111,8 @@ h1 { font-family: var(--font-prose); margin: 6px 0 0; font-size: 30px; line-heig
 .run-drawer p { margin: 6px 0; font-size: 13px; }
 .call-row { font-size: 12px; padding: 8px 0; border-top: 1px solid var(--line); color: var(--ink-soft); }
 .error-text { color: var(--bad); font-size: 12px; }
+/* 退路提示：跑成了但多花了钱，措辞要比错误轻、比普通说明显眼。 */
+.warn-text { color: var(--warn, #b7791f); font-size: 12px; }
 
 @media (max-width: 1180px) {
   .workspace.view-write { grid-template-columns: 210px minmax(0, 1fr); }

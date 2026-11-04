@@ -20,9 +20,9 @@ type unitLedgerResponse struct {
 // reconcileUnit asks for the entire unit's ledger in one call.
 //
 // 产出只是一张表，输入也就一份正文，逐章拆开纯粹是把同一份基线重复携带六遍。
-// 但整份 JSON 一起承载所有章，所以任何一章不合格必须由调用方退回逐章——这里
-// 只负责把不合格的原因说清楚，不替作者做「先接受一份残缺账本」的决定。
-func (r *Runner) reconcileUnit(ctx context.Context, snap domain.BookSnapshot, unit domain.UnitInfo, chapters []domain.ChapterDraft, baseline contextsvc.ReviewBaseline, modelID string) ([]domain.ChapterActual, []domain.CallRecord, error) {
+// 结构性缺陷（漏章/重复章/空摘要）才退回逐章；回证对不上属于 advisory，
+// 由调用方挂到候选上交给作者，不再整份作废。
+func (r *Runner) reconcileUnit(ctx context.Context, snap domain.BookSnapshot, unit domain.UnitInfo, chapters []domain.ChapterDraft, baseline contextsvc.ReviewBaseline, modelID string) ([]domain.ChapterActual, []domain.ReviewFinding, []domain.CallRecord, error) {
 	packet := contextsvc.BuildFinalizeUnitPacket(snap, unit, chapters, baseline)
 	want := make([]int, 0, len(chapters))
 	bodies := map[int]string{}
@@ -31,14 +31,18 @@ func (r *Runner) reconcileUnit(ctx context.Context, snap domain.BookSnapshot, un
 		bodies[ch.Chapter] = ch.Body
 	}
 	var parsed unitLedgerResponse
+	var evidenceFindings []domain.ReviewFinding
 	planned := plannedLoops(unit)
 	res, err := r.runJSONWithRecord(ctx, snap, packet, modelID, domain.TaskFinalize, unit.UnitID, unit.ProsePath,
 		func(raw string, cand *domain.Candidate, rec domain.CallRecord) error {
 			parsed = unitLedgerResponse{}
+			evidenceFindings = nil
 			if err := unmarshalJSON(raw, &parsed); err != nil {
 				return err
 			}
-			return validateUnitLedger(parsed.Chapters, want, bodies, planned)
+			fs, verr := validateUnitLedger(parsed.Chapters, want, bodies, planned)
+			evidenceFindings = fs
+			return verr
 		}, func(cand domain.Candidate) gates.Report { return gates.Report{OK: true} })
 	for i := range res.Calls {
 		suffix := ""
@@ -48,32 +52,37 @@ func (r *Runner) reconcileUnit(ctx context.Context, snap domain.BookSnapshot, un
 		res.Calls[i].Step = "finalize-unit" + suffix
 	}
 	if err != nil {
-		return nil, res.Calls, err
+		return nil, nil, res.Calls, err
 	}
 	// 按正文顺序返回：模型输出顺序不可信，落盘与摘要投影都依赖章序。
 	out := append([]domain.ChapterActual(nil), parsed.Chapters...)
 	sort.SliceStable(out, func(i, j int) bool { return out[i].Chapter < out[j].Chapter })
-	return out, res.Calls, nil
+	return out, evidenceFindings, res.Calls, nil
 }
 
 // validateUnitLedger rejects a unit ledger the accept path would reject later.
 //
-// 这里必须比"能解析"更严：整单元路径的失败代价是整份重跑，所以任何一处会在
-// 接受时被拒的内容（漏章、摘要为空、回证对不上正文、计划伏笔没核对）都要在
-// 生成阶段就判掉。判据必须与 books.ApplyFinalizationLedger 一致，否则候选能
-// 生成却永远接受不了——作者只会看到一句"接受失败"，却不知道该改哪。
-func validateUnitLedger(got []domain.ChapterActual, want []int, bodies map[int]string, planned map[int][]string) error {
+// 结构性缺陷（漏章、重复章、摘要为空、字段非法）必须硬拒：接受路径同样会拒，
+// 生成阶段放过就等于让作者点「接受」时才失败。
+//
+// 但**回证对不上正文不硬拒**：请模型抄一句原文当凭据，本意是让账本可审计，
+// 不是让"引号字形/代词换名"这类差异作废整份账本。实测一个单元 34 条迁移里
+// 只有 2 条不过，而它们与正文逐字相同——硬拒的代价是整份重跑（一次约 1.2 万
+// output token）再退回逐章，换来的是零信息量。所以这类问题记成 advisory：
+// 候选卡片上标出来，作者接受前看得到，系统不替他否决。
+func validateUnitLedger(got []domain.ChapterActual, want []int, bodies map[int]string, planned map[int][]string) ([]domain.ReviewFinding, error) {
 	if len(got) == 0 {
-		return fmt.Errorf("账本为空：需要每章一条")
+		return nil, fmt.Errorf("账本为空：需要每章一条")
 	}
 	byChapter := map[int]domain.ChapterActual{}
 	for _, a := range got {
 		if _, dup := byChapter[a.Chapter]; dup {
-			return fmt.Errorf("第 %d 章重复出现", a.Chapter)
+			return nil, fmt.Errorf("第 %d 章重复出现", a.Chapter)
 		}
 		byChapter[a.Chapter] = a
 	}
 	var missing []string
+	var findings []domain.ReviewFinding
 	for _, ch := range want {
 		a, ok := byChapter[ch]
 		if !ok {
@@ -81,37 +90,58 @@ func validateUnitLedger(got []domain.ChapterActual, want []int, bodies map[int]s
 			continue
 		}
 		if strings.TrimSpace(a.Summary) == "" {
-			return fmt.Errorf("第 %d 章缺少实际摘要", ch)
+			return nil, fmt.Errorf("第 %d 章缺少实际摘要", ch)
 		}
-		if err := validateChapterActual(ch, a, bodies[ch]); err != nil {
-			return err
+		fs, err := validateChapterActual(ch, a, bodies[ch])
+		if err != nil {
+			return nil, err
 		}
+		findings = append(findings, fs...)
 		if err := validatePlannedLoops(ch, a, planned[ch]); err != nil {
-			return err
+			return nil, err
 		}
 	}
 	if len(missing) > 0 {
-		return fmt.Errorf("账本缺章：%s（必须每章一条）", strings.Join(missing, "、"))
+		return nil, fmt.Errorf("账本缺章：%s（必须每章一条）", strings.Join(missing, "、"))
 	}
 	for ch := range byChapter {
 		if _, ok := bodies[ch]; !ok {
-			return fmt.Errorf("账本出现本单元之外的章号 %d", ch)
+			return nil, fmt.Errorf("账本出现本单元之外的章号 %d", ch)
 		}
 	}
-	return nil
+	return findings, nil
 }
 
 // validateChapterActual is the per-chapter part shared by both paths.
-func validateChapterActual(chapter int, a domain.ChapterActual, body string) error {
+//
+// 字段非法硬拒（写不进 state.yaml）；回证对不上只出 advisory——
+// 见 validateUnitLedger 的说明。
+func validateChapterActual(chapter int, a domain.ChapterActual, body string) ([]domain.ReviewFinding, error) {
+	var findings []domain.ReviewFinding
 	for _, d := range a.StateDeltas {
 		if domain.CanonicalStateField(d.Field) == "" || domain.CanonicalStateField(d.Field) == "role_title" {
-			return fmt.Errorf("第 %d 章实际账本字段 %s 不合法", chapter, d.Field)
+			return nil, fmt.Errorf("第 %d 章实际账本字段 %s 不合法", chapter, d.Field)
 		}
 		if d.Confirmed && !books.ContainsVerbatim(body, d.Evidence, d.Stem) {
-			return fmt.Errorf("第 %d 章状态迁移 %s.%s 没有逐字正文证据：%s", chapter, d.Stem, d.Field, d.Evidence)
+			findings = append(findings, unverifiedEvidenceFinding(chapter, d))
 		}
 	}
-	return nil
+	return findings, nil
+}
+
+// unverifiedEvidenceFinding marks one transition whose quote is not in the prose.
+//
+// 标题说"回证未在正文中找到"而不是"证据不合法"：这条迁移可能是对的（模型只是
+// 抄错了字形或把人物名换成了代词），需要人对照正文判断。带出 from→to 与引文，
+// 作者不必回原文再翻一遍才能定位。
+func unverifiedEvidenceFinding(chapter int, d domain.ChapterActualDelta) domain.ReviewFinding {
+	return domain.ReviewFinding{
+		ID:       fmt.Sprintf("evidence-%d-%s-%s", chapter, d.Stem, d.Field),
+		Severity: "advisory", Source: "local_gate", Lens: "continuity", Chapter: chapter,
+		Title:      "回证未在正文中找到",
+		Evidence:   fmt.Sprintf("%s.%s：%s → %s；引文「%s」", d.Stem, d.Field, d.From, d.To, clipRunes(d.Evidence, 40)),
+		Suggestion: "对照本章正文核对这条迁移；若状态确实如此，直接接受即可，接受时会记入定稿日志",
+	}
 }
 
 // validatePlannedLoops enforces "每章计划伏笔都要明确核对过".
@@ -152,27 +182,31 @@ func plannedLoops(unit domain.UnitInfo) map[int][]string {
 // 包体来自 BuildFinalizeChapterPacket：共享基线在前、本章正文与本章计划在后，
 // 这样同一单元逐章调用时前缀可以复用（旧版把本章计划排在第一个 document，
 // 实测命中率 6–10%）。
-func (r *Runner) reconcileChapter(ctx context.Context, snap domain.BookSnapshot, unit domain.UnitInfo, ch domain.ChapterDraft, baseline contextsvc.ReviewBaseline, modelID string) (domain.ChapterActual, []domain.CallRecord, error) {
+func (r *Runner) reconcileChapter(ctx context.Context, snap domain.BookSnapshot, unit domain.UnitInfo, ch domain.ChapterDraft, baseline contextsvc.ReviewBaseline, modelID string) (domain.ChapterActual, []domain.ReviewFinding, []domain.CallRecord, error) {
 	packet := contextsvc.BuildFinalizeChapterPacket(snap, unit, ch, baseline)
 	for _, b := range packet.Blocks {
 		if strings.TrimSpace(b.Content) == "" && b.ID != "foreshadows" && b.ID != "continuity" {
-			return domain.ChapterActual{}, nil, fmt.Errorf("定稿核对缺少 %s", b.Label)
+			return domain.ChapterActual{}, nil, nil, fmt.Errorf("定稿核对缺少 %s", b.Label)
 		}
 	}
 	var actual domain.ChapterActual
+	var chapterFindings []domain.ReviewFinding
 	planned := plannedLoops(unit)[ch.Chapter]
 	res, err := r.runJSONWithRecord(ctx, snap, packet, modelID, domain.TaskFinalize, unit.UnitID, unit.ProsePath,
 		func(raw string, cand *domain.Candidate, rec domain.CallRecord) error {
+			chapterFindings = nil
 			if err := unmarshalJSON(raw, &actual); err != nil {
 				return err
 			}
 			if actual.Chapter != ch.Chapter || strings.TrimSpace(actual.Summary) == "" {
 				return fmt.Errorf("定稿核对必须给出正确章号与摘要")
 			}
-			// 同一条判据也在整单元路径上：候选一旦生成就该能接受，不能等到作者
-			// 点「接受」才告诉他回证对不上或计划伏笔没核对。
-			if err := validateChapterActual(ch.Chapter, actual, ch.Body); err != nil {
-				return err
+			// 与整单元路径同一套判据：结构性问题硬拒（接受时同样会拒），
+			// 回证对不上只出 advisory，交给作者在候选上看。
+			fs, verr := validateChapterActual(ch.Chapter, actual, ch.Body)
+			chapterFindings = fs
+			if verr != nil {
+				return verr
 			}
 			return validatePlannedLoops(ch.Chapter, actual, planned)
 		}, func(cand domain.Candidate) gates.Report { return gates.Report{OK: true} })
@@ -185,5 +219,5 @@ func (r *Runner) reconcileChapter(ctx context.Context, snap domain.BookSnapshot,
 		}
 		res.Calls[i].Step = fmt.Sprintf("finalize-ch%d%s", ch.Chapter, suffix)
 	}
-	return actual, res.Calls, err
+	return actual, chapterFindings, res.Calls, err
 }
