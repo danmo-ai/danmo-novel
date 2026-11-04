@@ -58,14 +58,17 @@ func TestUnitSeedInheritanceAcceptsFaithfulDraft(t *testing.T) {
 	}
 }
 
-// function 与 desire 同源于种子的 objective；以前只校验 desire，
-// 模型改写 function 时无人发现，单元在卷里的功能定位会静默漂移。
-func TestUnitSeedInheritanceLocksFunction(t *testing.T) {
+// function 是细纲自己的功能定位：可以比卷纲 objective 更具体，但不能为空。
+// 强制逐字相等会把作者对功能定位的细化判成错误（真实书里大量如此）。
+func TestUnitSeedInheritanceAllowsRefinedFunction(t *testing.T) {
 	draft := inheritedUnitDraft()
-	draft.Function = "报到当天首案重启：取得首案侦办位置。" // 换一种说法也不行
-	err := ValidateUnitSeedInheritance(draft, testSeed(testSeedFields()))
-	if err == nil || !strings.Contains(err.Error(), "function") {
-		t.Fatalf("function 改写必须被拦：%v", err)
+	draft.Function = "报到当天首案重启：取得首案侦办位置。"
+	if err := ValidateUnitSeedInheritance(draft, testSeed(testSeedFields())); err != nil {
+		t.Fatalf("refined function must be accepted: %v", err)
+	}
+	draft.Function = ""
+	if err := ValidateUnitSeedInheritance(draft, testSeed(testSeedFields())); err == nil || !strings.Contains(err.Error(), "function") {
+		t.Fatalf("empty function must be rejected: %v", err)
 	}
 }
 
@@ -75,6 +78,18 @@ func TestUnitSeedInheritanceLocksStateTransitions(t *testing.T) {
 	draft.StateDeltas = []any{map[string]any{"stem": "lu-chen", "field": "goal", "from": "自保", "to": "换成另一个故事"}}
 	if err := ValidateUnitSeedInheritance(draft, testSeed(testSeedFields())); err == nil || !strings.Contains(err.Error(), "stateDeltas") {
 		t.Fatalf("state transition must inherit the volume seed: %v", err)
+	}
+}
+
+// 卷纲 state_changes 里的非词表条目是叙事性规划说明，不要求出现在细纲里；
+// 词表内条目仍然逐项锁定。
+func TestUnitSeedInheritanceIgnoresNonContractSeedNotes(t *testing.T) {
+	fields := testSeedFields()
+	fields["state_changes"] = "lu-chen.goal=自保->取得首案结果；lu-chen.evidence=零散->入账；career.access=基层->更高层"
+	draft := inheritedUnitDraft()
+	draft.StateDeltas = []any{map[string]any{"stem": "lu-chen", "field": "goal", "from": "自保", "to": "取得首案结果"}}
+	if err := ValidateUnitSeedInheritance(draft, testSeed(fields)); err != nil {
+		t.Fatalf("non-contract planning notes must not be required: %v", err)
 	}
 }
 

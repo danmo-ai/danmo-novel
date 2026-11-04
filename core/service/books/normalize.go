@@ -18,6 +18,7 @@ import (
 // 之后代码只认新形态。留下的每一处「兼容分支」都是将来会分叉的第二真源。
 type BookNormalizeReport struct {
 	UnitsRenamed   []string       // 改写过 state_deltas 字段名的单元
+	VolumesRenamed []string       // 改写过 state_changes 字段名的卷纲
 	FieldsRenamed  int            // 改名的 delta 条数
 	FieldsDropped  map[string]int // 无法映射而删除的字段名 → 条数
 	ChaptersAdded  []string       // 由 word_target 折算补上 chapter_chars 的单元
@@ -71,6 +72,33 @@ func NormalizeBookData(root string) (BookNormalizeReport, error) {
 		rep.UnitsRenamed = append(rep.UnitsRenamed, strings.TrimSuffix(e.Name(), ".yaml"))
 	}
 
+	// 卷纲种子的 state_changes 与单元 state_deltas 是同一份状态迁移的两层表达：
+	// 父层不规整，细纲继承校验就永远对不上（knowledge vs knows 之类）。
+	volumeDir := filepath.Join(root, "outline", "volumes")
+	if volumeEntries, readErr := os.ReadDir(volumeDir); readErr == nil {
+		for _, e := range volumeEntries {
+			if e.IsDir() || !strings.HasSuffix(strings.ToLower(e.Name()), ".md") {
+				continue
+			}
+			rel := "outline/volumes/" + e.Name()
+			raw, readErr := os.ReadFile(filepath.Join(volumeDir, e.Name()))
+			if readErr != nil {
+				continue
+			}
+			next, renamed, dropped := normalizeStateDeltaFieldsForVolume(string(raw))
+			for k, v := range dropped {
+				rep.FieldsDropped[k] += v
+			}
+			rep.FieldsRenamed += renamed
+			if next != string(raw) {
+				if err := backupAndWrite(root, rel, next); err != nil {
+					return rep, err
+				}
+				rep.VolumesRenamed = append(rep.VolumesRenamed, rel)
+			}
+		}
+	}
+
 	repaired, err := normalizeStateLedger(root)
 	if err != nil {
 		return rep, err
@@ -91,6 +119,7 @@ func NormalizeBookData(root string) (BookNormalizeReport, error) {
 	rep.ConflictRepair = conflicts
 
 	sort.Strings(rep.UnitsRenamed)
+	sort.Strings(rep.VolumesRenamed)
 	sort.Strings(rep.ChaptersAdded)
 	return rep, nil
 }
@@ -98,6 +127,16 @@ func NormalizeBookData(root string) (BookNormalizeReport, error) {
 // deltaFieldRe 匹配 YAML 里的一处 field 声明，行内映射与块式都能覆盖。
 // RE2 不支持反向引用，因此两侧引号各自可选匹配，改写时统一重新加引号。
 var deltaFieldRe = regexp.MustCompile(`(?m)(field:\s*)["']?([A-Za-z_][A-Za-z0-9_]*)["']?`)
+
+// normalizeStateDeltaFieldsForVolume 只做已知别名改名，不删除任何条目。
+//
+// 卷纲的 state_changes 同时承担两种表达：词表内的状态迁移，以及「证据/关系/
+// 立场」这类叙事性状态说明。后者不是账本契约，删掉就是丢作者规划；因此这里
+// 只把 knowledge/injury 之类改成词表名，其余原样保留，由继承校验按词表过滤。
+func normalizeStateDeltaFieldsForVolume(raw string) (string, int, map[string]int) {
+	out, n, d := renameCompactChanges(raw, &map[string]int{}, false)
+	return out, n, d
+}
 
 // normalizeStateDeltaFields 把旧字段名改成词表内的名字。
 //
@@ -127,7 +166,7 @@ func normalizeStateDeltaFields(raw string) (string, int, map[string]int) {
 	for k, v := range d {
 		dropped[k] += v
 	}
-	out, n, d = renameCompactChanges(out, &dropped)
+	out, n, d = renameCompactChanges(out, &dropped, true)
 	renamed += n
 	for k, v := range d {
 		dropped[k] += v
@@ -169,11 +208,16 @@ func renameDeltaBlock(raw string, dropped *map[string]int) (string, int, map[str
 //
 // 每一项独立判断：能映射就改名，映射不了就整项删掉。分隔符保留原样，
 // 避免把作者写的全角分号改成半角。
-func renameCompactChanges(raw string, dropped *map[string]int) (string, int, map[string]int) {
+func renameCompactChanges(raw string, dropped *map[string]int, dropUnknown bool) (string, int, map[string]int) {
 	lines := strings.Split(raw, "\n")
 	renamed := 0
 	for i, line := range lines {
 		s := strings.TrimSpace(line)
+		prefix := ""
+		if strings.HasPrefix(s, "- state_changes:") {
+			prefix = "- "
+			s = strings.TrimSpace(strings.TrimPrefix(s, "- "))
+		}
 		if !strings.HasPrefix(s, "state_changes:") {
 			continue
 		}
@@ -202,6 +246,10 @@ func renameCompactChanges(raw string, dropped *map[string]int) (string, int, map
 				target = "life"
 			}
 			if target == "" {
+				if !dropUnknown {
+					kept = append(kept, item)
+					continue
+				}
 				(*dropped)[strings.ToLower(field)]++
 				continue
 			}
@@ -213,10 +261,10 @@ func renameCompactChanges(raw string, dropped *map[string]int) (string, int, map
 			renamed++
 		}
 		if len(kept) == 0 {
-			lines[i] = "state_changes: \"\""
+			lines[i] = prefix + "state_changes: \"\""
 			continue
 		}
-		lines[i] = "state_changes: " + strings.Join(kept, "；")
+		lines[i] = prefix + "state_changes: " + strings.Join(kept, "；")
 	}
 	return strings.Join(lines, "\n"), renamed, map[string]int{}
 }

@@ -64,7 +64,7 @@ stateDeltas 的任务是**维护状态**，不只是记录变化。上下文里�
 覆盖要求：onStage 里每个有状态变化的人物至少一条 delta；某字段确实一整单元没动，才允许不写。不要为了凑数把没变的字段抄一遍。
 life=dead 为终态：写下之后，后续单元的 onStage 与 pov 都不得再包含此人。
 nextHook 必须是对象：{"type":"钩子类型","out":"具体事件"}（对应落盘 next_hook.type / next_hook.out），type 沿用卷纲索引已定类型；禁止写成一整句字符串。
-onStage ⊆ 本卷人物；pov ∈ onStage。不要改卷纲已定 function。
+onStage ⊆ 本卷人物；pov ∈ onStage。function 写本单元在卷中的功能定位，可在 objective 基础上更具体，但不得为空。
 人物规则：onStage 只放有台词/有后续戏份的人物。纯功能路人（报案群众、值班民警、摊主等一次性角色）不要进 onStage，直接写在 scenes 的 who/beat 描述里（如「报案邻居」）。确需引入本卷人物表之外的新人物（如单元案受害者、嫌疑人），给出新英文 stem 并在 scenes 里体现其功能；该新 stem 会被播种为候选人物卡，作者晋升后才成为 canon。
 单元标题（title）规范：2–8 字，概括本单元的核心动作或意象（如「入门试炼」「锁定并出发」「两种手艺」）；与 function 呼应但不照抄；不用「单元」「第X」字样，不剧透终局底牌。`,
 		domain.ChapterCharsMin, domain.ChapterCharsMax, domain.ChapterCharsDefault, domain.StateDeltaFieldList())

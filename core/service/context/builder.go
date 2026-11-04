@@ -123,8 +123,8 @@ func BuildWritePacket(snap domain.BookSnapshot, unit domain.UnitInfo, instructio
 	//
 	// 上一章尾部由 RunWrite 按章放进 extra，保持公共 documents 稳定。
 	if unit.ChapterFrom <= 1 || previousUnit(snap, unit) == nil {
-		if sum := latestSummaryTail(snap, unit.Volume); sum != "" {
-			add("prev-summary", "最近章摘要", "continuity/summaries", clipTail(sum, 1200))
+		if sum := latestSummaryTail(snap, unit.Volume, unit.UnitID); sum != "" {
+			add("prev-summary", "最近章摘要", "continuity/actual", clipTail(sum, 1200))
 		}
 	}
 
@@ -600,7 +600,7 @@ func BuildOutlinePacket(snap domain.BookSnapshot, volume int, unitIDs []string, 
 		hashes[b.ID+"|"+b.Source] = shortHash(b.Content)
 	}
 	system := novel.OutlineSystemPrompt()
-	instr := withUserInstruction("为 unitIds 列出的单元生成/重写细纲合同，输出 {\"units\":[...]}（即使只有 1 个单元也必须用数组）。不得改卷纲已定的 function / next_hook.type；scenes / nextHook / storyDay / gapFromPrev / infoControl 必须给出。已有细纲头时在其基础上补全或优化，不要返回空 units。", instruction)
+	instr := withUserInstruction("为 unitIds 列出的单元生成/重写细纲合同，输出 {\"units\":[...]}（即使只有 1 个单元也必须用数组）。不得改卷纲已定的 next_hook.type；function 可更具体但不得为空；scenes / nextHook / storyDay / gapFromPrev / infoControl 必须给出。已有细纲头时在其基础上补全或优化，不要返回空 units。", instruction)
 	user := BuildUserPrompt("outline", "", map[string]any{
 		"id": snap.Summary.ID, "volumeId": volTag, "unitIds": unitIDs,
 	}, instr, blocks, nil)
@@ -773,9 +773,9 @@ func BuildPlanPacketWithMode(snap domain.BookSnapshot, volume int, mode, instruc
 				blocks = append(blocks, domain.ContextBlock{ID: "prev-volume", Label: "上一卷截取（承接）", Source: prevPath, Content: handoff, Bytes: len(handoff)})
 				hashes[prevPath] = shortHash(handoff)
 			}
-			if sum := latestSummaryTail(snap, volume-1); strings.TrimSpace(sum) != "" {
+			if sum := latestSummaryTail(snap, volume-1, ""); strings.TrimSpace(sum) != "" {
 				tail := clipTail(sum, 1500)
-				src := fmt.Sprintf("continuity/summaries/%s.md", prevID)
+				src := "continuity/actual/" + prevID
 				blocks = append(blocks, domain.ContextBlock{ID: "prev-summary", Label: "上一卷章摘要尾", Source: src, Content: tail, Bytes: len(tail)})
 				hashes[src] = shortHash(tail)
 			}
@@ -1127,7 +1127,7 @@ func previousUnit(snap domain.BookSnapshot, unit domain.UnitInfo) *domain.UnitIn
 
 // SummaryBeforeUnit reads only accepted summaries strictly before the target unit.
 func SummaryBeforeUnit(snap domain.BookSnapshot, unit domain.UnitInfo) string {
-	return latestSummaryTail(snap, unit.Volume-1)
+	return latestSummaryTail(snap, unit.Volume, unit.UnitID)
 }
 
 // lastUnitOfVolume returns the highest-index unit in the given volume.
@@ -1190,13 +1190,20 @@ func mdYAMLMapish(raw, key string) string {
 	return strings.TrimSpace(strings.Join(lines, "\n"))
 }
 
-// latestSummaryTail returns the newest volume summary content for continuity.
-func latestSummaryTail(snap domain.BookSnapshot, volume int) string {
-	tag := fmt.Sprintf("continuity/summaries/v%02d.md", volume)
-	if s := snap.Files[tag]; strings.TrimSpace(s) != "" {
-		return s
+// latestSummaryTail reads the actual-ledger projection, never a second fact file.
+// Legacy summaries are only used for historical chapters with no actual index.
+func latestSummaryTail(snap domain.BookSnapshot, volume int, beforeUnitID string) string {
+	if volume < 1 {
+		return ""
 	}
-	return ""
+	if snap.Summary.RootPath != "" {
+		summary, err := books.ProjectVolumeSummary(snap.Summary.RootPath, volume, beforeUnitID)
+		if err == nil && summary != "" {
+			return summary
+		}
+	}
+	// Legacy-only in-memory snapshots are still readable during migration.
+	return snap.Files[fmt.Sprintf("continuity/summaries/v%02d.md", volume)]
 }
 
 func clip(s string, max int) string {

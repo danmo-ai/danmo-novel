@@ -41,16 +41,50 @@ func TestFinalizationSummaryUsesActualRowsAndDoesNotDuplicate(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	raw, _ := os.ReadFile(filepath.Join(root, "continuity", "summaries", "v01.md"))
-	text := string(raw)
-	if strings.Count(text, "| 1 |") != 1 || strings.Count(text, "| 2 |") != 1 {
-		t.Fatalf("summary not idempotent:\n%s", text)
+	if _, err := os.Stat(filepath.Join(root, "continuity", "summaries", "v01.md")); !os.IsNotExist(err) {
+		t.Fatal("finalize must not persist a duplicate summary file")
 	}
-	if !strings.Contains(text, "真实事件一") || !strings.Contains(text, "FS-01→已收") {
-		t.Fatalf("summary must use actual facts:\n%s", text)
+	projection, err := ProjectVolumeSummary(root, 1, "")
+	if err != nil {
+		t.Fatal(err)
 	}
-	if strings.Contains(text, "林尘握住刀柄") {
-		t.Fatal("first prose sentence must not replace the reviewed summary")
+	if strings.Count(projection, "| 1 |") != 1 || strings.Count(projection, "| 2 |") != 1 {
+		t.Fatalf("projection not idempotent:\n%s", projection)
+	}
+	if !strings.Contains(projection, "真实事件一") || !strings.Contains(projection, "FS-01→已收") {
+		t.Fatalf("projection must use actual facts:\n%s", projection)
+	}
+	commit, _ := os.ReadFile(filepath.Join(root, "continuity", "commits", unit.UnitID+".md"))
+	if strings.Contains(string(commit), "真实事件一") || !strings.Contains(string(commit), ActualPath(unit.UnitID)) {
+		t.Fatal("commit must reference actual facts, not copy chapter summaries")
+	}
+}
+
+func TestVolumeSummaryProjectionPrefersActualAndKeepsLegacyEvents(t *testing.T) {
+	root := t.TempDir()
+	writeOutline(t, root, "v01-U1", "unit_id: v01-U1\n")
+	if err := os.MkdirAll(filepath.Join(root, "continuity", "summaries"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "continuity", "summaries", "v01.md"), []byte("# 旧摘要\n| 章 | 事件 | 状态变化 | 伏笔 |\n|---|---|---|---|\n| 1 | 新事件 | 不应复制 | FS-99 |\n| 2 | 旧事件 | 旧伤势 | FS-98 |\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	actualRaw, err := MarshalActual("v01-U1", []domain.ChapterActual{{Chapter: 1, Summary: "实际新事件", Plant: []string{"FS-01"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := AtomicWriteFiles(root, map[string][]byte{ActualPath("v01-U1"): actualRaw}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := ProjectVolumeSummary(root, 1, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(got, "实际新事件") || !strings.Contains(got, "旧事件") {
+		t.Fatalf("missing actual or legacy event:\n%s", got)
+	}
+	if strings.Contains(got, "不应复制") || strings.Contains(got, "旧伤势") {
+		t.Fatalf("legacy dynamic state must not enter projection:\n%s", got)
 	}
 }
 

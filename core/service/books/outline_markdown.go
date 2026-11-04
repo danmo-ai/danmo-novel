@@ -271,10 +271,16 @@ func stateDeltasFromMarkdown(raw string) []map[string]string {
 	return out
 }
 
-// StateDeltaKeysFromMarkdown exposes the canonical parent comparison keys.
-func StateDeltaKeysFromMarkdown(raw string) []string {
+// ContractStateDeltaKeys 只返回词表内的父级迁移。
+//
+// 卷纲 state_changes 里还有「证据/关系/立场」这类叙事性说明，它们不是账本
+// 契约，不能被要求逐项出现在细纲 state_deltas 里；但也不能删（那是作者规划）。
+func ContractStateDeltaKeys(raw string) []string {
 	var out []string
 	for _, row := range stateDeltasFromMarkdown(raw) {
+		if domain.CanonicalStateField(row["field"]) == "" {
+			continue
+		}
 		out = append(out, row["stem"]+"."+row["field"]+"="+row["from"]+"->"+row["to"])
 	}
 	return out

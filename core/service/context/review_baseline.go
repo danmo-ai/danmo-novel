@@ -159,7 +159,7 @@ func chapterContextBlocks(snap domain.BookSnapshot, unit domain.UnitInfo, ch dom
 	add("cast", "在场人物", "canon/cast", baseline.CastCards)
 	if prevTail == "" && baseline.PrevSummary != "" {
 		// 首章没有"本单元上一章"，带上单元摘要；其余章带上一章末。
-		add("prev-summary", "最近章摘要", "continuity/summaries", baseline.PrevSummary)
+		add("prev-summary", "最近章摘要", "continuity/actual", baseline.PrevSummary)
 	} else if prevTail != "" {
 		add("prev-tail", "上一章末", unit.ProsePath, prevTail)
 	}

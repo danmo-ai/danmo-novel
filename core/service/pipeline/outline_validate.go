@@ -149,8 +149,10 @@ func ValidateUnitSeedInheritance(unit domain.UnitOutlineDraft, seed domain.Markd
 	// function 与 desire 同源于种子的 objective（见 books.UnitSeed.Function）。
 	// 提示词一直写着「不得改卷纲已定 function」，但校验只比了 desire，于是模型
 	// 改写 function 而保留 desire 时无人发现——单元在卷里的功能定位就这样漂了。
-	if want := strings.TrimSpace(seed.Value("objective")); want != "" && strings.TrimSpace(unit.Function) != want {
-		vs = append(vs, Violation{Path: "function", Want: "继承卷纲：" + want, Got: unit.Function})
+	// function 是细纲自己的定位表达：卷纲只锁 objective/desire，function 可以更具体，
+	// 但不能为空。强制逐字相等会把作者对功能定位的细化判成错误（真实书里大量如此）。
+	if strings.TrimSpace(unit.Function) == "" {
+		vs = append(vs, Violation{Path: "function", Want: "非空功能定位", Got: "空"})
 	}
 	// 卷纲种子的 next_hook 是「类型 | 事件」，单位是写作阶段选钩子的依据；
 	// 同理一直只靠提示词约束，从未校验。
@@ -195,7 +197,7 @@ func ValidateStateDeltaInheritance(value any, parent string) error {
 		key := fmt.Sprintf("%s.%s=%v->%v", m["stem"], m["field"], m["from"], m["to"])
 		children[key] = true
 	}
-	for _, expected := range books.StateDeltaKeysFromMarkdown(parent) {
+	for _, expected := range books.ContractStateDeltaKeys(parent) {
 		if !children[expected] {
 			return fmt.Errorf("缺少父级迁移 %s", expected)
 		}

@@ -34,8 +34,8 @@ Markdown 是总纲、卷纲和设定的事实源；解析对象只在内存/API 
 | 锁词 | `canon/locked-terms.yaml` | `locked_until/compliance/aliases` | 手工/设定维护 |
 | 实际正文索引 | `continuity/actual/<unit>.yaml` | 作者接受的逐章实际摘要、带正文证据的状态迁移与实际伏笔；由定稿候选产生，不是计划副本 | 定稿 Accept |
 | 实际状态 | `continuity/state.yaml` | 按单元段的全量快照：位置、身体、资源、目标、关系、生命状态、知情范围、伏笔状态、开闭故事日。**不存职务身份** | 定稿 Accept；只从实际索引确定性重算 |
-| 章摘要 | `continuity/summaries/vNN.md` | 每章事件、状态变化、伏笔、钩子；**事件只在这里**，state.yaml 不记事件 | 定稿 Accept，重写 upsert |
-| 定稿日志 | `continuity/commits/<unit>.md` | 字数、门禁、修订与状态迁移 | 定稿 Accept；不默认给模型 |
+| 章摘要投影 | 读取时从 actual 生成，不另存正式文件 | 每章实际事件与实际伏笔；人物动态状态只读 state.yaml，不复制进摘要 | 定稿后按需生成 |
+| 定稿日志 | `continuity/commits/<unit>.md` | 时间、正文指纹、字数、门禁及 actual 引用；不重复逐章事实 | 定稿 Accept；不默认给模型 |
 | 结构审校 | SQLite candidates | `entity_path/severity/lens/evidence/suggestion` | 候选；定向修复后重新审校 |
 | 模型运行 | SQLite runs | 任务、模型、协议、输入 hash、token、缓存、错误 | 每次调用；不是 canon |
 
@@ -97,8 +97,8 @@ Markdown 是总纲、卷纲和设定的事实源；解析对象只在内存/API 
 | 文件 | 内容 | 写入时机 |
 |---|---|---|
 | `continuity/state.yaml` | 按单元段的**全量快照**：人物状态（位置/身体/资源/目标/关系/生命）+ 伏笔 loops + 开闭故事日 | 每次定稿 |
-| `continuity/summaries/vNN.md` | 每章一行：事件、状态变化、伏笔、钩子 | 每次定稿（按章 upsert） |
-| `continuity/commits/<unit>.md` | 定稿执行日志：字数、门禁、已确认实际结果 | 每次定稿 |
+| 章摘要投影 | 每章一行：实际事件与实际伏笔，不复制人物动态状态 | 读取 actual 时按需生成 |
+| `continuity/commits/<unit>.md` | 定稿执行日志：时间、正文指纹、字数、门禁、actual 引用 | 每次定稿 |
 
 - `state.yaml` **不记事件**——事件在章摘要里。
 - 读取规则：写作/审校只取「严格早于目标单元的最近一段」，因为每段都是全量快照，

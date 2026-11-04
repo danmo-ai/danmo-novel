@@ -1,6 +1,7 @@
 package books
 
 import (
+	"crypto/sha256"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -55,10 +56,6 @@ func ApplyFinalizationLedger(root string, unit domain.UnitInfo, chapters []domai
 	if err != nil {
 		return err
 	}
-	summary, err := renderVolumeSummary(root, unit, actual)
-	if err != nil {
-		return err
-	}
 	log := renderCommitLog(unit, chapters, actual, findings)
 	var outlineRaw []byte
 	if raw, readErr := os.ReadFile(filepath.Join(root, unit.OutlinePath)); readErr == nil {
@@ -74,56 +71,9 @@ func ApplyFinalizationLedger(root string, unit domain.UnitInfo, chapters []domai
 	cursor := regexp.MustCompile(`(?m)^last_committed_ch:\s*.*$`).ReplaceAllString(string(stateText), "last_committed_ch: "+strconv.Itoa(chapters[len(chapters)-1].Chapter))
 	return AtomicWriteFiles(root, map[string][]byte{
 		StatePath: stateRaw, ActualPath(unit.UnitID): actualRaw,
-		fmt.Sprintf("continuity/summaries/v%02d.md", unit.Volume): []byte(summary),
-		"continuity/commits/" + unit.UnitID + ".md":               []byte(log),
+		"continuity/commits/" + unit.UnitID + ".md": []byte(log),
 		unit.OutlinePath: outlineRaw, "novel-state.yaml": []byte(cursor),
 	})
-}
-
-func renderVolumeSummary(root string, unit domain.UnitInfo, actual []domain.ChapterActual) (string, error) {
-	path := filepath.Join(root, "continuity", "summaries", fmt.Sprintf("v%02d.md", unit.Volume))
-	text := ""
-	if raw, err := os.ReadFile(path); err == nil {
-		text = strings.TrimRight(string(raw), "\n")
-	} else if !os.IsNotExist(err) {
-		return "", err
-	} else {
-		text = "# 第 " + strconv.Itoa(unit.Volume) + " 卷章摘要\n\n| 章 | 事件 | 状态变化 | 伏笔 |\n|----|------|----------|------|"
-	}
-	chapters := map[int]bool{}
-	for _, ch := range actual {
-		chapters[ch.Chapter] = true
-	}
-	var lines []string
-	for _, line := range strings.Split(text, "\n") {
-		if m := chapterRowRe.FindStringSubmatch(strings.TrimSpace(line)); m != nil {
-			n, _ := strconv.Atoi(m[1])
-			if chapters[n] {
-				continue
-			}
-		}
-		lines = append(lines, line)
-	}
-	for _, ch := range actual {
-		var deltas, loops []string
-		for _, d := range ch.StateDeltas {
-			if d.Confirmed {
-				deltas = append(deltas, d.Stem+"."+d.Field+"="+d.To)
-			}
-		}
-		loops = append(loops, ch.Plant...)
-		for _, id := range ch.Payoff {
-			loops = append(loops, id+"→已收")
-		}
-		if len(deltas) == 0 {
-			deltas = []string{"—"}
-		}
-		if len(loops) == 0 {
-			loops = []string{"—"}
-		}
-		lines = append(lines, fmt.Sprintf("| %d | %s | %s | %s |", ch.Chapter, markdownCell(ch.Summary), markdownCell(strings.Join(deltas, "；")), markdownCell(strings.Join(loops, "；"))))
-	}
-	return strings.Join(lines, "\n") + "\n", nil
 }
 
 func markdownCell(raw string) string {
@@ -152,50 +102,18 @@ func renderCommitLog(unit domain.UnitInfo, chapters []domain.ChapterDraft, actua
 	if hook := mdYAMLMapValue(unit.OutlineRaw, "next_hook", "type"); hook != "" {
 		fmt.Fprintf(&b, "- 下一钩: %s\n", hook)
 	}
-	fmt.Fprintf(&b, "\n## 已确认实际结果\n")
-	for _, ch := range actual {
-		fmt.Fprintf(&b, "- 第 %d 章：%s\n", ch.Chapter, ch.Summary)
+	hash := sha256.New()
+	for _, ch := range chapters {
+		fmt.Fprintf(hash, "%d\x00%s\x00%s\x00", ch.Chapter, ch.Title, ch.Body)
 	}
+	fmt.Fprintf(&b, "- 正文指纹: %x\n", hash.Sum(nil))
+	fmt.Fprintf(&b, "- 实际事实索引: %s\n", ActualPath(unit.UnitID))
 	return b.String()
 }
 
 // ---- helpers ----
 
 var chapterRowRe = regexp.MustCompile(`^\|\s*(\d+)\s*\|`)
-
-// dropSummaryRows removes table rows whose 章 falls in [from, to].
-func dropSummaryRows(text string, from, to int) string {
-	lines := strings.Split(text, "\n")
-	out := make([]string, 0, len(lines))
-	for _, line := range lines {
-		if m := chapterRowRe.FindStringSubmatch(strings.TrimSpace(line)); m != nil {
-			if n, err := strconv.Atoi(m[1]); err == nil && n >= from && n <= to {
-				continue
-			}
-		}
-		out = append(out, line)
-	}
-	return strings.Join(out, "\n")
-}
-
-// committedChapterRange reads the previous 定稿账本's章范围 for a unit.
-func committedChapterRange(root, unitID string) (int, int) {
-	raw, err := os.ReadFile(filepath.Join(root, "continuity", "commits", unitID+".md"))
-	if err != nil {
-		return 0, 0
-	}
-	re := regexp.MustCompile(`章范围:\s*(\d+)\s*-\s*(\d+)`)
-	m := re.FindStringSubmatch(string(raw))
-	if m == nil {
-		return 0, 0
-	}
-	from, err1 := strconv.Atoi(m[1])
-	to, err2 := strconv.Atoi(m[2])
-	if err1 != nil || err2 != nil {
-		return 0, 0
-	}
-	return from, to
-}
 
 // mdYAMLSection returns the indented body of a top-level `key:` block.
 //
@@ -233,17 +151,6 @@ func mdSectionBody(raw, heading string) string {
 		return strings.TrimSpace(m[1])
 	}
 	return ""
-}
-
-func firstSentence(s string, max int) string {
-	s = strings.TrimSpace(s)
-	if s == "" {
-		return "—"
-	}
-	if i := strings.IndexAny(s, "。！？!?\n"); i > 0 {
-		s = s[:i+len("。")]
-	}
-	return clipRunes(s, max)
 }
 
 func clipRunes(s string, max int) string {

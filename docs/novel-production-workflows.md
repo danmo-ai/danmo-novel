@@ -239,6 +239,12 @@ user   = {
 - 每章必须有 `ChapterPlan`；`scenes` 只是复杂章可选辅助，不是必填的第三级大纲。
 - 核心场面只需 `goal/conflict/turn/outcome`；`mustLand` 最多两项。不得预写台词、动作清单或情绪曲线。
 - 章范围、目标、尝试、缺口、选择、代价、结果、时钟必须继承卷纲。
+- `function` 是细纲自己的功能定位：可以比卷纲 `objective` 更具体，但不能为空。
+- 卷纲种子的 `state_changes` 同时含两类内容：词表内的状态迁移，以及「证据/关系/
+  立场」这类叙事性说明。只有词表内条目会被要求出现在细纲 `state_deltas` 里；
+  叙事性说明保留在卷纲，不被删除，也不进入账本。
+- 单元的状态事实只认 `state_deltas`：即使单元同时写着 `state_changes`（计划），
+  也不会被当成实际状态；写明 `state_deltas: []` 就是「本单元无账本状态迁移」。
 - Accept 前再次校验身份覆盖、父子合同、时钟、状态迁移与场面归属，写 `outline/units/<unit>.yaml` 并进入 `accepted`。
 - `stateDeltas` 的任务是**维护状态**而不是记录变化：细纲上下文里带着进入本单元时的
   完整快照（含「记于 N 个单元前，可能已变」的标注），模型必须逐人逐字段对照，
@@ -421,8 +427,8 @@ Accept 写 `units/<unit>.md` 并进入 `drafted`；不更新 continuity。
 - 单元状态改 `finalized`。
 - `continuity/actual/<unit>.yaml` 保存作者接受的逐章正文事实索引；`continuity/state.yaml` 从这些实际结果重算全量快照，不直接消费计划 `state_deltas`。
 - 伏笔实际开闭与摘要只来自已核对结果；每章计划伏笔必须明确核对。
-- `continuity/summaries/vNN.md` 按章 upsert 摘要。
-- `continuity/commits/<unit>.md` 写执行日志。
+- 卷摘要不再另存事实副本：读取时由 actual 投影，旧摘要文件只补尚未有 actual 的历史事件；人物动态状态始终从 state.yaml 读取。
+- `continuity/commits/<unit>.md` 只写时间、正文指纹、字数、门禁和 actual 引用，不重复逐章事实。
 - 更新 `novel-state.yaml` 的章游标。
 
 定稿只确认实际状态，不自动修改人物身份时间线或作者规划。
@@ -456,4 +462,5 @@ Accept 写 `units/<unit>.md` 并进入 `drafted`；不更新 continuity。
   入口 `POST /api/books/:id/migrate-foreshadow`（`books.NormalizeBookData`），
   原文全部留档到 `backups/pre-migrate-<stamp>/`。
 - `state_deltas.field` 词表之外的名字在细纲接受时报错并进修复轮，不再静默丢弃；
+  卷纲 `state_changes` 里的非词表条目属于叙事性规划说明，保留但不参与账本。
   `word_target`、`state_deltas_json`、`canon/reveal-schedule.md` 均已退役。

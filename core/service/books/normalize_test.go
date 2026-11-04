@@ -48,6 +48,29 @@ state_deltas:
 }
 
 // status 是案件进展时不能映射成 life，只能删掉；死亡语义才映射。
+func TestNormalizeBookDataKeepsVolumePlanningNotes(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "outline", "volumes")
+	if err := os.MkdirAll(path, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := "# 卷纲 · v01\n- schema_version: 1\n\n## 单元 · v01-U1\n- title: 起步\n- state_changes: lin.knowledge=旧->新；lin.evidence=零散->入账\n"
+	if err := os.WriteFile(filepath.Join(path, "v01.md"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NormalizeBookData(root); err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := os.ReadFile(filepath.Join(path, "v01.md"))
+	got := string(raw)
+	if !strings.Contains(got, "lin.knows=旧->新") {
+		t.Fatalf("known alias must be renamed:\n%s", got)
+	}
+	if !strings.Contains(got, "lin.evidence=零散->入账") {
+		t.Fatalf("non-contract planning note must be preserved:\n%s", got)
+	}
+}
+
 func TestNormalizeBookDataSplitsStatusSemantics(t *testing.T) {
 	root := t.TempDir()
 	body := `unit_id: v01-U1

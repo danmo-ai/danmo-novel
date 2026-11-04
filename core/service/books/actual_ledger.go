@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/danmo-ai/danmo-novel/core/domain"
@@ -127,6 +128,81 @@ func StateFromActual(base domain.UnitState, unit domain.UnitInfo, chapters []dom
 	sort.Slice(loops, func(i, j int) bool { return loops[i].ID < loops[j].ID })
 	st.Loops = loops
 	return st, nil
+}
+
+// ProjectVolumeSummary builds the model-facing chapter index from actual facts.
+// No summaries file is written at finalize time. Legacy rows fill only chapters
+// that predate actual-ledger tracking; actual chapters always win by chapter ID.
+func ProjectVolumeSummary(root string, volume int, beforeUnitID string) (string, error) {
+	snap, err := LoadBook(root, false)
+	if err != nil {
+		return "", err
+	}
+	type summaryRow struct {
+		chapter int
+		event   string
+		loops   string
+	}
+	rows := map[int]summaryRow{}
+	for _, unit := range snap.Units {
+		if unit.Volume != volume || (beforeUnitID != "" && UnitOrderKey(unit.UnitID) >= UnitOrderKey(beforeUnitID)) {
+			continue
+		}
+		actual, err := LoadActual(root, unit.UnitID)
+		if err != nil {
+			return "", err
+		}
+		for _, ch := range actual {
+			loops := append([]string{}, ch.Plant...)
+			for _, id := range ch.Payoff {
+				loops = append(loops, id+"→已收")
+			}
+			if len(loops) == 0 {
+				loops = []string{"—"}
+			}
+			rows[ch.Chapter] = summaryRow{chapter: ch.Chapter, event: ch.Summary, loops: strings.Join(loops, "；")}
+		}
+	}
+	// Legacy summaries retain only their event column; dynamic character state
+	// comes from state.yaml and is never copied into this projection.
+	legacyPath := filepath.Join(root, "continuity", "summaries", fmt.Sprintf("v%02d.md", volume))
+	if raw, readErr := os.ReadFile(legacyPath); readErr == nil {
+		for _, line := range strings.Split(string(raw), "\n") {
+			line = strings.TrimSpace(line)
+			match := chapterRowRe.FindStringSubmatch(line)
+			if match == nil {
+				continue
+			}
+			chapter, parseErr := strconv.Atoi(match[1])
+			if parseErr != nil {
+				continue
+			}
+			if _, exists := rows[chapter]; exists {
+				continue
+			}
+			cells := strings.Split(strings.Trim(line, "|"), "|")
+			if len(cells) < 2 {
+				continue
+			}
+			rows[chapter] = summaryRow{chapter: chapter, event: strings.TrimSpace(strings.ReplaceAll(cells[1], "\\|", "|")), loops: "—"}
+		}
+	} else if !os.IsNotExist(readErr) {
+		return "", readErr
+	}
+	if len(rows) == 0 {
+		return "", nil
+	}
+	ordered := make([]summaryRow, 0, len(rows))
+	for _, row := range rows {
+		ordered = append(ordered, row)
+	}
+	sort.Slice(ordered, func(i, j int) bool { return ordered[i].chapter < ordered[j].chapter })
+	var out strings.Builder
+	fmt.Fprintf(&out, "# 第 %d 卷实际章摘要（由 actual 派生）\n\n| 章 | 实际事件 | 实际伏笔 |\n|----|----------|----------|\n", volume)
+	for _, row := range ordered {
+		fmt.Fprintf(&out, "| %d | %s | %s |\n", row.chapter, markdownCell(row.event), markdownCell(row.loops))
+	}
+	return out.String(), nil
 }
 
 // RebuildStateFromActual deterministically replays all contiguous accepted ledgers.

@@ -182,9 +182,15 @@ func TestStructuredVolumeSeedInheritsUnitContract(t *testing.T) {
 func TestStructuredSeedStateChangesReachFinalizationLedger(t *testing.T) {
 	unit := domain.UnitInfo{UnitID: "v01-U1", Volume: 1, OutlineRaw: "unit_id: v01-U1\nstory_day: 3\nstate_changes: lin.role_title=新人->复核人; lin.goal=申请->复核\nstate_deltas:\n  - stem: lin\n    field: role_title\n    from: 新人\n    to: 复核人\n  - stem: lin\n    field: goal\n    from: 申请\n    to: 复核\n"}
 	state := StateFromOutline(unit, []domain.ChapterDraft{{Chapter: 3, Body: "正文"}})
+	// 单元只写卷纲紧凑 state_changes 时不得进入账本：那是计划，不是实际状态。
 	compact := StateFromOutline(domain.UnitInfo{UnitID: "v01-U1", Volume: 1, OutlineRaw: "story_day: 3\nend_day: 5\nstate_changes: lin.role_title=新人->复核人; lin.goal=申请->复核\n"}, []domain.ChapterDraft{{Chapter: 3, Body: "正文"}})
-	if compact.Cast["lin"].Goal != "复核" || compact.EndDay != 5 {
-		t.Fatalf("compact seed state was dropped: %+v", compact)
+	if len(compact.Cast) != 0 || compact.EndDay != 5 {
+		t.Fatalf("compact seed plan must not become ledger fact: %+v", compact)
+	}
+	// 明确写了空 state_deltas 时也不能回退读计划。
+	empty := StateFromOutline(domain.UnitInfo{UnitID: "v01-U1", Volume: 1, OutlineRaw: "state_changes: lin.goal=申请->复核\nstate_deltas: []\n"}, nil)
+	if len(empty.Cast) != 0 {
+		t.Fatalf("explicit empty state_deltas was overridden by plan: %+v", empty)
 	}
 	// 身份由 identity-timeline 独占，账本不再存副本（曾经存过，人工修正时间线后
 	// 副本不跟着变，同一提示词里同一个人出现两个身份）。

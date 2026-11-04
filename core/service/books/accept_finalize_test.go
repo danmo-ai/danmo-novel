@@ -94,13 +94,16 @@ func TestApplyFinalizationLedger(t *testing.T) {
 		}
 	}
 
-	// 4. 卷摘要
-	sum, err := os.ReadFile(filepath.Join(root, "continuity", "summaries", "v01.md"))
+	// 4. 卷摘要是 actual 的读取时投影，不再落盘成第二份事实。
+	sum, err := ProjectVolumeSummary(root, 1, "")
 	if err != nil {
-		t.Fatalf("summary missing: %v", err)
+		t.Fatalf("summary projection missing: %v", err)
 	}
-	if !strings.Contains(string(sum), "| 1 |") || !strings.Contains(string(sum), "| 2 |") {
+	if !strings.Contains(sum, "| 1 |") || !strings.Contains(sum, "| 2 |") {
 		t.Fatalf("summary missing chapters: %s", sum)
+	}
+	if _, err := os.Stat(filepath.Join(root, "continuity", "summaries", "v01.md")); !os.IsNotExist(err) {
+		t.Fatal("finalization must not write a duplicate summary file")
 	}
 
 	// 5. 定稿账本

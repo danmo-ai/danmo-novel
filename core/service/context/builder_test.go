@@ -301,7 +301,7 @@ func TestStageInstructionAppended(t *testing.T) {
 	if !strings.Contains(op.Instruction, "细纲追加XYZ") {
 		t.Fatalf("outline instruction not forwarded: %q", op.Instruction)
 	}
-	if !strings.Contains(op.Instruction, "不得改卷纲已定的 function") {
+	if !strings.Contains(op.Instruction, "function 可更具体但不得为空") {
 		t.Fatal("outline gate contract must be preserved")
 	}
 }

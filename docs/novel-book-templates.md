@@ -30,7 +30,7 @@
     locked-terms.yaml                  锁词与永久合规红线
   continuity/
     state.yaml                         定稿后的实际状态账本
-    summaries/v{{NN}}.md                定稿章摘要
+    actual/v{{NN}}-U{{N}}.yaml          作者接受的实际正文事实索引
     commits/v{{NN}}-U{{N}}.md           定稿执行日志
   reviews/                              审校输出（如存在）
 ```
@@ -510,7 +510,6 @@ units:
     end_day: {{单元实际结束日}}
     cast:
       {{character.stem}}:
-        role_title: {{定稿时本单元公开身份，与身份时间线一致}}
         location: {{实际位置}}
         injury: {{实际伤势}}
         resources: {{实际资源}}
@@ -525,15 +524,11 @@ units:
         paid: {{实际回收章，可选}}
 ```
 
-### `continuity/summaries/v{{NN}}.md`
+### 实际事实索引与章摘要投影
 
-```markdown
-# 第 {{NN}} 卷章摘要
+`continuity/actual/v{{NN}}-U{{N}}.yaml` 保存作者接受的逐章实际摘要、带正文证据的状态迁移和实际伏笔。读取创作上下文时按目标单元之前的 actual 生成章摘要投影，不另写 `summaries/vNN.md` 事实副本。
 
-| 章 | 事件 | 状态变化 | 伏笔 | 钩子 |
-|----|------|----------|------|------|
-| {{章号}} | {{实际关键事件}} | {{实际状态变化}} | {{伏笔推进}} | {{章末钩子}} |
-```
+人物动态状态始终由 `continuity/state.yaml` 提供，不在摘要中复制。旧摘要只用于补尚未有 actual 的历史事件。
 
 ### `continuity/commits/v{{NN}}-U{{N}}.md`
 
@@ -545,9 +540,8 @@ units:
 - 总字数: {{正文字数}}
 - 门禁: blocking={{数量}} advisory={{数量}}
 - 下一钩: {{下一钩类型}}
-
-## state_deltas
-{{定稿实际采用的状态迁移}}
+- 正文指纹: {{本次实际正文 hash}}
+- 实际事实索引: continuity/actual/{{unit_id}}.yaml
 ```
 
 这些运行/账本文件记录已接受结果，不用来替代作者规划或人物身份。旧书中的自由场景长表、散文时钟、人物职务备注应映射到上述实体，而不是原样叠加成重复设定。

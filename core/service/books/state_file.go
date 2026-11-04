@@ -380,37 +380,22 @@ type stateDelta struct {
 	To    string
 }
 
-// parseStateDeltas reads the unit's state_deltas block.
+// parseStateDeltas reads the unit's state_deltas block only.
 //
-// 两种来源都是活字段：细纲正文的 YAML 列表，以及卷纲种子的紧凑写法
-// `state_changes: stem.field=前->后`。后者是「卷纲已接受但细纲未重写」时的
-// 唯一状态来源，必须继续可读。旧版的 state_deltas_json 字符串已删除——没有
-// 任何书用它，留着只是又一条没人维护的解析分支。
+// 单元的状态事实只认结构化 state_deltas。以前还会回退读卷纲种子的
+// `state_changes: stem.field=前->后`：那条路径会把「计划」当成「实际」，
+// 尤其当单元明确写了 `state_deltas: []` 时仍被计划覆盖。现在计划只用于
+// 父子合同校验（ContractStateDeltaKeys），不进入状态重建。
 func parseStateDeltas(raw string) []stateDelta {
-	if block := mdYAMLSection(raw, "state_deltas"); block != "" {
-		var rows []map[string]any
-		if err := yaml.Unmarshal([]byte(block), &rows); err == nil && len(rows) > 0 {
-			return rowsToDeltas(rows)
-		}
+	block := mdYAMLSection(raw, "state_deltas")
+	if block == "" {
+		return nil
 	}
-	if value := yamlScalarValue(raw, "state_changes"); value != "" {
-		if rows := stateDeltasFromMarkdown(value); len(rows) > 0 {
-			return rowsToDeltas(markdownDeltaRows(rows))
-		}
+	var rows []map[string]any
+	if err := yaml.Unmarshal([]byte(block), &rows); err != nil {
+		return nil
 	}
-	return nil
-}
-
-func markdownDeltaRows(rows []map[string]string) []map[string]any {
-	out := make([]map[string]any, 0, len(rows))
-	for _, row := range rows {
-		converted := map[string]any{}
-		for key, value := range row {
-			converted[key] = value
-		}
-		out = append(out, converted)
-	}
-	return out
+	return rowsToDeltas(rows)
 }
 
 func rowsToDeltas(rows []map[string]any) []stateDelta {
