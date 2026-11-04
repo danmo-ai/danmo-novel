@@ -7,6 +7,7 @@ export const KIND_LABELS: Record<string, string> = {
   outline: '细纲',
   write: '正文',
   review: '审校',
+  outline_review: '细纲检查',
   revise: '修订',
   finalize: '定稿',
   rewrite_entity: '重写设定',

@@ -11,6 +11,7 @@ import (
 	"github.com/danmo-ai/danmo-novel/core/domain"
 	"github.com/danmo-ai/danmo-novel/core/resource/novel"
 	"github.com/danmo-ai/danmo-novel/core/service/books"
+	"gopkg.in/yaml.v3"
 )
 
 const ContractVersion = "novel-v1"
@@ -33,16 +34,8 @@ func DefaultPolicy(kind domain.TaskKind, chapterCount int) domain.CallPolicy {
 	}
 	switch kind {
 	case domain.TaskWrite:
-		// 一次调用写不下整单元时改按章写：这是调用次数与话题切分的问题，
-		// 与单次输出上限无关（上限由模型决定）。
-		if chapterCount > 0 && chapterCount*domain.ChapterCharsMax > 6000 {
-			p.SplitByChapter = true
-			// 每章最坏 3 次调用：生成 + 一次结构修复 + 一次硬门修复。
-			// 三种失败互相独立（结构不合规 → 修；写成了但字数/英文泄漏 → 也修），
-			// 所以上限必须按 3 倍算，否则 UI 上会出现 5/4 这种自相矛盾的预算。
-			p.MaxCalls = chapterCount * 3
-			p.AllowOneRepair = true
-		}
+		// 正文固定逐章生成、逐章定向修复，单元 Accept 仍一次提交全部章节。
+		p.MaxCalls = chapterCount * 3
 	case domain.TaskReview:
 		p.MaxCalls = 2
 		p.AllowOneRepair = true
@@ -68,15 +61,22 @@ func withUserInstruction(base, instruction string) string {
 	return base + "\n\n补充要求（作者追加；不得违反上面的输出格式与门禁约束）：\n" + instruction
 }
 
-func BuildWritePacket(snap domain.BookSnapshot, unit domain.UnitInfo, instruction string, modelMaxOut int) domain.ContextPacket {
-	policy := DefaultPolicy(domain.TaskWrite, unit.ChapterTo-unit.ChapterFrom+1)
-	// 模型一次答案装不下整单元时改按章写：这是调用切分，与输出上限无关。
-	if modelMaxOut > 0 && modelMaxOut < 4000 && !policy.SplitByChapter && unit.ChapterTo > unit.ChapterFrom {
-		policy.SplitByChapter = true
-		policy.MaxCalls = (unit.ChapterTo - unit.ChapterFrom + 1) * 3
-		policy.AllowOneRepair = true
+func ValidateUnitInput(snap domain.BookSnapshot, unit domain.UnitInfo) error {
+	var doc map[string]any
+	if err := yaml.Unmarshal([]byte(unit.OutlineRaw), &doc); err != nil {
+		return fmt.Errorf("细纲 YAML 无效：%w", err)
 	}
-	// 输出上限不在这里定：保持 0，让 LLM client 按模型目录的 max_output 决定。
+	if len(extractOnStage(unit.OutlineRaw)) == 0 || extractPOV(unit.OutlineRaw) == "" {
+		return fmt.Errorf("细纲缺少 on_stage/pov，不能生成正文")
+	}
+	if _, err := books.LoadState(snap.Summary.RootPath); err != nil {
+		return fmt.Errorf("连续性账本不可读：%w", err)
+	}
+	return nil
+}
+
+func BuildWritePacket(snap domain.BookSnapshot, unit domain.UnitInfo, instruction string) domain.ContextPacket {
+	policy := DefaultPolicy(domain.TaskWrite, unit.ChapterTo-unit.ChapterFrom+1)
 
 	blocks := []domain.ContextBlock{}
 	add := func(id, label, source, content string) {
@@ -95,7 +95,11 @@ func BuildWritePacket(snap domain.BookSnapshot, unit domain.UnitInfo, instructio
 	// 1. 当前单元合同：结构化 scenes/beats 优先，时钟字段显式化。
 	// scenes/chapters 由下面的「场面节拍」专块提供，这里必须剥掉，否则同一份
 	// 节拍会被注入两遍（实测可占写作提示词 17%）。
-	add("unit-contract", "单元合同", unit.OutlinePath, TrimContract(NormalizeUnitContract(ContractWithoutBeats(unit.OutlineRaw)), domain.TaskWrite))
+	//
+	// 不再调用 NormalizeUnitContract：它会追加一段「# 本单元故事时钟
+	// story_day=67 · gap_from_prev=1」，而同一组数字已经由 time-guidance 用
+	// 可执行的散文说过一遍、合同原始字段又说一遍。时钟只保留一处。
+	add("unit-contract", "单元合同", unit.OutlinePath, TrimContract(ContractWithoutBeats(unit.OutlineRaw), domain.TaskWrite))
 	add("unit-beats", "场面节拍", unit.OutlinePath, ChapterBeats(unit.OutlineRaw))
 
 	// 2. on_stage 人物：本单元身份 + 三锚点 + 一句台词 + POV「不知」。
@@ -116,14 +120,8 @@ func BuildWritePacket(snap domain.BookSnapshot, unit domain.UnitInfo, instructio
 	add("continuity", "连续性状态", books.StatePath, ExtractContinuity(snap, unit, onStage, ContinuityForWrite))
 
 	// 5. 上一章 / 上一单元钩子与文末。
-	// 卷摘要尾只在"本单元第一章"注入：其余章由上一章正文承担衔接，
-	// 两者同给等于把上一段的结尾读两遍。
-	// 800 字足够接住文末钩子与语感；再多就是让模型重读上一段结尾。
-	if prev := previousUnit(snap, unit); prev != nil {
-		if tail := clipTail(prev.ProseRaw, 800); tail != "" {
-			add("prev-tail", "上单元文末钩子", prev.ProsePath, tail)
-		}
-	}
+	//
+	// 上一章尾部由 RunWrite 按章放进 extra，保持公共 documents 稳定。
 	if unit.ChapterFrom <= 1 || previousUnit(snap, unit) == nil {
 		if sum := latestSummaryTail(snap, unit.Volume); sum != "" {
 			add("prev-summary", "最近章摘要", "continuity/summaries", clipTail(sum, 1200))
@@ -135,27 +133,30 @@ func BuildWritePacket(snap domain.BookSnapshot, unit domain.UnitInfo, instructio
 
 	// 7. 当前卷锁词（不展开未来秘密）。
 	add("locked-terms", "锁词", "canon/locked-terms.yaml", ExtractLockedTerms(snap.Files["canon/locked-terms.yaml"], volumeID))
-	// 7b. 揭示计划按卷截取：可暗示/可确认 + 禁止写穿（不含底牌细节）。
-	add("reveal", "揭示约束", "canon/reveal-schedule.md", ExtractRevealForVolume(snap.Files["canon/reveal-schedule.md"], unit.Volume))
+
+	// 7b. 能力上限：金手指与世界规则的代价、上限、例外。
+	// 此前写作层完全没有这块，能力只能靠 models 自觉不越界。
+	add("ability-limits", "能力上限", "canon/goldfinger.md", ExtractAbilityLimits(snap.Files["canon/world.md"], snap.Files["canon/goldfinger.md"]))
+
+	// 7c. 伏笔由 RunWrite 按章放进 extra。
 
 	genreKB := novel.GenreBullets(snap.Summary.Genre, snap.Summary.Subgenre)
 	add("genre-kb", "题材写时约束", "knowledge:"+snap.Summary.Genre, genreKB)
 	// 时间书写规范：把 story_day/gap 转成正文可执行的时间锚点指令。
+	// 它是时钟的唯一出处：合同里的 story_day/end_day/gap_days 已从写作包里裁掉，
+	// 否则同一组数字会以原始字段、追加段、散文说明三种形态各出现一次。
 	add("time-guidance", "时间书写规范", "knowledge:time", buildTimeGuidance(snap, unit))
-
-	// 字数额度：写的时候不给数字，模型只能猜长度，于是写完被硬门判"字数不足"，
-	// 白跑修复。这里的目标与接受区间和硬门同源（domain.ChapterChars* / books.ChapterTarget）。
-	add("chapter-length", "本章字数额度", "policy:chapter-length", chapterLengthGuidance(unit))
 
 	hashes := map[string]string{}
 	for _, b := range blocks {
-		hashes[b.Source] = shortHash(b.Content)
+		hashes[b.ID+"|"+b.Source] = shortHash(b.Content)
 	}
 
-	system := novel.WriteSystemPromptFor(books.ChapterTarget(unit))
+	system := novel.WriteChapterSystemPromptFor(books.ChapterTarget(unit))
+	baseInstruction := "请按本章合同与场面节拍只写 user 数据包 chapter 指定的那一章。章内不要输出 ---；body 内是纯散文。"
 	user := BuildUserPrompt("write", "", map[string]any{
 		"id": snap.Summary.ID, "unitId": unit.UnitID, "volumeId": volumeID,
-	}, withUserInstruction("请按单元合同与场面节拍一次写出全部章节正文。章与章之间不要输出 ---；body 内是纯散文。", instruction), blocks, nil)
+	}, withUserInstruction(baseInstruction, instruction), blocks, nil)
 
 	packet := domain.ContextPacket{
 		ContractVersion:  ContractVersion,
@@ -181,9 +182,14 @@ func BuildWritePacket(snap domain.BookSnapshot, unit domain.UnitInfo, instructio
 // mergeStyleRules joins the style fingerprint and the writing rules into one
 // block. Both answer "how should this be written", so two blocks only make the
 // model read the same class of constraint twice.
+//
+// 写作规则按小节过滤：写单章时「单元 3–8 章，硬上限 10 章」「每 3–5 章交付一次
+// 结果型兑现」「单章默认 2300—2700 字」都不属于本章可执行的动作，最后一条还
+// 与 system 的 1800–3500 区间打架。只按 `## ` 分节整块丢弃，不做逐句正则——
+// 误删一条章节级规则比多留一条单元级规则更难发现。
 func mergeStyleRules(snap domain.BookSnapshot) string {
 	style := ExtractStyle(snap.Files["canon/style-fingerprint.md"])
-	rules := clip(snap.Files["canon/writing-rules.md"], 420)
+	rules := clip(filterChapterScopedRules(snap.Files["canon/writing-rules.md"]), 420)
 	switch {
 	case style == "" && rules == "":
 		return ""
@@ -193,6 +199,34 @@ func mergeStyleRules(snap domain.BookSnapshot) string {
 		return "### 写作规则\n" + rules
 	}
 	return style + "\n\n### 写作规则\n" + rules
+}
+
+// filterChapterScopedRules 丢弃「单元」「卷」级的小节，只留单章可执行的条目。
+func filterChapterScopedRules(raw string) string {
+	if strings.TrimSpace(raw) == "" {
+		return ""
+	}
+	var out []string
+	var section []string
+	keep := true
+	flush := func() {
+		if len(section) == 0 || !keep {
+			section = nil
+			return
+		}
+		out = append(out, section...)
+		section = nil
+	}
+	for _, line := range strings.Split(raw, "\n") {
+		if strings.HasPrefix(line, "## ") {
+			flush()
+			heading := strings.TrimSpace(strings.TrimPrefix(line, "## "))
+			keep = !strings.Contains(heading, "单元") && !strings.Contains(heading, "卷")
+		}
+		section = append(section, line)
+	}
+	flush()
+	return strings.TrimSpace(strings.Join(out, "\n"))
 }
 
 var reviewContractDrop = []string{
@@ -224,6 +258,16 @@ var writeContractDrop = []string{
 	"function",
 	"chapter_range",
 	"word_target",
+	// chapter_chars 由 system 提示词与每次调用的 chapterRule 给出，且
+	// ChapterTarget 会把它 Clamp 到 [2000,3500]。合同里若写着 5000，
+	// 模型会看到两个互相矛盾的数字。
+	"chapter_chars",
+	// 时钟四件套由 time-guidance 统一表达成可执行指令（开场第几天、最晚第几天、
+	// 与上一单元至少隔几天）。原始字段留在合同里只是第三份同样的数字。
+	"story_day",
+	"end_day",
+	"gap_days",
+	"gap_from_prev",
 	"chapters",         // 与场面节拍重复
 	"continuity_risks", // 作者登记的风险台账
 	"observations",     // 历轮执行观察
@@ -475,6 +519,13 @@ func outlineFieldValue(section []string, key string) string {
 	return ""
 }
 
+func firstOutlineUnit(ids []string) string {
+	if len(ids) == 0 {
+		return ""
+	}
+	return ids[0]
+}
+
 func BuildOutlinePacket(snap domain.BookSnapshot, volume int, unitIDs []string, instruction string) domain.ContextPacket {
 	policy := DefaultPolicy(domain.TaskOutline, 0)
 	volTag := fmt.Sprintf("v%02d", volume)
@@ -512,8 +563,10 @@ func BuildOutlinePacket(snap domain.BookSnapshot, volume int, unitIDs []string, 
 	for _, id := range unitIDs {
 		for _, u := range snap.Units {
 			if u.UnitID == id {
+				owned := ContractWithoutBeats(u.OutlineRaw)
+				owned = dropTopLevelKeys(owned, []string{"source_seed_id", "function", "desire", "obstacle", "choice", "payoff", "attempt", "setback", "cost", "story_day", "end_day", "gap_days", "state_deltas", "state_changes", "entry_cause", "exit_result", "thread_ids", "event_ids", "clock_deadline", "chapter_range"})
 				blocks = append(blocks, domain.ContextBlock{
-					ID: "head-" + id, Label: "细纲头·" + id, Source: u.OutlinePath, Content: u.OutlineRaw, Bytes: len(u.OutlineRaw),
+					ID: "head-" + id, Label: "细纲·可编辑子级字段", Source: u.OutlinePath, Content: owned, Bytes: len(owned),
 				})
 			}
 		}
@@ -533,15 +586,18 @@ func BuildOutlinePacket(snap domain.BookSnapshot, volume int, unitIDs []string, 
 		}
 	}
 	// 细纲规划需要的连续性：重写已有单元时要知道人物当前处境，避免与已定稿前后矛盾。
-	if cont := ExtractContinuityForUnit(snap, unitIDs, cast, ContinuityForReview); cont != "" {
+	if cont := ExtractContinuityForUnit(snap, unitIDs, outlineCastStems(snap, unitIDs, cast), ContinuityForReview); cont != "" {
 		blocks = append(blocks, domain.ContextBlock{ID: "continuity", Label: "连续性状态", Source: books.StatePath, Content: cont, Bytes: len(cont)})
 	}
-	if reveal := clip(snap.Files["canon/reveal-schedule.md"], 900); strings.TrimSpace(reveal) != "" {
-		blocks = append(blocks, domain.ContextBlock{ID: "reveal", Label: "揭示计划", Source: "canon/reveal-schedule.md", Content: reveal, Bytes: len(reveal)})
+	if reveal := ForeshadowPlanningEntities(snap, volTag, firstOutlineUnit(unitIDs)); strings.TrimSpace(reveal) != "" {
+		blocks = append(blocks, domain.ContextBlock{ID: "foreshadows", Label: "伏笔登记表（相关完整条目）", Source: books.ForeshadowSchedulePath, Content: reveal, Bytes: len(reveal)})
+	}
+	if ability := ExtractAbilityLimits(snap.Files["canon/world.md"], snap.Files["canon/goldfinger.md"]); ability != "" {
+		blocks = append(blocks, domain.ContextBlock{ID: "ability-limits", Label: "能力上限", Source: "canon/goldfinger.md", Content: ability, Bytes: len(ability)})
 	}
 	hashes := map[string]string{}
 	for _, b := range blocks {
-		hashes[b.Source] = shortHash(b.Content)
+		hashes[b.ID+"|"+b.Source] = shortHash(b.Content)
 	}
 	system := novel.OutlineSystemPrompt()
 	instr := withUserInstruction("为 unitIds 列出的单元生成/重写细纲合同，输出 {\"units\":[...]}（即使只有 1 个单元也必须用数组）。不得改卷纲已定的 function / next_hook.type；scenes / nextHook / storyDay / gapFromPrev / infoControl 必须给出。已有细纲头时在其基础上补全或优化，不要返回空 units。", instruction)
@@ -601,6 +657,26 @@ func BuildIdeaPacket(snap domain.BookSnapshot, instruction string) domain.Contex
 }
 
 // BuildPlanPacketWithMode builds the context for 立项 / 重新立项 / 重写卷纲.
+func structuredFields(entity domain.MarkdownEntity) map[string]string {
+	out := map[string]string{"id": entity.ID}
+	for _, field := range entity.Fields {
+		out[field.Name] = field.Value
+	}
+	return out
+}
+
+func bookOutlineProjection(snap domain.BookSnapshot) string {
+	doc, ok := books.StructuredOutlineFor(snap, "outline/book_outline.md")
+	if !ok {
+		return snap.Files["outline/book_outline.md"]
+	}
+	lines := []string{"- logline: " + doc.Root.Value("logline")}
+	for _, thread := range doc.EntitiesOf("故事线") {
+		lines = append(lines, "- "+thread.ID+"："+thread.Value("opening_state")+"→"+thread.Value("ending_state"))
+	}
+	return strings.Join(lines, "\n")
+}
+
 func BuildPlanPacketWithMode(snap domain.BookSnapshot, volume int, mode, instruction string) domain.ContextPacket {
 	if mode == "" {
 		if strings.TrimSpace(snap.Files["outline/book_outline.md"]) == "" {
@@ -633,7 +709,7 @@ func BuildPlanPacketWithMode(snap domain.BookSnapshot, volume int, mode, instruc
 			addFile("platform", "平台定位", "canon/platform-positioning.md")
 			addFile("rules", "写作规则", "canon/writing-rules.md")
 			addFile("style", "风格指纹", "canon/style-fingerprint.md")
-			addFile("reveal", "揭示计划", "canon/reveal-schedule.md")
+			addFile("foreshadows", "伏笔登记表", books.ForeshadowSchedulePath)
 			addFile("author-lore", "作者底牌", "canon/author-lore.md")
 			addFile("locked", "锁词", "canon/locked-terms.yaml")
 			addFile("book-outline", "全书总纲", "outline/book_outline.md")
@@ -654,23 +730,26 @@ func BuildPlanPacketWithMode(snap domain.BookSnapshot, volume int, mode, instruc
 	volID := ""
 	bookMeta := map[string]any{"id": snap.Summary.ID, "title": snap.Summary.Title, "genre": snap.Summary.Genre, "subgenre": snap.Summary.Subgenre}
 	if !full {
+		if projected := bookOutlineProjection(snap); projected != "" {
+			blocks = append(blocks, domain.ContextBlock{ID: "book-outline", Label: "总纲·故事线与必要全局约束", Source: "outline/book_outline.md", Content: projected, Bytes: len(projected)})
+			hashes["outline/book_outline.md"] = shortHash(projected)
+		}
 		if volume < 1 {
 			volume = 1
 		}
 		volID = fmt.Sprintf("v%02d", volume)
 		bookMeta["volumeId"] = volID
-		addFile("book-outline", "全书总纲", "outline/book_outline.md")
 		if doc, ok := books.StructuredOutlineFor(snap, "outline/book_outline.md"); ok && doc.Valid() {
 			if arc, found := doc.Entity("分卷", volID); found {
-				if arcRaw, err := json.Marshal(arc); err == nil {
+				if arcRaw, err := json.Marshal(structuredFields(arc)); err == nil {
 					blocks = append(blocks, domain.ContextBlock{ID: "parent-volume-arc", Label: "不可改写的总纲分卷合同", Source: "outline/book_outline.md#" + volID, Content: string(arcRaw), Bytes: len(arcRaw)})
 					hashes["outline/book_outline.md#"+volID] = shortHash(string(arcRaw))
 				}
 			}
 		}
-		if reveal := clip(snap.Files["canon/reveal-schedule.md"], 900); strings.TrimSpace(reveal) != "" {
-			blocks = append(blocks, domain.ContextBlock{ID: "reveal", Label: "揭示计划", Source: "canon/reveal-schedule.md", Content: reveal, Bytes: len(reveal)})
-			hashes["canon/reveal-schedule.md"] = shortHash(reveal)
+		if reveal := ForeshadowPlanningEntities(snap, volID, ""); strings.TrimSpace(reveal) != "" {
+			blocks = append(blocks, domain.ContextBlock{ID: "foreshadows", Label: "伏笔登记表", Source: books.ForeshadowSchedulePath, Content: reveal, Bytes: len(reveal)})
+			hashes[books.ForeshadowSchedulePath] = shortHash(reveal)
 		}
 		if raw := strings.TrimSpace(snap.Files["outline/volumes/"+volID+".md"]); raw != "" {
 			blocks = append(blocks, domain.ContextBlock{ID: "volume", Label: "当前卷纲", Source: "outline/volumes/" + volID + ".md", Content: raw, Bytes: len(raw)})
@@ -754,21 +833,29 @@ func BuildPlanPacketWithMode(snap domain.BookSnapshot, volume int, mode, instruc
 }
 
 // BuildFinalizePacket describes the local finalize check (no LLM call).
+func BuildOutlineReviewPacket(snap domain.BookSnapshot, unit domain.UnitInfo) domain.ContextPacket {
+	base := BuildOutlinePacket(snap, unit.Volume, []string{unit.UnitID}, "")
+	blocks := append([]domain.ContextBlock(nil), base.Blocks...)
+	blocks = append(blocks, domain.ContextBlock{ID: "outline-target", Label: "待确认完整细纲", Source: unit.OutlinePath, Content: unit.OutlineRaw, Bytes: len(unit.OutlineRaw)})
+	user := BuildUserPrompt("outline_review", "", map[string]any{"id": snap.Summary.ID, "unitId": unit.UnitID}, "检查这份细纲能否直接执行正文；只输出问题，不改写。", blocks, nil)
+	return domain.ContextPacket{ContractVersion: ContractVersion, TaskKind: domain.TaskOutlineReview, BookID: snap.Summary.ID, UnitID: unit.UnitID, VolumeID: base.VolumeID, Blocks: blocks, Policy: DefaultPolicy(domain.TaskOutlineReview, 1), SystemPrompt: novel.OutlineReviewSystemPrompt(), UserPrompt: user, EstPromptTokens: len([]rune(user)) / 2}
+}
+
 func BuildFinalizePacket(snap domain.BookSnapshot, unit domain.UnitInfo) domain.ContextPacket {
-	policy := DefaultPolicy(domain.TaskFinalize, 0)
-	policy.MaxCalls = 0
-	policy.AllowOneRepair = false
+	policy := DefaultPolicy(domain.TaskFinalize, unit.ChapterTo-unit.ChapterFrom+1)
+	policy.MaxCalls = (unit.ChapterTo - unit.ChapterFrom + 1) * 2
+	policy.AllowOneRepair = true
 	blocks := []domain.ContextBlock{
 		{ID: "outline", Label: "单元合同", Source: unit.OutlinePath, Content: unit.OutlineRaw, Bytes: len(unit.OutlineRaw)},
 		{ID: "prose", Label: "待定稿正文", Source: unit.ProsePath, Content: unit.ProseRaw, Bytes: len(unit.ProseRaw)},
 	}
-	note := "定稿为本地硬门检查，不调用大模型。确认后生成定稿候选；接受候选才会回写 continuity 账本并将单元标为 reviewed。"
+	note := "定稿先跑本地硬门，再逐章核对实际摘要、状态与伏笔；接受候选才会统一回写 continuity 账本并将单元标为 finalized。"
 	blocks = append(blocks, domain.ContextBlock{ID: "finalize-note", Label: "定稿说明", Source: "local://finalize", Content: note, Bytes: len(note)})
 	hashes := map[string]string{}
 	for _, b := range blocks {
-		hashes[b.Source] = shortHash(b.Content)
+		hashes[b.ID+"|"+b.Source] = shortHash(b.Content)
 	}
-	system := "本地定稿检查：解析正文章节、跑硬门（字数/空章等）。不发送 LLM。"
+	system := "定稿检查：先跑本地硬门，再逐章核对实际账本；候选接受前不写盘。"
 	user := BuildUserPrompt("finalize", "", map[string]any{
 		"id": snap.Summary.ID, "unitId": unit.UnitID, "status": string(unit.Status),
 	}, "对当前单元正文做本地定稿检查。", blocks, nil)
@@ -777,80 +864,6 @@ func BuildFinalizePacket(snap domain.BookSnapshot, unit domain.UnitInfo) domain.
 		InputHashes: hashes, Blocks: blocks, KnowledgeVersion: novel.KnowledgeVersion,
 		EstPromptTokens: 0, Policy: policy, SystemPrompt: system, UserPrompt: user,
 	}
-}
-
-// BuildReviewPacket 组装整单元审校的上下文（分章开关关闭时使用）。
-//
-// 必须与分章路径用同一套依据：作者的审校开关只该改变"粒度"，不该顺带改变
-// 模型看到什么。以前这里手搓 blocks，结果少了在场关系/风格/锁词/题材约束，
-// 又把未裁剪的单元合同整份塞进去——切到整单元审校后，POV、锁词、AI 味这几类
-// 意见会莫名消失，同时作者台账（continuity_risks / observations）漏进提示词。
-func BuildReviewPacket(snap domain.BookSnapshot, unit domain.UnitInfo, localFindings []domain.ReviewFinding, libraryRules string) domain.ContextPacket {
-	policy := DefaultPolicy(domain.TaskReview, 0)
-
-	baseline := BuildReviewBaseline(snap, unit, localFindings, libraryRules)
-	onStage := extractOnStage(unit.OutlineRaw)
-
-	blocks := []domain.ContextBlock{}
-	add := func(id, label, source, content string) {
-		content = strings.TrimSpace(content)
-		if content == "" {
-			return
-		}
-		blocks = append(blocks, domain.ContextBlock{ID: id, Label: label, Source: source, Content: content, Bytes: len(content)})
-	}
-
-	// 整单元路径没有"本章场面节拍"这个按章切片，所以合同保留 scenes；
-	// 分章路径必须用 ContractWithoutBeats 以免节拍出现两遍。
-	add("unit-contract", "单元合同", unit.OutlinePath,
-		TrimContract(NormalizeUnitContract(unit.OutlineRaw), domain.TaskReview))
-	// 审校读取连续性状态（含知情范围，用来判断 POV 越权）；绝不读作者底牌。
-	add("continuity", "连续性状态", books.StatePath, ExtractContinuity(snap, unit, onStage, ContinuityForReview))
-	add("relations", "在场关系", "canon/cast", baseline.Relations)
-	add("reveal", "揭示约束", "canon/reveal-schedule.md", baseline.Reveal)
-	add("style", "风格与写作规则", "canon/style-fingerprint.md", baseline.Style)
-	add("locked-terms", "锁词", "canon/locked-terms.yaml", baseline.LockedTerms)
-	add("genre-kb", "题材写时约束", "knowledge:"+snap.Summary.Genre, baseline.GenreKB)
-	rulesSource := "knowledge:25-review-checklist.md"
-	switch baseline.RulesSource {
-	case RulesFromBook:
-		rulesSource = "canon/review-checklist.md"
-	case RulesFromLibrary:
-		rulesSource = "knowledge:25-review-checklist.md（作者已编辑）"
-	}
-	add("review-rules", "审校清单", rulesSource, baseline.Rules)
-	add("cast", "在场人物", "canon/cast", baseline.CastCards)
-	// 跨单元连续性靠卷摘要尾巴：整单元审校更容易漏掉"上一单元留下的状态"。
-	add("prev-summary", "最近章摘要", "continuity/summaries", baseline.PrevSummary)
-	add("prose", "正文", unit.ProsePath, unit.ProseRaw)
-
-	hashes := map[string]string{unit.ProsePath: shortHash(unit.ProseRaw)}
-	for _, b := range blocks {
-		hashes[b.Source] = shortHash(b.Content)
-	}
-
-	system := novel.ReviewSystemPrompt()
-	extra := map[string]any{}
-	if len(localFindings) > 0 {
-		var fb strings.Builder
-		for _, f := range localFindings {
-			fmt.Fprintf(&fb, "- [%s] %s: %s\n", f.Severity, f.Title, f.Evidence)
-		}
-		extra["localFindings"] = fb.String()
-	}
-	user := BuildUserPrompt("review", "", map[string]any{
-		"id": snap.Summary.ID, "unitId": unit.UnitID,
-	}, "对正文做一次审校。", blocks, extra)
-	packet := domain.ContextPacket{
-		ContractVersion: ContractVersion, TaskKind: domain.TaskReview, BookID: snap.Summary.ID, UnitID: unit.UnitID,
-		InputHashes: hashes, Blocks: blocks,
-		KnowledgeVersion: novel.KnowledgeVersion, EstPromptTokens: (len([]rune(system)) + len([]rune(user))) / 2,
-		Policy: policy, SystemPrompt: system, UserPrompt: user,
-	}
-	if err := AssertNoAuthorLore(&packet); err != nil {
-		panic(err)
-	}
-	return packet
 }
 
 // BuildRewriteEntityPacket builds a single-entity rewrite packet.
@@ -887,7 +900,7 @@ func BuildRewriteEntityPacket(snap domain.BookSnapshot, spec domain.TaskSpec) do
 	}
 	hashes := map[string]string{}
 	for _, b := range blocks {
-		hashes[b.Source] = shortHash(b.Content)
+		hashes[b.ID+"|"+b.Source] = shortHash(b.Content)
 	}
 	system := rewriteEntitySystemPrompt(spec.EntityKind)
 	instruction := spec.Instruction
@@ -1008,52 +1021,6 @@ func buildTimeGuidance(snap domain.BookSnapshot, unit domain.UnitInfo) string {
 	return b.String()
 }
 
-// chapterLengthGuidance 把「这一章写多长」写成可执行的指令。
-//
-// 只讲单章长度，不折算单元总量：一个单元几章并不固定（3–10 章都可能），
-// 把"整单元应该多少字"塞给模型只会分散注意力——它一次只写一章。
-// 数字来自 domain 常量与 books.ChapterTarget，与硬门同源。
-func chapterLengthGuidance(unit domain.UnitInfo) string {
-	target := books.ChapterTarget(unit)
-	floor, ceil := domain.ChapterBand(target)
-	scenes := estimatedScenes(unit, books.ChapterCount(unit))
-	var b strings.Builder
-	b.WriteString("本章字数（合同值，不是参考值）：\n")
-	fmt.Fprintf(&b, "- 目标 %d 字，允许 %d–%d 字。\n", target, floor, ceil)
-	if scenes > 0 {
-		fmt.Fprintf(&b, "- 本章合同有 %d 个场面；每个场面 %d–%d 字，写完一场再进下一场，不额外加场。\n",
-			scenes, domain.SceneCharsMin, domain.SceneCharsMax)
-	} else {
-		fmt.Fprintf(&b, "- 细纲没给场面节拍：按本章内容切 2–4 个主线场面，每个场面 %d–%d 字；写完一场再进下一场，不额外加场。\n",
-			domain.SceneCharsMin, domain.SceneCharsMax)
-	}
-	fmt.Fprintf(&b, "- 少于 %d 字会被退回重写；超过 %d 字会判为不合格并计入审校。到目标就收。\n", floor, ceil)
-	b.WriteString("- 控字数的唯一正当办法是砍冗余（同类复述、重复解释、可省的过渡），不是砍场面结果、人物关系变化或章末钩子。")
-	return b.String()
-}
-
-// estimatedScenes 估一下本章该有几个主线场面，用来把字数拆成可执行的单位。
-// 细纲里的场面有两种写法：`- id: S1`（旧）与 `id: v01-U2-C5-S1`（新）。
-// 都没有就不猜，直接省略这一行。
-func estimatedScenes(unit domain.UnitInfo, chapters int) int {
-	total := 0
-	for _, line := range strings.Split(unit.OutlineRaw, "\n") {
-		t := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "- "))
-		if !strings.HasPrefix(t, "id:") {
-			continue
-		}
-		id := strings.TrimSpace(strings.TrimPrefix(t, "id:"))
-		// 场面 id 形如 S1 / v01-U2-C5-S1；章 id 是 chapter:，不会走到这里。
-		if strings.Contains(id, "S") || strings.HasPrefix(id, "scene-") {
-			total++
-		}
-	}
-	if chapters <= 0 || total < chapters {
-		return 0
-	}
-	return total / chapters
-}
-
 func yamlScalarLocal(raw, key string) string {
 	for _, line := range strings.Split(raw, "\n") {
 		s := strings.TrimSpace(line)
@@ -1145,12 +1112,22 @@ func extractOnStageRelations(cast []domain.CastCard, onStage []string) string {
 
 // previousUnit returns the unit right before the current one in the volume.
 func previousUnit(snap domain.BookSnapshot, unit domain.UnitInfo) *domain.UnitInfo {
-	for i, u := range snap.Units {
-		if u.Volume == unit.Volume && u.Index == unit.Index-1 && u.ProseRaw != "" {
-			return &snap.Units[i]
+	var previous *domain.UnitInfo
+	for i := range snap.Units {
+		u := &snap.Units[i]
+		if u.UnitID == unit.UnitID || u.ProseRaw == "" || books.UnitOrderKey(u.UnitID) >= books.UnitOrderKey(unit.UnitID) {
+			continue
+		}
+		if previous == nil || books.UnitOrderKey(u.UnitID) > books.UnitOrderKey(previous.UnitID) {
+			previous = u
 		}
 	}
-	return nil
+	return previous
+}
+
+// SummaryBeforeUnit reads only accepted summaries strictly before the target unit.
+func SummaryBeforeUnit(snap domain.BookSnapshot, unit domain.UnitInfo) string {
+	return latestSummaryTail(snap, unit.Volume-1)
 }
 
 // lastUnitOfVolume returns the highest-index unit in the given volume.
@@ -1158,7 +1135,7 @@ func lastUnitOfVolume(snap domain.BookSnapshot, volume int) *domain.UnitInfo {
 	var best *domain.UnitInfo
 	for i := range snap.Units {
 		u := &snap.Units[i]
-		if u.Volume != volume {
+		if u.Volume != volume || (u.Status != domain.UnitReviewed && u.Status != domain.UnitFinalized) {
 			continue
 		}
 		if best == nil || u.Index > best.Index {

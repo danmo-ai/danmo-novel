@@ -86,7 +86,7 @@ func LoadBook(root string, readOnly bool) (domain.BookSnapshot, error) {
 		if u.Status == domain.UnitDrafted {
 			drafted++
 		}
-		if u.Status == domain.UnitReviewed {
+		if u.Status == domain.UnitReviewed || u.Status == domain.UnitFinalized {
 			reviewed++
 		}
 	}
@@ -121,18 +121,11 @@ func LoadBook(root string, readOnly bool) (domain.BookSnapshot, error) {
 		StructuredOutlines: map[string]*domain.StructuredMarkdown{},
 	}
 	for path, raw := range files {
-		protocol := ""
-		if path == "outline/book_outline.md" {
-			protocol = BookOutlineProtocol
-		} else if strings.HasPrefix(path, "outline/volumes/") && strings.HasSuffix(path, ".md") {
-			protocol = VolumeOutlineProtocol
-		} else if path == "canon/reveal-schedule.md" {
-			protocol = "reveal-schedule/v1"
-		}
+		protocol := ProtocolForPath(path)
 		if protocol != "" {
 			doc := ParseStructuredMarkdown(raw, protocol)
 			snap.StructuredOutlines[path] = &doc
-			if path != "outline/book_outline.md" && path != "canon/reveal-schedule.md" {
+			if path != "outline/book_outline.md" && protocol != ForeshadowProtocol {
 				for i := range snap.Volumes {
 					if snap.Volumes[i].FileName == filepath.Base(path) {
 						snap.Volumes[i].Structured = &doc
@@ -398,8 +391,7 @@ func loadUnits(root string, files map[string]string) []domain.UnitInfo {
 		e.ProsePath = rel
 		// 细纲写着 accepted/proposed 但正文已落盘 → 草稿（还没走审校定稿）。
 		// 已是 reviewed 的保持原状：状态以细纲为准，章号游标不替它升级。
-		switch e.Status {
-		case domain.UnitProposed, domain.UnitAccepted:
+		if e.Status == domain.UnitAccepted {
 			e.Status = domain.UnitDrafted
 		}
 	}
@@ -545,6 +537,28 @@ func SetUnitStatus(root, unitID string, status domain.UnitStatus) error {
 	return os.WriteFile(path, []byte(text), 0o644)
 }
 
+// RenderProseAndStatus returns the full accepted file set before any disk write.
+func RenderProseAndStatus(root string, unit domain.UnitInfo, chapters []domain.ChapterDraft, status domain.UnitStatus) (map[string][]byte, error) {
+	var prose strings.Builder
+	for i, ch := range chapters {
+		if i > 0 {
+			prose.WriteString("\n---\n\n")
+		}
+		if ch.Title != "" {
+			fmt.Fprintf(&prose, "## 第%d章 %s\n\n", ch.Chapter, strings.TrimSpace(ch.Title))
+		} else {
+			fmt.Fprintf(&prose, "## 第%d章\n\n", ch.Chapter)
+		}
+		prose.WriteString(strings.TrimSpace(ch.Body) + "\n")
+	}
+	raw, err := os.ReadFile(filepath.Join(root, unit.OutlinePath))
+	if err != nil {
+		return nil, err
+	}
+	text := regexp.MustCompile(`(?m)^status:.*$`).ReplaceAllString(string(raw), "status: "+string(status))
+	return map[string][]byte{unit.ProsePath: []byte(prose.String()), unit.OutlinePath: []byte(text)}, nil
+}
+
 // CreateBookScaffold 只用于测试夹具与旧数据构造：它一次铺满全部设定模板。
 //
 // 生产建书必须走 CreateBookFromDraft：空模板会被结构化立项当成既有 canon。
@@ -597,14 +611,42 @@ func activeUnitVolume(activeUnit string, volumes []domain.VolumeInfo) (int, bool
 	return 0, false
 }
 
-func unfinishedInVolume(units []domain.UnitInfo, vol int) bool {
+func IsFinalizedUnit(status domain.UnitStatus) bool {
+	return status == domain.UnitFinalized
+}
+
+func finalizedForNavigation(snap domain.BookSnapshot, unit domain.UnitInfo) bool {
+	if unit.Status == domain.UnitReviewed && strings.TrimSpace(snap.Summary.RootPath) == "" {
+		return true
+	}
+	if unit.Status == domain.UnitFinalized {
+		return true
+	}
+	if unit.Status != domain.UnitReviewed {
+		return false
+	}
+	states, err := LoadState(snap.Summary.RootPath)
+	if err != nil {
+		return false
+	}
+	for _, state := range states {
+		if state.Unit == unit.UnitID {
+			return true
+		}
+	}
+	return false
+}
+
+func unfinishedInVolumeWithSnapshot(snap domain.BookSnapshot, units []domain.UnitInfo, vol int) bool {
 	for _, u := range units {
 		if u.Volume != vol {
 			continue
 		}
 		switch u.Status {
-		case domain.UnitProposed, domain.UnitAccepted, domain.UnitDrafted:
-			return true
+		case domain.UnitProposed, domain.UnitAccepted, domain.UnitDrafted, domain.UnitReviewed:
+			if !finalizedForNavigation(snap, u) {
+				return true
+			}
 		}
 	}
 	return false
@@ -615,7 +657,7 @@ func unfinishedInVolume(units []domain.UnitInfo, vol int) bool {
 func earliestUnfinishedVolume(snap domain.BookSnapshot) (int, bool) {
 	best, found := 0, false
 	for _, u := range snap.Units {
-		if u.Status == domain.UnitReviewed {
+		if finalizedForNavigation(snap, u) {
 			continue
 		}
 		if !found || u.Volume < best {
@@ -646,7 +688,7 @@ func SelectPrimaryAction(snap domain.BookSnapshot) (kind domain.TaskKind, unitID
 	// （active_unit 停在上一卷），这时要按单元顺序顺延到下一卷，而不是直接立项。
 	vol = 0
 	if activeVol, ok := activeUnitVolume(parseState(snap.StateRaw).ActiveUnit, snap.Volumes); ok {
-		if unfinishedInVolume(snap.Units, activeVol) {
+		if unfinishedInVolumeWithSnapshot(snap, snap.Units, activeVol) {
 			vol = activeVol
 		}
 	}
@@ -667,8 +709,8 @@ func SelectPrimaryAction(snap domain.BookSnapshot) (kind domain.TaskKind, unitID
 			continue
 		}
 		switch u.Status {
-		case domain.UnitProposed, domain.UnitAccepted, domain.UnitDrafted:
-		default: // reviewed 及未知状态不参与选择
+		case domain.UnitProposed, domain.UnitAccepted, domain.UnitDrafted, domain.UnitReviewed:
+		default: // finalized 及未知状态不参与选择
 			continue
 		}
 		if next == nil || u.Index < next.Index {
@@ -686,6 +728,8 @@ func SelectPrimaryAction(snap domain.BookSnapshot) (kind domain.TaskKind, unitID
 	case domain.UnitDrafted:
 		// 草稿单元：下一步优先审校；定稿在写作/审校页单元操作栏常驻，不从 primary 省略。
 		return domain.TaskReview, next.UnitID, vol
+	case domain.UnitReviewed:
+		return domain.TaskFinalize, next.UnitID, vol
 	}
 	return domain.TaskPlan, "", vol + 1
 }

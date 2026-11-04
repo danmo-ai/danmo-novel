@@ -47,7 +47,7 @@ function dayLabel(e: any) {
   return '时间待补'
 }
 function unitStatus(status: string) {
-  return ({ proposed: '待细纲', accepted: '待写', drafted: '草稿', reviewed: '定稿' } as Record<string, string>)[status] || status
+  return ({ proposed: '待细纲', accepted: '待写', drafted: '草稿', reviewed: '已审校', finalized: '定稿' } as Record<string, string>)[status] || status
 }
 </script>
 

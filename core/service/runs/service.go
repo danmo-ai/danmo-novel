@@ -68,6 +68,8 @@ func (s *Service) resolveModel(spec domain.TaskSpec) string {
 	switch spec.Kind {
 	case domain.TaskPlan, domain.TaskIdea:
 		role = domain.StagePlan
+	case domain.TaskOutlineReview:
+		role = domain.StageReview
 	case domain.TaskOutline:
 		role = domain.StageOutline
 	case domain.TaskReview, domain.TaskRevise, domain.TaskFinalize:
@@ -81,6 +83,12 @@ func (s *Service) resolveModel(spec domain.TaskSpec) string {
 }
 
 func (s *Service) Start(ctx context.Context, spec domain.TaskSpec) (domain.Run, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.startLocked(ctx, spec)
+}
+
+func (s *Service) startLocked(ctx context.Context, spec domain.TaskSpec) (domain.Run, error) {
 	root, readOnly, err := s.Store.GetBookRoot(ctx, spec.BookID)
 	if err != nil {
 		return domain.Run{}, err
@@ -91,6 +99,18 @@ func (s *Service) Start(ctx context.Context, spec domain.TaskSpec) (domain.Run, 
 	snap, err := books.LoadBook(root, readOnly)
 	if err != nil {
 		return domain.Run{}, err
+	}
+	if spec.Kind == domain.TaskWrite {
+		unit, ok := findUnit(snap, spec.UnitID)
+		if !ok || (unit.Status != domain.UnitAccepted && unit.Status != domain.UnitDrafted && unit.Status != domain.UnitReviewed && unit.Status != domain.UnitFinalized) {
+			return domain.Run{}, fmt.Errorf("单元 %s 必须先接受完整细纲，才能写正文", spec.UnitID)
+		}
+	}
+	if spec.Kind == domain.TaskReview || spec.Kind == domain.TaskRevise || spec.Kind == domain.TaskFinalize {
+		unit, ok := findUnit(snap, spec.UnitID)
+		if !ok || !unit.HasProse || unit.Status == domain.UnitProposed || unit.Status == domain.UnitAccepted {
+			return domain.Run{}, fmt.Errorf("单元 %s 必须先接受正文草稿，才能进入 %s", spec.UnitID, spec.Kind)
+		}
 	}
 	// revision 校验必须在归档之前：否则一次过期请求会先把旧清单作废，再报错，
 	// 等于"什么都没跑成，结论却没了"。
@@ -107,7 +127,7 @@ func (s *Service) Start(ctx context.Context, spec domain.TaskSpec) (domain.Run, 
 			return domain.Run{}, fmt.Errorf("归档旧审校清单失败: %w", cerr)
 		}
 	}
-	if active, ok, _ := s.Store.FindActiveRun(ctx, spec.BookID, spec.Kind, spec.UnitID); ok {
+	if active, ok, _ := s.Store.FindActiveRun(ctx, spec.BookID, "", spec.UnitID); ok {
 		// 自愈：waiting_accept 的 run 只有靠候选择才能收尾。若候选早已终结
 		// （过期/已拒绝/已接受）而 run 还占着，单元就永久卡死——作者看不到那条
 		// 候选，也就没有任何按钮能解开。这里补一次收尾再重新判断占用。
@@ -129,9 +149,7 @@ func (s *Service) Start(ctx context.Context, spec domain.TaskSpec) (domain.Run, 
 	}
 
 	runCtx, cancel := context.WithCancel(context.Background())
-	s.mu.Lock()
 	s.cancels[run.ID] = cancel
-	s.mu.Unlock()
 
 	go s.execute(runCtx, run, snap, modelID)
 	return run, nil
@@ -173,6 +191,13 @@ func (s *Service) execute(ctx context.Context, run domain.Run, snap domain.BookS
 		} else {
 			res, err = runner.RunWrite(ctx, snap, unit, run.Spec.Instruction, modelID)
 		}
+	case domain.TaskOutlineReview:
+		unit, ok := findUnit(snap, run.Spec.UnitID)
+		if !ok {
+			err = fmt.Errorf("unit not found: %s", run.Spec.UnitID)
+		} else {
+			res, err = runner.RunOutlineReview(ctx, snap, unit, modelID)
+		}
 	case domain.TaskOutline:
 		ids := run.Spec.ExtraContextIDs
 		if len(ids) == 0 && run.Spec.UnitID != "" {
@@ -212,7 +237,7 @@ func (s *Service) execute(ctx context.Context, run domain.Run, snap domain.BookS
 			vnum = snap.Volumes[len(snap.Volumes)-1].Volume
 			allDone := true
 			for _, u := range snap.Units {
-				if u.Volume == vnum && u.Status != domain.UnitReviewed {
+				if u.Volume == vnum && u.Status != domain.UnitReviewed && u.Status != domain.UnitFinalized {
 					allDone = false
 					break
 				}
@@ -226,14 +251,11 @@ func (s *Service) execute(ctx context.Context, run domain.Run, snap domain.BookS
 		unit, ok := findUnit(snap, run.Spec.UnitID)
 		if !ok {
 			err = fmt.Errorf("unit not found")
-		} else if s.reviewSplit(run.Spec) {
-			res, err = runner.RunReviewByChapter(ctx, snap, unit, modelID, pipeline.ReviewOptions{
-				SplitByChapter: true,
-				Concurrency:    s.Settings.Get().Review.Concurrency,
-				Rounds:         s.Settings.Get().Review.Rounds,
-			})
 		} else {
-			res, err = runner.RunReview(ctx, snap, unit, modelID)
+			res, err = runner.RunReview(ctx, snap, unit, modelID, pipeline.ReviewOptions{
+				Concurrency: s.Settings.Get().Review.Concurrency,
+				Rounds:      s.Settings.Get().Review.Rounds,
+			})
 		}
 	case domain.TaskLocalEdit, domain.TaskRewriteSel, domain.TaskExpand, domain.TaskPolish, domain.TaskContinue:
 		if run.Spec.Selection == nil {
@@ -267,7 +289,14 @@ func (s *Service) execute(ctx context.Context, run domain.Run, snap domain.BookS
 		} else if !unit.HasProse {
 			err = fmt.Errorf("单元尚无正文，无法定稿")
 		} else {
-			res, err = runner.RunFinalize(ctx, snap, unit)
+			open, _ := s.Store.ListOpenCandidates(ctx, snap.Summary.ID)
+			var reviewFindings []domain.ReviewFinding
+			for _, candidate := range open {
+				if candidate.Kind == domain.TaskReview && candidate.UnitID == unit.UnitID {
+					reviewFindings = append(reviewFindings, candidate.Findings...)
+				}
+			}
+			res, err = runner.RunFinalize(ctx, snap, unit, reviewFindings, modelID)
 		}
 	case domain.TaskStructureReview:
 		res, err = runner.ReviewStructure(ctx, snap, run.Spec, modelID)
@@ -348,7 +377,13 @@ func (s *Service) PreviewPacket(_ context.Context, spec domain.TaskSpec) (domain
 		if !ok {
 			return domain.ContextPacket{}, fmt.Errorf("unit not found: %s", spec.UnitID)
 		}
-		return contextsvc.BuildWritePacket(snap, unit, spec.Instruction, s.modelMaxOut(s.resolveModel(spec))), nil
+		return contextsvc.BuildWritePacket(snap, unit, spec.Instruction), nil
+	case domain.TaskOutlineReview:
+		unit, ok := findUnit(snap, spec.UnitID)
+		if !ok {
+			return domain.ContextPacket{}, fmt.Errorf("unit not found")
+		}
+		return contextsvc.BuildOutlineReviewPacket(snap, unit), nil
 	case domain.TaskOutline:
 		vnum := 1
 		if spec.VolumeID != "" {
@@ -391,21 +426,26 @@ func (s *Service) PreviewPacket(_ context.Context, spec domain.TaskSpec) (domain
 		if !ok {
 			return domain.ContextPacket{}, fmt.Errorf("unit not found")
 		}
-		// 预览必须与实际执行的路径一致：分章时给"第一章"的包并把预算改成
-		// 章数×2，整单元时才给整份正文的包。否则确认弹窗里的"调用预算/上下文
-		// 块数"全是假的。
-		if s.reviewSplit(spec) {
-			chapters := gates.ParseProseChapters(unit.ProseRaw)
-			if len(chapters) == 0 {
-				return contextsvc.BuildReviewPacket(snap, unit, nil, s.loadReviewChecklist()), nil
-			}
-			local := gates.CheckProseWithRules(chapters, books.ChapterTarget(unit), s.Pipeline.DeslopRules)
-			baseline := contextsvc.BuildReviewBaseline(snap, unit, local.Findings, s.loadReviewChecklist())
-			packet := contextsvc.BuildChapterReviewPacket(snap, unit, chapters[0], baseline.PrevTail, baseline, s.modelMaxOut(s.resolveModel(spec)))
-			packet.Policy.MaxCalls = len(chapters) * 2
-			return packet, nil
+		chapters := gates.ParseProseChapters(unit.ProseRaw)
+		if len(chapters) == 0 {
+			return domain.ContextPacket{}, fmt.Errorf("no chapters to review")
 		}
-		return contextsvc.BuildReviewPacket(snap, unit, nil, s.loadReviewChecklist()), nil
+		rules, err := s.loadDeslopRules(snap.Summary.RootPath)
+		if err != nil {
+			return domain.ContextPacket{}, err
+		}
+		local := gates.CheckProseWithRules(chapters, books.ChapterTarget(unit), rules)
+		local.Findings = append(local.Findings, books.IdentityDeltaFindings(snap.IdentitySegments, unit, unit.OutlineRaw)...)
+		local.Findings = append(local.Findings, s.Pipeline.StaleCharacterFindings(snap, unit)...)
+		baseline := contextsvc.BuildReviewBaseline(snap, unit, local.Findings, s.loadReviewChecklist())
+		packet := contextsvc.BuildChapterReviewPacket(snap, unit, chapters[0], baseline.PrevTail, baseline)
+		rounds := s.Settings.Get().Review.Rounds
+		if rounds < 1 {
+			rounds = 1
+		}
+		packet.Policy.MaxCalls = len(chapters) * rounds * 2
+		packet.UserPrompt = contextsvc.MergeKnowledgeIntoUserPayload(packet.UserPrompt, s.loadKnowledge(spec.KnowledgeIDs))
+		return packet, nil
 	case domain.TaskFinalize:
 		unit, ok := findUnit(snap, spec.UnitID)
 		if !ok {
@@ -479,6 +519,12 @@ func (s *Service) RecoverInterrupted(ctx context.Context) (int, error) {
 }
 
 func (s *Service) Accept(ctx context.Context, cmd domain.AcceptCommand) (domain.Candidate, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.acceptLocked(ctx, cmd)
+}
+
+func (s *Service) acceptLocked(ctx context.Context, cmd domain.AcceptCommand) (domain.Candidate, error) {
 	cand, err := s.Store.GetCandidate(ctx, cmd.CandidateID)
 	if err != nil {
 		return domain.Candidate{}, err
@@ -500,7 +546,7 @@ func (s *Service) Accept(ctx context.Context, cmd domain.AcceptCommand) (domain.
 	// 审校候选只是问题清单，接受=归档确认（不写盘）。正文被修订后旧结论仍然可归档，
 	// 所以不校验 baseRevision；否则「定向修订→接受」之后旧审校候选会报过期错误、
 	// 只能靠拒绝清掉，等于分不清「已复核」和「被丢弃」。
-	if cand.Kind != domain.TaskReview && cand.Kind != domain.TaskStructureReview {
+	if cand.Kind != domain.TaskReview && cand.Kind != domain.TaskStructureReview && cand.Kind != domain.TaskOutlineReview {
 		if cmd.BaseRevision != "" && cmd.BaseRevision != snap.Revision {
 			s.expireCandidate(ctx, cand, "书籍在生成后被修改，候选已过期")
 			return domain.Candidate{}, fmt.Errorf("baseRevision expired; re-compare and regenerate if needed")
@@ -528,19 +574,41 @@ func (s *Service) Accept(ctx context.Context, cmd domain.AcceptCommand) (domain.
 		if err := books.WriteUnitProse(root, cand.UnitID, cand.Chapters); err != nil {
 			return domain.Candidate{}, err
 		}
-		if cand.Kind == domain.TaskWrite {
-			if err := books.SetUnitStatus(root, cand.UnitID, domain.UnitDrafted); err != nil {
-				return domain.Candidate{}, err
+		unit, ok := findUnit(snap, cand.UnitID)
+		validWrite := ok && (unit.Status == domain.UnitAccepted || unit.Status == domain.UnitDrafted || unit.Status == domain.UnitReviewed || unit.Status == domain.UnitFinalized)
+		validRevise := ok && (unit.Status == domain.UnitDrafted || unit.Status == domain.UnitReviewed || unit.Status == domain.UnitFinalized)
+		if (cand.Kind == domain.TaskWrite && !validWrite) || (cand.Kind == domain.TaskRevise && !validRevise) {
+			return domain.Candidate{}, fmt.Errorf("细纲未接受或单元状态已变化，不能写正文")
+		}
+		if err := pipeline.ValidateAcceptedChapters(unit, cand.Chapters); err != nil {
+			return domain.Candidate{}, err
+		}
+		if !cmd.ForceRiskAccept {
+			for _, f := range cand.Findings {
+				if f.Severity == "blocking" {
+					return domain.Candidate{}, fmt.Errorf("正文仍有阻断门禁：%s", f.Title)
+				}
 			}
+		}
+		status := domain.UnitDrafted
+		if cand.Kind == domain.TaskRevise {
+			status = domain.UnitReviewed
+		}
+		writes, err := books.RenderProseAndStatus(root, unit, cand.Chapters, status)
+		if err != nil {
+			return domain.Candidate{}, err
+		}
+		if err := books.AtomicWriteFiles(root, writes); err != nil {
+			return domain.Candidate{}, err
+		}
+		if cand.Kind == domain.TaskRevise {
+			s.archiveReviewsForProseChange(ctx, cand.BookID, cand.UnitID)
 		}
 		// 修订落盘后，把这次真正修掉的问题从审校清单里摘掉。
 		//
 		// 不摘的后果就是清单永远是原来那 81 条：已修的 5 条还留在里面，作者再点
 		// 「自动修复」会把它们再修一遍，而「还剩多少要修」这个数字永远不动。
 		// 只摘本次 IssueIDs 命中的条目：没勾的那些仍未修，必须继续可操作。
-		if cand.Kind == domain.TaskRevise {
-			s.resolveAddressedFindings(ctx, cand)
-		}
 		for _, ch := range cand.CanonChanges {
 			if ch.Locked && !cmd.ForceRiskAccept {
 				continue // locked canon needs explicit forceRiskAccept
@@ -552,13 +620,21 @@ func (s *Service) Accept(ctx context.Context, cmd domain.AcceptCommand) (domain.
 			}
 		}
 	case domain.TaskOutline:
-		// 生成期硬门的阻断结论不能靠「点接受」带过：细纲是正文的唯一合同来源，
-		// 带 blocking 落盘等于把问题推给写作阶段才发现。
-		if !cmd.ForceRiskAccept {
-			for _, f := range cand.Findings {
-				if f.Severity == "blocking" {
-					return domain.Candidate{}, fmt.Errorf("细纲仍有阻断问题，不能接受：%s（确认无误可带 forceRiskAccept 强行接受）", f.Title)
-				}
+		// Accept 必须复验完整契约；结构错误不属于可强制承担的语义风险。
+		var ids []string
+		for _, u := range cand.UnitOutlines {
+			ids = append(ids, u.UnitID)
+			report := gates.CheckUnitOutline(u, nil)
+			if !report.OK {
+				return domain.Candidate{}, fmt.Errorf("细纲 %s 结构未通过：%s", u.UnitID, report.Findings[0].Title)
+			}
+		}
+		if err := pipeline.ValidateOutlineContract(cand.UnitOutlines, ids); err != nil {
+			return domain.Candidate{}, err
+		}
+		for _, f := range cand.Findings {
+			if f.Severity == "blocking" && f.Source == "local_gate" {
+				return domain.Candidate{}, fmt.Errorf("细纲仍有结构阻断问题：%s", f.Title)
 			}
 		}
 		// 卷号只认候选自带的 volumeId。以前用 findUnit 反推，单元不在盘上时
@@ -581,6 +657,26 @@ func (s *Service) Accept(ctx context.Context, cmd domain.AcceptCommand) (domain.
 			}
 		}
 		// 单元内部身份恒定：合同声明身份转换则必须拆单元。
+		priorStates, _ := books.LoadState(root)
+		var assignments []domain.ForeshadowAssignment
+		for _, u := range cand.UnitOutlines {
+			for _, ch := range u.Chapters {
+				for _, id := range ch.Plant {
+					assignments = append(assignments, domain.ForeshadowAssignment{ID: id, PlantUnit: u.UnitID, PlantChapter: ch.Chapter})
+				}
+				for _, id := range ch.Payoff {
+					assignments = append(assignments, domain.ForeshadowAssignment{ID: id, PayoffUnit: u.UnitID, PayoffChapter: ch.Chapter})
+				}
+			}
+		}
+		foreshadowRaw, err := books.RenderForeshadowAssignments(root, assignments)
+		if err != nil {
+			return domain.Candidate{}, fmt.Errorf("细纲伏笔章级细化失败：%w", err)
+		}
+		writes := map[string][]byte{}
+		if len(assignments) > 0 {
+			writes[books.ForeshadowSchedulePath] = foreshadowRaw
+		}
 		for _, u := range cand.UnitOutlines {
 			// 单元还没落盘时也要校验身份：身份段的判定只依赖 unitId，不是文件。
 			// 以前整段包在 findUnit 成功分支里，单元不在盘上就静默跳过。
@@ -589,6 +685,12 @@ func (s *Service) Accept(ctx context.Context, cmd domain.AcceptCommand) (domain.
 				current = domain.UnitInfo{UnitID: u.UnitID, Volume: vol}
 			}
 			if err := books.ValidateIdentityCoverage(snap.IdentitySegments, snap.Cast, current, u.OnStage); err != nil {
+				return domain.Candidate{}, err
+			}
+			// 连续性词表与生命周期：未识别的 field 名在落盘前就要拦下，
+			// 否则它会被 StateFromOutline 静默跳过（过去 70% 的写入就是这样丢的）。
+			prior, _ := books.StateAt(priorStates, u.UnitID)
+			if err := books.ValidateStateDeltas(snap.Cast, current, serializeUnitYAML(u), prior, u.OnStage); err != nil {
 				return domain.Candidate{}, err
 			}
 			if u.StateDeltas == nil {
@@ -607,17 +709,20 @@ func (s *Service) Accept(ctx context.Context, cmd domain.AcceptCommand) (domain.
 			// 细纲只拥有逐章合同与场面；揭示边界、故事线归属、前因后果这些
 			// 父级字段必须从卷纲种子回填，否则接受一次就永久丢失。
 			raw = books.CarrySeedOwnedFields(snap, vol, u.UnitID, raw)
-			path := filepath.Join(root, "outline", "units", u.UnitID+".yaml")
-			if err := os.WriteFile(path, []byte(raw), 0o644); err != nil {
-				return domain.Candidate{}, err
-			}
-			_ = books.SetUnitStatus(root, u.UnitID, domain.UnitAccepted)
+			writes["outline/units/"+u.UnitID+".yaml"] = []byte(raw)
 			// 临时人物机制：on_stage 新 stem 播种 candidate 卡（不自动晋升 canon）。
 			for _, stem := range u.OnStage {
-				if err := books.SeedCandidateCast(root, stem, nil); err != nil {
+				rel, body, create, err := books.CandidateCastFile(root, stem)
+				if err != nil {
 					return domain.Candidate{}, err
 				}
+				if create {
+					writes[rel] = body
+				}
 			}
+		}
+		if err := books.AtomicWriteFiles(root, writes); err != nil {
+			return domain.Candidate{}, err
 		}
 	case domain.TaskIdea:
 		// 创意提案只写 outline/idea.md：它是作者意图，不是 canon。
@@ -723,10 +828,13 @@ func (s *Service) Accept(ctx context.Context, cmd domain.AcceptCommand) (domain.
 		if err := os.WriteFile(full, []byte(cand.Replacement), 0o644); err != nil {
 			return domain.Candidate{}, err
 		}
-	case domain.TaskReview, domain.TaskStructureReview:
-		// 接受审校候选只做归档：问题清单不外写、不推进单元状态（drafted 不变）。
+	case domain.TaskReview, domain.TaskStructureReview, domain.TaskOutlineReview:
+		// 接受审校候选只做归档：问题清单不外写、不推进单元状态。
 		// 真正改正文的是 review → revise → 接受 revise 候选。
 	case domain.TaskFinalize:
+		if len(cand.ActualChapters) != len(cand.Chapters) {
+			return domain.Candidate{}, fmt.Errorf("定稿缺少逐章实际账本核对，不能直接接受")
+		}
 		// 定稿前再校验剧情时钟（防止接受了带时钟冲突的细纲一路写到定稿）。
 		if !cmd.ForceRiskAccept {
 			if unit, ok := findUnit(snap, cand.UnitID); ok {
@@ -749,8 +857,9 @@ func (s *Service) Accept(ctx context.Context, cmd domain.AcceptCommand) (domain.
 		if err := books.ValidateFinalizedIdentity(snap.IdentitySegments, snap.Cast, unit, unit.OutlineRaw); err != nil {
 			return domain.Candidate{}, err
 		}
-		// 唯一写回路径：状态、facts.md、Cast snapshot、伏笔、卷摘要、定稿账本。
-		if err := books.ApplyFinalizationLedger(root, unit, cand.Chapters, cand.Findings, snap.IdentitySegments); err != nil {
+		// 唯一写回路径：state.yaml 全量快照（人物状态 + 伏笔 loops + 时钟）、
+		// 卷摘要、定稿账本。facts.md 已退役，不再写入。
+		if err := books.ApplyFinalizationLedger(root, unit, cand.Chapters, cand.ActualChapters, cand.Findings, snap.IdentitySegments); err != nil {
 			return domain.Candidate{}, err
 		}
 		for _, ch := range cand.CanonChanges {
@@ -763,27 +872,18 @@ func (s *Service) Accept(ctx context.Context, cmd domain.AcceptCommand) (domain.
 				_ = os.WriteFile(full, []byte(ch.After), 0o644)
 			}
 		}
-		// update committed cursor from last chapter
-		if len(cand.Chapters) > 0 {
-			last := cand.Chapters[len(cand.Chapters)-1].Chapter
-			statePath := filepath.Join(root, "novel-state.yaml")
-			if raw, err := os.ReadFile(statePath); err == nil {
-				text := updateStateScalar(string(raw), "last_committed_ch", fmt.Sprintf("%d", last))
-				_ = os.WriteFile(statePath, []byte(text), 0o644)
-			}
-		}
 	}
 
 	now := time.Now().UTC()
 	cand.Status = domain.CandidateAccepted
 	cand.AcceptedAt = &now
-	if err := s.Store.SaveCandidate(ctx, cand); err != nil {
-		return domain.Candidate{}, err
-	}
-	if run, err := s.Store.GetRun(ctx, cand.RunID); err == nil {
+	run, runErr := s.Store.GetRun(ctx, cand.RunID)
+	if runErr == nil {
 		run.Status = domain.RunSucceeded
 		run.UpdatedAt = now
-		_ = s.Store.SaveRun(ctx, run)
+	}
+	if err := s.Store.CompleteAcceptance(ctx, cand, run); err != nil {
+		return domain.Candidate{}, err
 	}
 
 	// 交付流程到此结束：审校（多轮取并集）→ 勾选 → 一次修订 → diff → 落盘。
@@ -792,27 +892,6 @@ func (s *Service) Accept(ctx context.Context, cmd domain.AcceptCommand) (domain.
 	// 回归。真要重来就重新走一遍完整审校（重新审校会先归档旧清单）。
 	_ = root
 	return cand, nil
-}
-
-// ReviewSplit models one unit into per-chapter review calls.
-//
-// 唯一判定口径：spec 可以强制开启（审校页的「重审该单元」按章跑），作者在设置里
-// 开关决定其余情况。预览必须走同一个函数，否则确认弹窗会展示一份与实际调用
-// 不同的上下文和预算（曾经固定展示整单元那一份）。
-//
-// 刻意不做「按单元规模自动切换」。实测 3 章 / 8k 字单元、各 3 轮：
-//
-//	整单元  3 次调用  $0.0335  16 条 findings
-//	分章    9 次调用  $0.0452  27 条 findings
-//
-// 成本只差 1.35 倍，但两者检出的问题**一条都不重合**——换粒度约等于换一次采样，
-// 不是「覆盖 vs 不覆盖」。既然差异在召回而非成本，就该由作者按自己对这一单元的
-// 判断来选，而不是被一个规模阈值替他决定。
-func (s *Service) reviewSplit(spec domain.TaskSpec) bool {
-	if spec.SplitByChapter {
-		return true
-	}
-	return s.Settings.Get().Review.SplitByChapter
 }
 
 // ReviewGate reports the combined verdict of a unit's open review lists and how
@@ -867,15 +946,14 @@ func (s *Service) archiveUnitReviews(ctx context.Context, bookID, unitID string)
 		if c.Kind != domain.TaskReview || c.UnitID != unitID {
 			continue
 		}
-		if _, err := s.Accept(ctx, domain.AcceptCommand{CandidateID: c.ID}); err != nil {
+		if _, err := s.acceptLocked(ctx, domain.AcceptCommand{CandidateID: c.ID}); err != nil {
 			return fmt.Errorf("归档 %s 失败: %w", c.ID, err)
 		}
 	}
 	return nil
 }
 
-// resolveAddressedFindings removes the findings a just-accepted revision fixed
-// from the unit's open review lists.
+// Review findings expire when their source prose is replaced.
 //
 // 修订候选本身不记录"修了哪几条"，但它的 run.Spec.IssueIDs 就是作者勾选的那批，
 // 这是唯一可信的来源——不能靠比对 findings 的 title 或 anchor 去猜。
@@ -883,52 +961,19 @@ func (s *Service) archiveUnitReviews(ctx context.Context, bookID, unitID string)
 // 摘完还剩条目的清单保持 open（那些问题没修，作者要继续可操作）；摘空的清单
 // 直接归档成已通过，否则它会永远挂在那里，既不能修也不能通过。
 // 任何一步失败都只跳过：正文已经落盘，不能让清单整理把这次接受退回去。
-func (s *Service) resolveAddressedFindings(ctx context.Context, revised domain.Candidate) {
-	run, err := s.Store.GetRun(ctx, revised.RunID)
-	if err != nil || len(run.Spec.IssueIDs) == 0 {
-		return
-	}
-	addressed := make(map[string]bool, len(run.Spec.IssueIDs))
-	for _, id := range run.Spec.IssueIDs {
-		addressed[id] = true
-	}
-	open, err := s.Store.ListOpenCandidates(ctx, revised.BookID)
+func (s *Service) archiveReviewsForProseChange(ctx context.Context, bookID, unitID string) {
+	open, err := s.Store.ListOpenCandidates(ctx, bookID)
 	if err != nil {
 		return
 	}
 	for _, c := range open {
-		if c.Kind != domain.TaskReview || c.UnitID != revised.UnitID {
+		if c.Kind != domain.TaskReview || c.UnitID != unitID {
 			continue
 		}
-		// 只处理本次修订**之前**就存在的清单：修订只会修它当时读到的那些结论。
-		// 之后新起的清单里的同 id 条目是另一轮独立结论，不该被顺手摘掉。
-		if revised.CreatedAt.Before(c.CreatedAt) {
-			continue
-		}
-		kept := make([]domain.ReviewFinding, 0, len(c.Findings))
-		removed := 0
-		for _, f := range c.Findings {
-			// 作者勾了哪条，修订就按哪条改——包括本地硬门那类（字数不足等）。
-			// 不区分来源：勾过又被修掉的，就该从待办里消失。
-			if addressed[f.ID] {
-				removed++
-				continue
-			}
-			kept = append(kept, f)
-		}
-		if removed == 0 {
-			continue
-		}
-		c.Findings = kept
-		if len(kept) == 0 {
-			now := time.Now().UTC()
-			c.Status = domain.CandidateAccepted
-			c.AcceptedAt = &now
-		}
+		// 正文版本已改变，旧定位与结论只供历史回看，不能标成已修复。
+		c.Status = domain.CandidateExpired
 		_ = s.Store.SaveCandidate(ctx, c)
-		if c.Status == domain.CandidateAccepted {
-			s.closeRun(ctx, c.RunID, domain.RunSucceeded, "全部问题已在修订中处理")
-		}
+		s.closeRun(ctx, c.RunID, domain.RunExpired, "正文已修订；旧审校清单已归档，未解决问题需按新正文复核")
 	}
 }
 
@@ -1204,6 +1249,12 @@ func serializeUnitYAML(u domain.UnitOutlineDraft) string {
 			fmt.Fprintf(&b, "    change: %q\n", ch.Change)
 			fmt.Fprintf(&b, "    cut_hook: %q\n", ch.CutHook)
 			fmt.Fprintf(&b, "    day_offset: %d\n", ch.DayOffset)
+			if len(ch.Plant) > 0 {
+				fmt.Fprintf(&b, "    plant: [%s]\n", strings.Join(quoteAll(ch.Plant), ", "))
+			}
+			if len(ch.Payoff) > 0 {
+				fmt.Fprintf(&b, "    payoff: [%s]\n", strings.Join(quoteAll(ch.Payoff), ", "))
+			}
 			if len(ch.Scenes) > 0 {
 				b.WriteString("    scenes:\n")
 				for _, scene := range ch.Scenes {

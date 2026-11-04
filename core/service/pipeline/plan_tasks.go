@@ -32,6 +32,9 @@ func (r *Runner) promptStore() *prompt.Store {
 }
 
 func (r *Runner) runStructuredPlan(ctx context.Context, snap domain.BookSnapshot, volume int, modelID, mode, instruction string, preservePaths ...[]string) (Result, error) {
+	if mode != domain.PlanModeVolume && mode != domain.PlanModeInit && mode != domain.PlanModeReinit {
+		return Result{}, fmt.Errorf("未知 plan mode %q", mode)
+	}
 	if mode == domain.PlanModeVolume {
 		return r.runStructuredVolumePlan(ctx, snap, volume, modelID, instruction)
 	}
@@ -67,8 +70,8 @@ func (r *Runner) runStructuredBookPlan(ctx context.Context, snap domain.BookSnap
 					vs = append(vs, Violation{Path: "settings.files." + path, Want: "允许的设定路径", Got: "不允许"})
 				}
 			}
-			if err := books.ValidateRevealSchedule(p.Settings.Files["canon/reveal-schedule.md"]); err != nil {
-				vs = append(vs, Violation{Path: "settings.files.canon/reveal-schedule.md", Want: "有效公开揭示计划", Got: err.Error()})
+			if err := books.ValidateForeshadowSchedule(p.Settings.Files[books.ForeshadowSchedulePath]); err != nil {
+				vs = append(vs, Violation{Path: "settings.files." + books.ForeshadowSchedulePath, Want: "有效伏笔登记表", Got: err.Error()})
 			}
 			return vs
 		},
@@ -137,7 +140,7 @@ func (r *Runner) runStructuredVolumePlan(ctx context.Context, snap domain.BookSn
 			return nil
 		},
 		Candidate: func(p planVolumePayload, in TaskInput) domain.Candidate {
-			return domain.Candidate{ID: uuid.NewString(), Kind: domain.TaskPlan, Status: domain.CandidateOpen, Mode: domain.PlanModeVolume, VolumeID: fmt.Sprintf("v%02d", in.Spec.Chapter), PlanMarkdown: map[string]string{"volume_outline": p.VolumeOutlineMarkdown}, CreatedAt: time.Now().UTC()}
+			return domain.Candidate{ID: uuid.NewString(), Kind: domain.TaskPlan, Status: domain.CandidateOpen, Mode: domain.PlanModeVolume, VolumeID: fmt.Sprintf("v%02d", in.Spec.Chapter), PlanMarkdown: map[string]string{"volume_outline": p.VolumeOutlineMarkdown}, ForeshadowAssignments: p.ForeshadowAssignments, CreatedAt: time.Now().UTC()}
 		}}
 	input := TaskInput{Snapshot: snap, Spec: domain.TaskSpec{Kind: domain.TaskPlan, Mode: domain.PlanModeVolume, Chapter: volume, Instruction: instruction}}
 	packet := contextsvc.BuildPlanPacketWithMode(snap, volume, domain.PlanModeVolume, instruction)

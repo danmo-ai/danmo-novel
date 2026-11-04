@@ -87,7 +87,7 @@ func TestPrimaryActionFollowsUnitOrder(t *testing.T) {
 	snap := domain.BookSnapshot{
 		Volumes: []domain.VolumeInfo{{Volume: 1, FileName: "v01.md"}},
 		Units: []domain.UnitInfo{
-			{UnitID: "v01-U1", Volume: 1, Index: 1, Status: domain.UnitReviewed},
+			{UnitID: "v01-U1", Volume: 1, Index: 1, Status: domain.UnitFinalized},
 			{UnitID: "v01-U2", Volume: 1, Index: 2, Status: domain.UnitAccepted},
 			{UnitID: "v01-U3", Volume: 1, Index: 3, Status: domain.UnitProposed},
 			{UnitID: "v01-U4", Volume: 1, Index: 4, Status: domain.UnitProposed},
@@ -120,9 +120,9 @@ func TestPrimaryActionStaleActiveUnit(t *testing.T) {
 			{Volume: 8, FileName: "v08.md"},
 		},
 		Units: []domain.UnitInfo{
-			{UnitID: "v07-U1", Volume: 7, Index: 1, Status: domain.UnitReviewed},
-			{UnitID: "v07-U2", Volume: 7, Index: 2, Status: domain.UnitReviewed},
-			{UnitID: "v08-U4", Volume: 8, Index: 4, Status: domain.UnitReviewed},
+			{UnitID: "v07-U1", Volume: 7, Index: 1, Status: domain.UnitFinalized},
+			{UnitID: "v07-U2", Volume: 7, Index: 2, Status: domain.UnitFinalized},
+			{UnitID: "v08-U4", Volume: 8, Index: 4, Status: domain.UnitFinalized},
 			{UnitID: "v08-U5", Volume: 8, Index: 5, Status: domain.UnitProposed},
 			{UnitID: "v08-U6", Volume: 8, Index: 6, Status: domain.UnitProposed},
 		},

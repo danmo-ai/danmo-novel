@@ -33,7 +33,11 @@ state_deltas:
 	if err := os.WriteFile(filepath.Join(unitDir, "v01-U1.yaml"), []byte(yaml), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	// 旧 facts.md 已退出写回路径，夹具不再需要它；保留一个文件验证"不读也不写"。
+	// scaffold 不再生成 facts.md（该文件已退役）；这里显式造一个旧文件，
+	// 用来验证迁移会删掉它，也验证"名字相近但不是它"的文件不会被误删。
+	if err := os.WriteFile(filepath.Join(root, "continuity", "facts.md"), []byte("# 旧账本\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(filepath.Join(root, "continuity", "legacy-facts.md"), []byte("# legacy\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -55,14 +59,15 @@ func TestApplyFinalizationLedger(t *testing.T) {
 		{Chapter: 1, Title: "点名", Body: "林尘握住刀柄。他被点名上场。"},
 		{Chapter: 2, Title: "爆发", Body: "名额只剩一个。他燃烧代价换来一次爆发。"},
 	}
-	if err := ApplyFinalizationLedger(root, unit, chapters, nil); err != nil {
+	actual := []domain.ChapterActual{{Chapter: 1, Summary: "林尘被点名上场"}, {Chapter: 2, Summary: "林尘付代价完成试炼", StateDeltas: []domain.ChapterActualDelta{{Stem: "linchen", Field: "location", From: "外门", To: "山门", Evidence: "他燃烧代价换来一次爆发", Confirmed: true}}}}
+	if err := ApplyFinalizationLedger(root, unit, chapters, actual, nil); err != nil {
 		t.Fatal(err)
 	}
 
 	// 1. 状态推进
 	raw, _ := os.ReadFile(filepath.Join(root, "outline", "units", "v01-U1.yaml"))
-	if !strings.Contains(string(raw), "status: reviewed") {
-		t.Fatalf("unit status not reviewed: %s", raw)
+	if !strings.Contains(string(raw), "status: finalized") {
+		t.Fatalf("unit status not finalized: %s", raw)
 	}
 
 	// 2. 连续性状态落段：单元号 + 定稿章号 + 人物当前状态

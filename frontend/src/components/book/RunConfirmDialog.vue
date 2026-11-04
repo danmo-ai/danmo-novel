@@ -43,7 +43,7 @@ const preserveOpen = ref(true)
 
 const isReinit = computed(() => props.spec.kind === 'plan' && props.spec.mode === 'reinit')
 const isIdea = computed(() => props.spec.kind === 'idea')
-const isLocalFinalize = computed(() => props.spec.kind === 'finalize')
+const isFinalize = computed(() => props.spec.kind === 'finalize')
 /** 重审：该单元尚未处理的旧审校清单会在启动前被归档，必须提前说明。 */
 const isSupersedeReview = computed(() => props.spec.kind === 'review' && props.spec.supersedeReview === true)
 const openReviewLists = computed(() => {
@@ -54,7 +54,7 @@ const openReviewLists = computed(() => {
 const isDerivedRewrite = computed(() => {
   if (props.spec.kind !== 'rewrite_entity') return false
   const p = String(props.spec.targetPath || '')
-  return p.startsWith('canon/cast/') || p === 'canon/reveal-schedule.md' || p === 'canon/author-lore.md'
+  return p.startsWith('canon/cast/') || p === 'canon/foreshadow-schedule.md' || p === 'canon/author-lore.md'
     || p === 'canon/world.md' || p === 'canon/goldfinger.md' || p === 'book-bible.md'
 })
 const basisBlocks = computed(() => (packet.value?.blocks || []).filter((b) => b.id.startsWith('basis-')))
@@ -63,7 +63,7 @@ const preserveOptions = computed(() => {
   const files = store.currentBook?.files || {}
   const paths: string[] = []
   if (files['outline/book_outline.md']) paths.push('outline/book_outline.md')
-  for (const p of ['book-bible.md', 'canon/world.md', 'canon/goldfinger.md', 'canon/reveal-schedule.md', 'canon/author-lore.md',
+  for (const p of ['book-bible.md', 'canon/world.md', 'canon/goldfinger.md', 'canon/foreshadow-schedule.md', 'canon/author-lore.md',
     'canon/platform-positioning.md', 'canon/writing-rules.md', 'canon/style-fingerprint.md', 'canon/locked-terms.yaml']) {
     if (files[p]) paths.push(p)
   }
@@ -75,12 +75,12 @@ const kindLabel = computed(() => {
   if (props.spec.kind === 'rewrite_entity' && props.spec.entityKind === 'cast') return '重写人物卡'
   return runKindLabel(props.spec.kind, props.spec.mode)
 })
-const confirmLabel = computed(() => (isLocalFinalize.value ? '确认定稿检查' : '确认调用'))
-const headKind = computed(() => (isLocalFinalize.value ? '定稿 · 本地检查确认' : `${kindLabel.value} · LLM 调用确认`))
-const modelDisplay = computed(() => (isLocalFinalize.value ? '不调用模型' : (props.modelLabel || '按阶段分配')))
+const confirmLabel = computed(() => (isFinalize.value ? '确认账本核对' : '确认调用'))
+const headKind = computed(() => (isFinalize.value ? '定稿 · 逐章事实核对' : `${kindLabel.value} · LLM 调用确认`))
+const modelDisplay = computed(() => props.modelLabel || '按阶段分配')
 const riskNote = computed(() => {
-  if (isLocalFinalize.value) {
-    return '定稿只跑本地硬门，不消耗模型额度。生成定稿候选后须点「接受」才会回写账本并标记单元为已定稿。'
+  if (isFinalize.value) {
+    return '定稿先跑本地门禁，再逐章核对实际摘要、状态与伏笔；作者接受候选后才统一回写账本并标记已定稿。'
   }
   if (props.spec.kind === 'plan' && props.spec.mode === 'reinit') {
     const n = preserve.value.size
@@ -190,7 +190,7 @@ function togglePreserve(path: string) {
 type ScopeId = 'all' | 'outline' | 'settings' | 'cast' | 'custom'
 const scopeOptions = computed(() => {
   const files = store.currentBook?.files || {}
-  const settings = ['book-bible.md', 'canon/world.md', 'canon/goldfinger.md', 'canon/reveal-schedule.md',
+  const settings = ['book-bible.md', 'canon/world.md', 'canon/goldfinger.md', 'canon/foreshadow-schedule.md',
     'canon/author-lore.md', 'canon/platform-positioning.md', 'canon/writing-rules.md',
     'canon/style-fingerprint.md', 'canon/locked-terms.yaml'].filter((p) => files[p])
   const cast = (store.currentBook?.cast || []).map((c) => `canon/cast/${c.stem}.md`)
@@ -255,7 +255,7 @@ function confirm() {
 
       <div class="dlg-meta">
         <span class="meta-item"><small>模型</small><strong>{{ modelDisplay }}</strong></span>
-        <span class="meta-item"><small>调用预算</small><strong>{{ isLocalFinalize ? '0 次（本地）' : `${packet?.policy.maxCalls ?? '…'} 次` }}</strong></span>
+        <span class="meta-item"><small>调用预算</small><strong>{{ isFinalize ? '0 次（本地）' : `${packet?.policy.maxCalls ?? '…'} 次` }}</strong></span>
         <span class="meta-item"><small>上下文</small><strong>{{ packet ? `${packet.blocks.length} 块 · ${(totalBytes / 1024).toFixed(1)} KB` : '…' }}</strong></span>
       </div>
 
@@ -309,7 +309,7 @@ function confirm() {
           </div>
         </div>
 
-        <div class="dlg-knowledge" v-if="!isLocalFinalize && knowledgeDocs.length">
+        <div class="dlg-knowledge" v-if="!isFinalize && knowledgeDocs.length">
           <button class="knowledge-toggle" @click="knowledgeOpen = !knowledgeOpen">
             <span>参考知识（可选，内置 + 作者资料库）{{ selectedKnowledge.size ? ` · 已选 ${selectedKnowledge.size} 篇` : '' }}</span>
             <span>{{ knowledgeOpen ? '收起' : '展开' }}</span>
@@ -348,7 +348,7 @@ function confirm() {
         <p v-if="riskNote" class="dlg-risk">{{ riskNote }}</p>
       </div>
 
-      <div v-if="!isLocalFinalize" class="dlg-instruction">
+      <div v-if="!isFinalize" class="dlg-instruction">
         <label>追加指令（可选，会附加到本次调用的用户提示）</label>
         <textarea v-model="instruction" rows="3" placeholder="例如：保持既有事实，重点精简第 2 节；或：本卷新增人物 X，纳入索引…" spellcheck="false" />
       </div>

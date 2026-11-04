@@ -126,6 +126,7 @@ export interface Candidate {
   planSettings?: Record<string, string>
   replacement?: string
   findings?: ReviewFinding[]
+  actualChapters?: { chapter: number; summary: string; stateDeltas?: { stem: string; field: string; from: string; to: string; evidence: string; confirmed: boolean }[]; plant?: string[]; payoff?: string[] }[]
   canonChanges?: any[]
   createdAt: string
   acceptedAt?: string

@@ -9,7 +9,7 @@
 3. 任务的数据组装是固定 Go 函数；作者指令只作为补充数据，不改变输出协议、父级合同或可见性。
 4. 总纲约束卷纲，卷纲单元种子约束细纲；下层只能细化，不能换故事。
 5. `author-lore.md` 只用于允许的作者侧规划，正文写作、正文审校和修订禁止注入。
-6. `proposed → accepted → drafted → reviewed` 是单元状态流；候选不等于已接受事实。
+6. `proposed → accepted → drafted → reviewed → finalized` 是单元状态流；候选不等于已接受事实。`reviewed` 是审校/修订已复核，`finalized` 是实际账本已提交。
 7. 结构校验失败最多一次定向结构修复；没有无界 Agent Loop。
 
 ## 2. LLM 调用的统一形式
@@ -95,7 +95,7 @@ user   = {
       "canon/platform-positioning.md": "...",
       "canon/writing-rules.md": "...",
       "canon/style-fingerprint.md": "...",
-      "canon/reveal-schedule.md": "...",
+      "canon/foreshadow-schedule.md": "...",
       "canon/author-lore.md": "...",
       "canon/locked-terms.yaml": "..."
     }
@@ -105,7 +105,8 @@ user   = {
 
 **校验与写入**
 
-- 总纲/设定/人物必填，至少一个 protagonist；人物卡、揭示计划、身份字段和引用合法。
+- 总纲/设定/人物必填，至少一个 protagonist；人物卡、伏笔登记表、身份字段和引用合法。
+- 伏笔在立项只写卷级位置（plant_volume / payoff_volume），单元与章留空。
 - Accept 一次性写总纲、白名单设定、人物卡及 `canon/identity-timeline.yaml`；不写卷纲、单元或正文。
 - `reinit` 可保留精修文件，既有单元、正文、continuity 不受影响。
 
@@ -128,7 +129,8 @@ user   = {
 **输入**
 
 - 总纲及当前 `VolumeArc`，不得只给模型一段自由文本卷名。
-- 上一卷承接、最近已接受 continuity、相关人物卡和揭示计划。
+- 上一卷承接、最近已接受 continuity、相关人物卡和伏笔登记表。
+- 伏笔只细化本卷条目的 plant_unit / payoff_unit，不新建条目。
 - 当前旧卷纲（若为重写）及追加指令。
 
 **输出**
@@ -142,7 +144,7 @@ user   = {
 **校验与写入**
 
 - 校验总纲继承、章范围、单元因果字段、引用、时钟、人物身份及可选身份变更。
-- Accept 原子写当前卷纲、缺失单元种子和身份时间线；不覆盖已有细纲/正文/continuity。
+- Accept 原子写当前卷纲、缺失单元种子、伏笔单元归属和身份时间线；已有单元标为 `proposed` 要求重新确认，已有正文/continuity 保留但不得绕过新的父级合同。
 
 ### 3.3 结构编辑审校：`kind=structure_review`
 
@@ -176,7 +178,8 @@ user   = {
 **输入**
 
 - 当前卷纲及对应的不可改写 `UnitSeed`。
-- 已有细纲（重写时）、本卷人物、身份时间线、continuity 与揭示计划。
+- 已有细纲（重写时）、本卷人物、身份时间线、continuity 与伏笔登记表。
+- 伏笔只落到章：`chapters[].plant` / `chapters[].payoff` 填 FS ID，只能引用本单元负责埋/收的条目。
 - 追加指令与可选知识文章。
 
 **输出**
@@ -237,6 +240,16 @@ user   = {
 - 核心场面只需 `goal/conflict/turn/outcome`；`mustLand` 最多两项。不得预写台词、动作清单或情绪曲线。
 - 章范围、目标、尝试、缺口、选择、代价、结果、时钟必须继承卷纲。
 - Accept 前再次校验身份覆盖、父子合同、时钟、状态迁移与场面归属，写 `outline/units/<unit>.yaml` 并进入 `accepted`。
+- `stateDeltas` 的任务是**维护状态**而不是记录变化：细纲上下文里带着进入本单元时的
+  完整快照（含「记于 N 个单元前，可能已变」的标注），模型必须逐人逐字段对照，
+  对本单元内结束的字段写显式终值（伤好了写 `to: 已愈`），对新增的字段即便很小也写。
+  没写终值的字段会被后续所有单元一直继承——实测一条伤势跨了 6 个单元、63 个故事日。
+- `state_deltas` 里的 `role_title` 只是「本单元在边界切了身份」的声明，必须与 `canon/identity-timeline.yaml`
+  的本单元生效段一致；它不会被写进连续性账本——身份只由时间线拥有，写作与审校都从那里现算。
+
+### 3.4.1 细纲语义检查：`kind=outline_review`
+
+用与生成一致的父级种子、人物、能力、伏笔和入场状态做一次有界检查，覆盖章间因果、父级兑现、POV、时钟、状态迁移与可执行性。它只输出问题候选，不写细纲；作者根据问题回改细纲或卷纲，再明确 Accept。
 
 ### 3.5 正文：`kind=write`
 
@@ -253,7 +266,7 @@ user   = {
 {"chapters": [{"chapter": 51, "title": "只谈案子", "body": "正文……"}]}
 ```
 
-整单元模式覆盖全部章节；分章模式每次只写一章。校验章号、非空正文、完整覆盖、字数与本地硬门。
+固定逐章生成与逐章定向修复，单元 Accept 一次提交全部章节。没有整单元写作模式或按规模切换分支。校验章号、非空正文、完整覆盖、字数与本地硬门。
 
 **构建顺序**：`UserPayload` 序列化为 `book → documents → references → task → instruction → extra`。分章写作时 documents 与 references 必须逐字共用——按章变化的场面节拍（`extra.chapterBeats`）、章号、本章字数规则与上一章正文一律落在 extra。把按章内容放回 documents（哪怕只是替换内容、位置不变），它后面的人设/连续性/风格块与整份参考知识就全部按全价重算。
 
@@ -266,7 +279,7 @@ Accept 写 `units/<unit>.md` 并进入 `drafted`；不更新 continuity。
 **输入**
 
 - 正文、单元合同、本章计划、人物/身份/关系、continuity、揭示约束、锁词、风格和本地检查结果。
-- 可按整单元或分章调用；分章只带当前章正文与上章结尾。
+- 固定按章审校；只带当前章正文、当前章合同、共享事实基线与上章结尾。没有整单元审校分支。
 
 **输出**
 
@@ -323,7 +336,7 @@ Accept 写 `units/<unit>.md` 并进入 `drafted`；不更新 continuity。
 完整的交付闭环是「审校（多轮取并集）→ 勾选 → 一次修订 → 逐句 diff → 确认落盘」，到此结束。
 
 - 落盘后**不再自动起审校**。实测同一单元连续 6 轮审校，后续报出的"新问题"有 **96%+ 落在这次根本没改过的原文上**——是前几轮注意力没扫到的旧账，不是修复引入的回归。自动起新一轮会让作者分不清"修好了"和"又发现一批旧的"，同时把调用成本翻倍。
-- 落盘时**摘掉这次已修的问题**：修订候选对应 run 的 `IssueIDs` 就是作者勾选的那批，Accepted 后它们从清单里消失，剩余条目保持 open 供继续勾选。清单若因此清空则自动结案，否则它会永远挂着一个既没有条目可修、也没有按钮可点的僵局。
+- 落盘时旧正文的审校清单按版本过期归档，供历史回看；不得仅凭勾选 `IssueIDs` 宣称已修复。需要关闭问题时按新正文复核。
 - 没有单独的"重审"概念。真要重来就重新审校整个单元：它会先归档旧清单，再按章重跑多轮——这就是 `SupersedeReview` 的语义（内部走 `archiveUnitReviews`）。
 
 审校候选只包含问题，不直接改正文；作者选择问题后进入修订。
@@ -397,15 +410,17 @@ Accept 写 `units/<unit>.md` 并进入 `drafted`；不更新 continuity。
 
 **输入**
 
-- 本地读取正文和单元合同，不调用 LLM。
-- 字数、空章、时钟、身份、状态迁移及门禁问题。
+- 本地读取正文和单元合同，先跑字数、空章、时钟、身份与审校清单门禁。
+- 再固定逐章调用一次有界账本核对，返回实际摘要、带逐字正文证据的实际状态迁移、实际伏笔结果；计划未发生不能记账。
+- 这些仍是候选，作者可见并 Accept 后才写盘。
 
 **输出与写入**
 
 生成定稿候选；Accept 后：
 
-- 单元状态改 `reviewed`。
-- `continuity/state.yaml` 写入实际人物状态、伏笔与实际开闭故事日。
+- 单元状态改 `finalized`。
+- `continuity/actual/<unit>.yaml` 保存作者接受的逐章正文事实索引；`continuity/state.yaml` 从这些实际结果重算全量快照，不直接消费计划 `state_deltas`。
+- 伏笔实际开闭与摘要只来自已核对结果；每章计划伏笔必须明确核对。
 - `continuity/summaries/vNN.md` 按章 upsert 摘要。
 - `continuity/commits/<unit>.md` 写执行日志。
 - 更新 `novel-state.yaml` 的章游标。
@@ -429,9 +444,16 @@ Accept 写 `units/<unit>.md` 并进入 `drafted`；不更新 continuity。
 
 ## 5. 校验、可见性与文件职责
 
-- 总纲/卷纲/揭示计划：结构化 Markdown 是唯一事实源，解析对象只在内存/API 使用。
+- 总纲/卷纲/伏笔登记表：结构化 Markdown 是唯一事实源，解析对象只在内存/API 使用。
 - 人物卡：稳定人格与知识边界；身份时间线：按单元生效的公开职务身份。
 - `stateDeltas`：规划的状态迁移；continuity：定稿后的实际状态，不反向覆盖规划。
+- `stateDeltas.field` 词表封闭：`role_title/location/health/resources/goal/knows/relation/life`。未知名在细纲接受时进修复轮，不再静默丢弃。
+- 字段失效必须显式写终值（`from: 刀伤未愈, to: 已愈`）；`life` 单向（alive→missing→dead），死者不得再进 onStage。
+- `continuity/state.yaml` 每段都是全量快照，读取只看目标单元之前最近的一段；`facts.md` 已退役。
 - `story_day/end_day` 是整数开闭日；章/场面使用 `day_offset`；`time_label/when` 只展示，不作校验依据。
 - `ChapterPlan.change` 必须是可验证的状态/信息/关系/行动变化，不以“更紧张/更可疑”冒充推进。
-- 新格式缺失的旧文件不在生产链隐式兼容；旧书由 Agent 按模板生成候选、校验并接受后再启用。
+- **不做运行期兼容**：旧字段名、旧文件、旧状态由一次性数据规整改写，代码只认当前形态。
+  入口 `POST /api/books/:id/migrate-foreshadow`（`books.NormalizeBookData`），
+  原文全部留档到 `backups/pre-migrate-<stamp>/`。
+- `state_deltas.field` 词表之外的名字在细纲接受时报错并进修复轮，不再静默丢弃；
+  `word_target`、`state_deltas_json`、`canon/reveal-schedule.md` 均已退役。

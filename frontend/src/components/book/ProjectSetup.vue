@@ -63,7 +63,7 @@ const SETTING_PATHS = [
   'canon/platform-positioning.md',
   'canon/writing-rules.md',
   'canon/style-fingerprint.md',
-  'canon/reveal-schedule.md',
+  'canon/foreshadow-schedule.md',
   'canon/author-lore.md',
   'canon/locked-terms.yaml',
 ]

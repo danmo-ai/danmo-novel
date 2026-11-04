@@ -79,7 +79,7 @@ func TestRunPlanModeInitAcceptsBookOnlyPayload(t *testing.T) {
 		files[p] = "# " + p + "\nok\n"
 	}
 	files["canon/locked-terms.yaml"] = "locked_until: {}\ncompliance: []\naliases: {}\n"
-	files["canon/reveal-schedule.md"] = "# 揭示计划\n- schema_version: 1\n"
+	files[books.ForeshadowSchedulePath] = "# 伏笔登记表\n- schema_version: 1\n"
 	body, _ := json.Marshal(map[string]any{
 		"cast": []map[string]any{
 			{"stem": "lin", "name": "林晚", "role": "protagonist", "initialIdentity": map[string]any{"roleTitle": "见习调查员", "org": "青江分局", "fromUnit": "v01-U1", "note": "初始身份"}, "cardMarkdown": "# 林晚\n"},
@@ -128,6 +128,9 @@ func testVolumeOutlineMarkdown() string {
 - source_arc_id: arc-v01
 - chapter_range: 1-6
 - goal: 能否完成目标
+- dramatic_question: 能否完成目标
+- thread_moves: main=未开始->已完成
+- deliverables: 完成第一次行动
 - central_conflict: 目标与阻碍
 - stakes: 失败代价
 - entry_state: 未开始

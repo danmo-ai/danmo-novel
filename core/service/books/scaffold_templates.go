@@ -145,17 +145,41 @@ aliases: {}
 - 开篇承诺：
 - 内容红线：
 `,
-		"canon/reveal-schedule.md": `# 揭示计划
+		ForeshadowSchedulePath: `# 伏笔登记表（唯一权威来源）
 - schema_version: 1
 
-# 只登记公开信息释放节奏，不写作者真相细节；真相在 canon/author-lore.md。
-# 示例：## 揭示 · R-SECRET
-# - public_summary: 可公开的信息概述
-# - earliest_volume: v01
-# - hint_unit_ids: v01-U1
-# - confirm_unit_id: v01-U2
-# - status: locked
-# - locked_terms: 暂不可公开的关键词
+# 埋与收的完整生命周期。三级细化：总纲定卷、卷纲定单元、细纲定章。
+# 与人物卡同级：带稳定 ID，被其他层按 ID 引用，写入前必须通过结构校验。
+# 信息类伏笔即原「揭示计划」——读者何时可以知道某个秘密，是它的一个子集。
+#
+# 字段说明：
+#   content          埋的是什么。必须是可见、可验的具体物或事；不接受「氛围」「张力」。
+#   type             物件 / 信息 / 关系 / 承诺 / 疑点
+#   plant_volume     埋入卷，vNN。总纲必填。
+#   plant_unit       埋入单元，vNN-UN。卷纲补，可空。
+#   plant_chapter    埋入章，整数。细纲补，可空。
+#   payoff_volume    回收卷，vNN。总纲必填，且不早于 plant_volume。
+#   payoff_unit      回收单元。卷纲补，可空。
+#   payoff_chapter   回收章。细纲补，可空，必须严格晚于 plant_chapter。
+#   payoff_summary   回收时读者得到什么。type=信息 时必填。
+#   locked_terms     回收前不得出现的词，逗号分隔。可空。
+#   status           planned / planted / advanced / paid / dropped
+#   note             可选，一句话说明回收方式。
+#
+# 示例（五级全填）：
+# ## 伏笔 · FS-01
+# - content: ICU 同行登记表上的姓名笔迹与脑内声音的用词习惯对应
+# - type: 信息
+# - plant_volume: v01
+# - plant_unit: v01-U7
+# - plant_chapter: 38
+# - payoff_volume: v01
+# - payoff_unit: v01-U7
+# - payoff_chapter: 43
+# - payoff_summary: 脑内声音就是病床上的陆沉
+# - locked_terms: 二〇二四、死档
+# - status: planned
+# - note: 由张桂兰说出儿子的姓名与住院时间完成确认
 `,
 		"canon/identity-timeline.yaml": `# 职务身份时间线：单元边界对齐，单元内部身份恒定。
 # 规划 Accept 时创建/续接；定稿只复核，不自动改本文件。
@@ -163,26 +187,12 @@ version: 1
 segments: []
 `,
 		"continuity/state.yaml": `# 连续性状态账本（机器可读，按单元段）
-# 每个已定稿单元追加一段；读取时取目标单元之前最近的一段。
-# 只存随剧情变化的事实：位置、伤势、资源、目标、知情范围、伏笔。
+# 每个已定稿单元一段，每段都是全量快照：读取时取目标单元之前最近的一段即可。
+# 只存随剧情变化的事实：位置、身体状态、资源、目标、关系、生命状态、知情范围、伏笔。
 # 静态人设见 canon/cast/，连载位置见 novel-state.yaml 顶层。
 version: 1
 units: []
 `,
-		"continuity/facts.md": fmt.Sprintf(`# Continuity facts — %s
-
-读者已知事实的**人类可读视图**。机器读写走 continuity/state.yaml：
-应用不再解析本文件，它只供作者翻阅。
-
-## Open loops
-| FS-id | 内容 | 状态 | 埋点章 | 计划回收 | 实际回收 |
-|-------|------|------|--------|----------|----------|
-
-Status: planted | advanced | paid | dropped.
-
-## Chapter summaries
-章摘要写 continuity/summaries/vNN.md；这里只留卷索引。
-`, title),
 	}
 	for rel, content := range files {
 		path := filepath.Join(root, filepath.FromSlash(rel))

@@ -51,14 +51,9 @@ func (r *Runner) reviewStructureDocument(ctx context.Context, snap domain.BookSn
 	if err != nil {
 		return Result{}, err
 	}
-	blocks := []domain.ContextBlock{{ID: "target", Label: "待审结构", Source: path, Content: raw, Bytes: len(raw)}}
-	if path != "outline/book_outline.md" {
-		if parent := snap.Files["outline/book_outline.md"]; parent != "" {
-			blocks = append([]domain.ContextBlock{{ID: "parent", Label: "父级总纲", Source: "outline/book_outline.md", Content: parent, Bytes: len(parent)}}, blocks...)
-		}
-	}
+	blocks := contextsvc.BuildStructureReviewPacket(snap, spec).Blocks
 	payload := contextsvc.UserPayload{Task: "review_structure", Book: map[string]any{"id": snap.Summary.ID}, Documents: contextsvc.DocumentsFromBlocks(blocks), Instruction: spec.Instruction}
-	res, err := ExecuteTask(ctx, &TaskRunner{LLM: r.LLM, ModelMaxOut: r.modelMaxOut}, Invocation[[]domain.ReviewFinding]{
+	res, err := ExecuteTask(ctx, &TaskRunner{LLM: r.LLM, ModelMaxOut: r.modelMaxOut, Knowledge: r.KnowledgeDocs}, Invocation[[]domain.ReviewFinding]{
 		TaskID: "review_structure", StaticPrompt: tmpl.Text, DynamicPayload: payload, OutputContract: structureEditorContract,
 		Policy: domain.CallPolicy{MaxCalls: 2, AllowOneRepair: true, TimeoutSec: 600}, ModelID: modelID,
 		Definition: TaskDefinition[[]domain.ReviewFinding]{ID: "review_structure", Version: 1, Codec: structureReviewCodec{contract: structureEditorContract}, Candidate: func(findings []domain.ReviewFinding, in TaskInput) domain.Candidate {
@@ -125,7 +120,6 @@ func reviewAndRepairStructuredCandidate[T any](r *Runner, ctx context.Context, s
 // RepairStructure applies one bounded set of findings to a candidate. Accept
 // remains the only operation allowed to write the result.
 func (r *Runner) RepairStructure(ctx context.Context, snap domain.BookSnapshot, spec domain.TaskSpec, findings []domain.ReviewFinding, modelID string) (Result, error) {
-	raw := snap.Files[spec.TargetPath]
 	contract := bookOutlineContract
 	if spec.TargetPath != "outline/book_outline.md" {
 		contract = volumeOutlineContract
@@ -138,7 +132,12 @@ func (r *Runner) RepairStructure(ctx context.Context, snap domain.BookSnapshot, 
 	if spec.TargetPath != "outline/book_outline.md" {
 		tmpl.Text = replaceProtocolText(tmpl.Text, bookOutlineContract, volumeOutlineContract)
 	}
-	blocks := []domain.ContextBlock{{ID: "current", Label: "当前文档", Source: spec.TargetPath, Content: raw, Bytes: len(raw)}}
+	blocks := contextsvc.BuildStructureReviewPacket(snap, spec).Blocks
+	for i := range blocks {
+		if blocks[i].ID == "target" {
+			blocks[i].ID, blocks[i].Label = "current", "当前文档"
+		}
+	}
 	if parent := snap.Files["outline/book_outline.md"]; parent != "" && spec.TargetPath != "outline/book_outline.md" {
 		blocks = append(blocks, domain.ContextBlock{ID: "parent", Label: "不可修改的父级合同", Source: "outline/book_outline.md", Content: parent, Bytes: len(parent)})
 	}
@@ -147,7 +146,7 @@ func (r *Runner) RepairStructure(ctx context.Context, snap domain.BookSnapshot, 
 		fmt.Fprintf(&feedback, "- %s [%s] %s：%s；建议：%s\n", f.EntityPath, f.Severity, f.Lens, f.Evidence, f.Suggestion)
 	}
 	payload := contextsvc.UserPayload{Task: "repair_structure", Book: map[string]any{"id": snap.Summary.ID}, Documents: contextsvc.DocumentsFromBlocks(blocks), Instruction: spec.Instruction, Extra: map[string]any{"findings": feedback.String()}}
-	res, err := ExecuteTask(ctx, &TaskRunner{LLM: r.LLM, ModelMaxOut: r.modelMaxOut}, Invocation[string]{
+	res, err := ExecuteTask(ctx, &TaskRunner{LLM: r.LLM, ModelMaxOut: r.modelMaxOut, Knowledge: r.KnowledgeDocs}, Invocation[string]{
 		TaskID: "repair_structure", StaticPrompt: tmpl.Text, DynamicPayload: payload, OutputContract: contract,
 		Policy: domain.CallPolicy{MaxCalls: 2, AllowOneRepair: true, TimeoutSec: 600}, ModelID: modelID,
 		Definition: TaskDefinition[string]{ID: "repair_structure", Version: 1, Codec: structureRepairCodec{contract: contract}, Validate: func(body string, in TaskInput) []Violation {

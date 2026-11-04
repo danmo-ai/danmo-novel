@@ -105,7 +105,7 @@ func TestLegacyExtraMergeIsOrderStable(t *testing.T) {
 func TestAdjacentWriteChaptersShareDocumentsAndReferences(t *testing.T) {
 	snap := loadFixtureCopy(t)
 	unit := findUnit(t, snap, "v01-U1")
-	packet := BuildWritePacket(snap, unit, "", 0)
+	packet := BuildWritePacket(snap, unit, "")
 	// 参考知识在真实书里占写作 prompt 的大头（单本实测 32KB），这里按比例给。
 	refs := []string{
 		strings.Repeat("# 参考A\n办案的口语细节与现场质感。", 300),

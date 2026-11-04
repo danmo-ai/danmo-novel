@@ -11,16 +11,16 @@ import (
 
 const bookProtocolSpec = `只输出一个结构化 Markdown 总纲文档。根字段包含 schema_version/book_id/title/logline。
 用「## 承诺 · id」「## 故事线 · id」「## 分卷 · v01」及「### 转折 · event-id」声明实体。
-分卷必填 title/chapter_range/purpose/dramatic_question/central_conflict/stakes/entry_state/exit_state/thread_moves/deliverables/open_questions/reveal_ids/forbidden_reveal_ids/next_volume_entry。
-reveal_ids 与 forbidden_reveal_ids 只填揭示计划里的 ID（如 r01,r02）；没有要禁揭或揭示的内容时把该行留空，不要写「无」或括号解释。
+分卷必填 title/chapter_range/purpose/dramatic_question/central_conflict/stakes/entry_state/exit_state/thread_moves/deliverables/open_questions/next_volume_entry。
+本卷要埋或要收的伏笔用 plant_ids / payoff_ids 列出登记表里的 FS ID（如 FS-01,FS-02）；没有则留空，不要写「无」或括号解释。
 转折必填 event/cause/effect/chapter_window。下层不得擅自改变父级合同。`
 
 const volumeProtocolSpec = `只输出一个结构化 Markdown 卷纲文档。根字段包含 schema_version/volume_id/title/source_arc_id/chapter_range/goal/central_conflict/stakes/entry_state/exit_state/cast。
 用「## 节拍 · id」「## 单元 · v01-U1」「## 卷末交接 · handoff」声明实体。
-单元必填 title/chapter_range/objective/obstacle/attempt/setback/choice/cost/outcome/entry_cause/exit_result/state_changes/thread_ids/event_ids/reveal_ids/forbidden_reveal_ids/next_hook。
+单元必填 title/chapter_range/objective/obstacle/attempt/setback/choice/cost/outcome/entry_cause/exit_result/state_changes/thread_ids/event_ids/next_hook。
 单元必须一个主要戏剧问题、一个主结果、一种主要冲突形态；从属线必须改变主线选择或代价，不能拼接独立任务。
 每单元附 clock_start_day/clock_end_day（相对故事日整数）和 clock_gap_days（与上一单元的最少间隔天数）；可选 clock_deadline 为“事件ID@故事日”，timeline_id 默认为 main。
-reveal_ids 与 forbidden_reveal_ids 只填揭示计划里的 ID（如 r01,r02）；没有则留空，不要写「无」或括号解释。
+本单元要埋或要收的伏笔用 plant_ids / payoff_ids 列出登记表里的 FS ID；没有则留空，不要写「无」或括号解释。
 节拍/转折必填 event/cause/effect/chapter_window；至少一个高潮与不可逆结果。
 职务/机构变化在所属单元后添加「### 身份变更 · 单元ID-人物stem」，含 stem/role_title/org/from_unit/reason，from_unit 等于所属单元 ID。`
 
@@ -52,8 +52,8 @@ const bookProtocolTemplate = `# 全书总纲 · {{book.title}}
 - thread_moves: {{thread-id=从什么状态->到什么状态}}
 - deliverables: {{必须兑现的结果}}
 - open_questions: {{仍保留的问题}}
-- reveal_ids: {{可揭示 ID，如 r01,r02；没有则该行留空}}
-- forbidden_reveal_ids: {{禁止提前揭示 ID，如 r11,r15；没有则该行留空}}
+- plant_ids: {{本卷要埋的伏笔 ID，如 FS-01；没有则留空}}
+- payoff_ids: {{本卷要收的伏笔 ID，如 FS-03；没有则留空}}
 - next_volume_entry: {{下一卷行动入口}}
 
 ### 转折 · {{event-id}}
@@ -68,7 +68,10 @@ const volumeProtocolTemplate = `# 卷纲 · {{v01}}
 - title: {{本卷标题}}
 - source_arc_id: {{arc-v01}}
 - chapter_range: {{1}}-{{50}}
-- goal: {{总纲锁定的卷级问题}}
+- goal: {{本卷写作目标}}
+- dramatic_question: {{逐字继承总纲的本卷问题}}
+- thread_moves: {{逐字继承总纲故事线迁移}}
+- deliverables: {{逐字继承总纲必须兑现结果}}
 - central_conflict: {{核心冲突}}
 - stakes: {{失败的代价}}
 - entry_state: {{开卷事实}}
@@ -102,8 +105,8 @@ const volumeProtocolTemplate = `# 卷纲 · {{v01}}
 - allow_flashback: {{非 main 时间线时为 true，否则省略}}
 - thread_ids: {{故事线 ID}}
 - event_ids: {{承接的节拍 ID}}
-- reveal_ids: {{可揭示 ID，如 r01,r02；没有则留空}}
-- forbidden_reveal_ids: {{禁揭 ID，如 r11,r15；没有则留空}}
+- plant_ids: {{本单元要埋的伏笔 ID；没有则留空}}
+- payoff_ids: {{本单元要收的伏笔 ID；没有则留空}}
 - next_hook: {{钩子类型 | 具体未决事件}}
 
 ## 卷末交接 · {{handoff}}
@@ -147,9 +150,10 @@ func (c planBookCodec) Decode(raw string) (planBookPayload, error) {
 }
 
 type planVolumePayload struct {
-	VolumeOutlineMarkdown string           `json:"volumeOutlineMarkdown"`
-	BookOutlineMarkdown   string           `json:"bookOutlineMarkdown"`
-	Cast                  []map[string]any `json:"cast"`
+	VolumeOutlineMarkdown string                        `json:"volumeOutlineMarkdown"`
+	ForeshadowAssignments []domain.ForeshadowAssignment `json:"foreshadowAssignments,omitempty"`
+	BookOutlineMarkdown   string                        `json:"bookOutlineMarkdown"`
+	Cast                  []map[string]any              `json:"cast"`
 	Settings              *struct {
 		Files map[string]string `json:"files"`
 	} `json:"settings"`

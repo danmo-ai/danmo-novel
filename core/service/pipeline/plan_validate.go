@@ -17,7 +17,7 @@ func outlineViolations(doc domain.StructuredMarkdown, kind string) []Violation {
 		out = append(out, Violation{Path: d.Path, Want: d.Message, Got: fmt.Sprintf("第 %d 行", d.Line)})
 	}
 	for _, f := range doc.Root.Fields {
-		if f.Name == "schema_version" || f.Name == "book_id" || f.Name == "volume_id" || f.Name == "title" || f.Name == "logline" || f.Name == "source_arc_id" || f.Name == "chapter_range" || f.Name == "goal" || f.Name == "central_conflict" || f.Name == "stakes" || f.Name == "entry_state" || f.Name == "exit_state" || f.Name == "cast" || f.Name == "deliverables" || f.Name == "open_questions" || f.Name == "next_volume_entry" {
+		if f.Name == "schema_version" || f.Name == "book_id" || f.Name == "volume_id" || f.Name == "title" || f.Name == "logline" || f.Name == "source_arc_id" || f.Name == "chapter_range" || f.Name == "goal" || f.Name == "central_conflict" || f.Name == "stakes" || f.Name == "entry_state" || f.Name == "exit_state" || f.Name == "cast" || f.Name == "deliverables" || f.Name == "open_questions" || f.Name == "next_volume_entry" || f.Name == "dramatic_question" || f.Name == "thread_moves" {
 			continue
 		}
 		out = append(out, Violation{Path: f.Name, Want: "已知根字段", Got: "未知字段"})
@@ -38,7 +38,7 @@ func outlineViolations(doc domain.StructuredMarkdown, kind string) []Violation {
 			requireFields(e, []string{"kind", "description", "opening_state", "ending_state"}, &out)
 		}
 	} else {
-		for _, f := range []string{"volume_id", "title", "source_arc_id", "chapter_range", "goal", "central_conflict", "stakes", "entry_state", "exit_state"} {
+		for _, f := range []string{"volume_id", "title", "source_arc_id", "chapter_range", "goal", "central_conflict", "stakes", "entry_state", "exit_state", "dramatic_question", "thread_moves", "deliverables"} {
 			requireRoot(doc, f, &out)
 		}
 		if len(doc.EntitiesOf("单元")) == 0 {
@@ -116,7 +116,7 @@ func validateVolumeInheritance(bookDoc, volumeDoc domain.StructuredMarkdown, vol
 	var vs []Violation
 	// goal 与 dramatic_question 不是同一字段：前者是本卷要完成的写作目标，
 	// 后者是要回答的读者悬念。绑在一起会强迫模型把目标写成问句。
-	for _, pair := range [][2]string{{"chapter_range", "chapter_range"}, {"entry_state", "entry_state"}, {"exit_state", "exit_state"}} {
+	for _, pair := range [][2]string{{"chapter_range", "chapter_range"}, {"entry_state", "entry_state"}, {"exit_state", "exit_state"}, {"central_conflict", "central_conflict"}, {"stakes", "stakes"}, {"thread_moves", "thread_moves"}, {"deliverables", "deliverables"}} {
 		parent, child := strings.TrimSpace(arc.Value(pair[0])), strings.TrimSpace(volumeDoc.Root.Value(pair[1]))
 		if child != parent {
 			vs = append(vs, Violation{Path: pair[1], Want: "继承总纲：" + parent, Got: child})

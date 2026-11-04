@@ -70,7 +70,7 @@ func TestConcurrentRunsKeepTheirOwnKnowledge(t *testing.T) {
 	// 重试发生在 B 结束之后，正是"共享 Runner 被改掉"会露馅的时刻。
 	runA, err := svc.Start(ctx, domain.TaskSpec{
 		Kind: domain.TaskReview, BookID: snap.Summary.ID, UnitID: "v01-U1",
-		BaseRevision: snap.Revision, SplitByChapter: true,
+		BaseRevision: snap.Revision,
 		KnowledgeIDs: []string{"01-pacing-structure"},
 	})
 	if err != nil {
@@ -86,7 +86,7 @@ func TestConcurrentRunsKeepTheirOwnKnowledge(t *testing.T) {
 	// 清的是共享字段）。
 	runB, err := svc.Start(ctx, domain.TaskSpec{
 		Kind: domain.TaskReview, BookID: snap.Summary.ID, UnitID: "v01-U2",
-		BaseRevision: snap.Revision, SplitByChapter: true,
+		BaseRevision: snap.Revision,
 	})
 	if err != nil {
 		t.Fatalf("start B: %v", err)

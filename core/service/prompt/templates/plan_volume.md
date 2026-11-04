@@ -17,4 +17,4 @@ output_protocol: volume-outline/v1
 职务/机构变化必须在所属单元之后添加「### 身份变更 · 单元ID-人物stem」，字段 stem/role_title/org/from_unit/reason；from_unit 等于所属单元 ID。普通地点、伤势、目标变化使用 state_changes，不要写成身份变更。
 修复要求：保留合规内容，只修复反馈指出的事项，返回完整文档。
 {{OUTPUT_PROTOCOL}}
-输出外壳为严格 JSON：{"volumeOutlineMarkdown":"..."}，其中字符串内容必须遵守上述协议。禁止输出 settings、cast、bookOutlineMarkdown。
+输出外壳为严格 JSON：{"volumeOutlineMarkdown":"...","foreshadowAssignments":[{"id":"FS-01","plantUnit":"v01-U1","payoffUnit":"v01-U2"}]}；分配仅细化本卷已有伏笔，不能修改卷级位置。禁止输出 settings、cast、bookOutlineMarkdown。

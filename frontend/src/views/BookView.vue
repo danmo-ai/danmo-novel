@@ -55,7 +55,7 @@ const customInstruction = ref('')
 const editingProse = ref(false)
 const editingOutline = ref(false)
 const isProseUnit = computed(() => Boolean(selectedUnit.value?.hasProse && selectedUnit.value.prosePath === editorPath.value))
-const stageLabels: Record<string, string> = { idea: '创意扩写', plan: '立项', outline: '细纲', write: '写作', review: '审校', structure_review: '结构审校', finalize: '定稿', revise: '修订', local_edit: '局部编辑', rewrite_entity: '重写设定' }
+const stageLabels: Record<string, string> = { idea: '创意扩写', plan: '立项', outline: '细纲', write: '写作', review: '审校', structure_review: '结构审校', outline_review: '细纲检查', finalize: '定稿', revise: '修订', local_edit: '局部编辑', rewrite_entity: '重写设定' }
 const hasBookOutline = computed(() => Boolean((store.currentBook?.files?.['outline/book_outline.md'] || '').trim()))
 // 立项工作台只服务「还没有总纲」的书：它是 idea loop 到一次结构化立项的入口。
 // 总纲一旦落盘，优化与重新立项都归大纲 Tab，避免两个页面做同一件事。
@@ -68,7 +68,7 @@ const hasIdeaProposal = computed(() => {
   return raw.split('\n').slice(idx + 1).join('\n').replace(/<!--[\s\S]*?-->/g, '').trim().length > 0
 })
 const hasVolumes = computed(() => (store.currentBook?.volumes?.length || 0) > 0)
-// 单元驱动工作流：proposed→细纲 → accepted→正文 → drafted→审校 → reviewed→定稿。
+// 单元驱动工作流：proposed→细纲 → accepted→正文 → drafted→审校 → reviewed→定稿核对 → finalized。
 // 逐单元闭环推进，下一单元细纲才能读到最新连续性账本。
 const FLOW_STEPS = [
   { key: 'outline', label: '细纲', desc: '单元合同' },
@@ -79,8 +79,8 @@ const FLOW_STEPS = [
 const flowState = computed(() => {
   const u = selectedUnit.value
   if (!u) return { active: -1, done: -1 }
-  const idx = { proposed: 0, accepted: 1, drafted: 2, reviewed: 3 }[u.status] ?? 0
-  return { active: idx, done: u.status === 'reviewed' ? 3 : idx - 1 }
+  const idx = { proposed: 0, accepted: 1, drafted: 2, reviewed: 3, finalized: 4 }[u.status] ?? 0
+  return { active: idx, done: u.status === 'finalized' ? 4 : idx - 1 }
 })
 // 单元按卷分组；默认展开选中单元所在卷，其余卷可折叠。
 const collapsedVolumes = ref<Set<number>>(new Set())
@@ -96,7 +96,7 @@ const volumeGroups = computed(() => {
       groups.push(g)
     }
     g.units.push(u)
-    if (u.status === 'reviewed') g.reviewed++
+    if (u.status === 'reviewed' || u.status === 'finalized') g.reviewed++
   }
   return groups.sort((a, b) => a.volume - b.volume)
 })
@@ -125,7 +125,7 @@ const primaryInfo = computed(() => {
   if (p.kind === 'outline') return { label: `生成 ${target} 细纲`, description: '第 1 步 · 补全单元写作合同；也可在单元栏随时重写细纲', target, stage: '细纲' }
   if (p.kind === 'write') return { label: `写 ${target} 正文`, description: '第 2 步 · 按合同生成候选稿；有正文后可在单元栏重写', target, stage: '写作' }
   if (p.kind === 'review') return { label: `审校 ${target}`, description: '第 3 步 · AI 审校；通过后在单元栏点「定稿」回写账本', target, stage: '审校' }
-  if (p.kind === 'finalize') return { label: `定稿 ${target}`, description: '第 4 步 · 本地定稿检查；接受后回写账本', target, stage: '定稿' }
+  if (p.kind === 'finalize') return { label: `定稿 ${target}`, description: '第 4 步 · 本地门禁与逐章账本核对；接受后统一提交', target, stage: '定稿' }
   return { label: '继续创作', description: '执行下一步', target, stage: stageLabels[p.kind] || '写作' }
 })
 
@@ -394,23 +394,23 @@ async function primaryAction() {
 }
 
 /** 对当前选中单元启动生产/重做；审校与定稿会切到审校页便于看结果。 */
-function runUnitAction(kind: 'outline' | 'write' | 'review' | 'finalize') {
+function runUnitAction(kind: 'outline' | 'write' | 'review' | 'finalize' | 'outline_review') {
   if (!selectedUnit.value || busy.value) return
-  if (kind === 'review' || kind === 'finalize') view.value = 'review'
+  if (kind === 'review' || kind === 'finalize' || kind === 'outline_review') view.value = 'review'
   else if (kind === 'outline' || kind === 'write') view.value = 'write'
   start(kind)
 }
 
 function runFlowStep(key: string) {
   if (!selectedUnit.value) return
-  if (key === 'outline' || key === 'write' || key === 'review' || key === 'finalize') {
+  if (key === 'outline' || key === 'write' || key === 'review' || key === 'finalize' || key === 'outline_review') {
     runUnitAction(key)
   }
 }
 
 async function accept(c: Candidate, force = false) {
   try {
-    // 接受修订就是交付终点：正文落盘、已修的问题从清单摘掉，不再自动起审校。
+    // 接受修订只落盘并按正文版本归档旧清单；不能把勾选当成已修复，也不自动起审校。
     //
     // 实测（同单元连续 6 轮）复审报出的"新问题"有 96%+ 落在这次没改过的原文上——
     // 是前几轮没扫到的旧账，不是修复引入的回归。自动复审会把这个循环无限延长，
@@ -537,7 +537,7 @@ async function retrySplitReview(unitId?: string) {
   try {
     const run = await store.startRun({
       kind: 'review', bookId: book.summary.id, baseRevision: book.revision,
-      unitId: targetId, splitByChapter: true, supersedeReview: true,
+      unitId: targetId, supersedeReview: true,
     })
     runDrawer.value = true
     if (pollTimer.value) clearInterval(pollTimer.value)
@@ -626,7 +626,7 @@ function chapterText(c: Candidate) {
   return (c.chapters || []).map((ch) => `## 第${ch.chapter}章 ${ch.title || ''}\n\n${ch.body}`).join('\n\n---\n\n')
 }
 const statusText: Record<string, string> = {
-  proposed: '待细纲', accepted: '待写', drafted: '草稿', reviewed: '定稿',
+  proposed: '待细纲', accepted: '待写', drafted: '草稿', reviewed: '已审校', finalized: '定稿',
 }
 const castExpanded = ref(false)
 const visibleCast = computed(() => {
@@ -891,8 +891,19 @@ function roleLabel(role?: string) {
         <p v-if="c.kind === 'structure_review'" class="muted">结构编辑只审查父级继承、因果、兑现和状态。按问题修复会生成新的文档候选，接受后才会写回 Markdown。</p>
         <!-- 修订候选：先看 diff 再落盘，接受不能是盲签。 -->
         <template v-else-if="c.kind === 'revise'">
-          <p class="muted">下面是相对现有正文的改动。确认无误后点「确认落盘」覆盖正文，这次修订即告完成；落盘后勾选过的问题从清单里摘掉，要复查请重新发起审校。</p>
+          <p class="muted">下面是相对现有正文的改动。确认无误后点「确认落盘」覆盖正文，这次修订即告完成；落盘后旧正文清单按版本归档，不再把已勾选等同于已修复；需要时请按新正文重新审校。</p>
           <ChapterDiff :base="c.baseChapters" :revised="c.chapters || []" />
+        </template>
+        <template v-else-if="c.kind === 'finalize' && c.actualChapters?.length">
+          <p class="muted">逐章核对实际正文；只有作者接受后，以下结果才进入连续性账本。</p>
+          <details v-for="ch in c.actualChapters" :key="ch.chapter" open>
+            <summary>第 {{ ch.chapter }} 章 · {{ ch.summary }}</summary>
+            <ul class="plan-files">
+              <li v-for="d in ch.stateDeltas || []" :key="`${d.stem}-${d.field}-${d.evidence}`">{{ d.stem }} · {{ d.field }}：{{ d.from }} → {{ d.to }}（{{ d.evidence }}）</li>
+              <li v-if="ch.plant?.length">实际埋下：{{ ch.plant.join('、') }}</li>
+              <li v-if="ch.payoff?.length">实际回收：{{ ch.payoff.join('、') }}</li>
+            </ul>
+          </details>
         </template>
         <pre v-else-if="c.chapters" class="candidate-prose">{{ chapterText(c) }}</pre>
         <pre v-else-if="c.unitOutlines" class="candidate-prose">{{ JSON.stringify(c.unitOutlines, null, 2) }}</pre>
@@ -988,11 +999,11 @@ h1 { font-family: var(--font-prose); margin: 6px 0 0; font-size: 30px; line-heig
 .unit-id { font-size: 12px; font-weight: 600; white-space: nowrap; }
 .unit-title { font-size: 11px; color: var(--ink-soft); line-height: 1.4; overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 1; -webkit-box-orient: vertical; }
 .unit-status { font-size: 10px; padding: 1px 7px; border-radius: 20px; background: rgba(20,35,31,.06); color: var(--ink-soft); white-space: nowrap; flex-shrink: 0; }
-.unit-status[data-status="reviewed"] { background: rgba(31,122,77,.12); color: var(--ok); }
+.unit-status[data-status="reviewed"], .unit-status[data-status="finalized"] { background: rgba(31,122,77,.12); color: var(--ok); }
 .unit-status[data-status="drafted"] { background: rgba(161,92,18,.12); color: var(--warn); }
 .unit-status[data-status="accepted"] { background: rgba(15,107,92,.12); color: var(--accent); }
 .dot { width: 7px; height: 7px; border-radius: 50%; background: #9aa; flex-shrink: 0; margin-top: 5px; }
-.dot[data-status="reviewed"] { background: var(--ok); }
+.dot[data-status="reviewed"], .dot[data-status="finalized"] { background: var(--ok); }
 .dot[data-status="drafted"] { background: var(--warn); }
 .dot[data-status="accepted"] { background: var(--accent); }
 .tree-empty { color: var(--ink-soft); font-size: 12px; padding: 16px 10px; }

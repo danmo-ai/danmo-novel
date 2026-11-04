@@ -66,6 +66,10 @@ func unionFindings(rounds [][]domain.ReviewFinding, body string) []domain.Review
 			f.RoundsHit = 1
 			e := &entry{f: f, start: start, end: end,
 				anchors: map[string]bool{}, evidKey: map[string]bool{}}
+			if evKey != "" {
+				f.ID = fmt.Sprintf("%s-%s", f.Lens, evKey)
+				e.f.ID = f.ID
+			}
 			if f.Anchor != "" {
 				e.anchors[f.Anchor] = true
 			}

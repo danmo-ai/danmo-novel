@@ -66,29 +66,10 @@ type Result struct {
 }
 
 func (r *Runner) RunWrite(ctx context.Context, snap domain.BookSnapshot, unit domain.UnitInfo, instruction string, modelID string) (Result, error) {
-	packet := contextsvc.BuildWritePacket(snap, unit, instruction, r.modelMaxOut(modelID))
-	if !packet.Policy.SplitByChapter {
-		return r.runJSON(ctx, snap, packet, modelID, domain.TaskWrite, unit.UnitID, unit.ProsePath, func(raw string, cand *domain.Candidate) error {
-			var parsed struct {
-				Chapters []domain.ChapterDraft `json:"chapters"`
-			}
-			if err := unmarshalJSON(raw, &parsed); err != nil {
-				return err
-			}
-			// 章号与章体是下游一切计算的基础；漏章尤其危险——它不会报错，
-			// 只会让摘要、账本游标和下次续写全部错位。
-			if err := validateChapters("正文", parsed.Chapters, unit.ChapterFrom, unit.ChapterTo); err != nil {
-				return err
-			}
-			cand.Chapters = parsed.Chapters
-			return nil
-		}, func(cand domain.Candidate) gates.Report {
-			// 与审校共用同一个每章目标（books.ChapterTarget）：写作阶段与审校
-			// 阶段的字数判定不可能再分叉。
-			return gates.CheckProseWithRules(cand.Chapters, books.ChapterTarget(unit), r.proseRules())
-		})
+	if err := contextsvc.ValidateUnitInput(snap, unit); err != nil {
+		return Result{}, err
 	}
-
+	packet := contextsvc.BuildWritePacket(snap, unit, instruction)
 	// Fixed per-chapter budget. Each call generates exactly one chapter.
 	from, to := unit.ChapterFrom, unit.ChapterTo
 	if from <= 0 || to < from {
@@ -101,6 +82,7 @@ func (r *Runner) RunWrite(ctx context.Context, snap domain.BookSnapshot, unit do
 		CreatedAt: time.Now().UTC(),
 	}
 	var calls []domain.CallRecord
+	originalExtras := map[int]map[string]any{}
 	// 每章目标字数放在"本次只写这一章"的指令里：按章调用时这条是模型最后读到
 	// 的、也是唯一针对本次输出的约束，比 payload 里那段通用说明更难忽略。
 	target := books.ChapterTarget(unit)
@@ -119,10 +101,18 @@ func (r *Runner) RunWrite(ctx context.Context, snap domain.BookSnapshot, unit do
 		if beats != "" {
 			extra[contextsvc.ChapterBeatsKey] = beats
 		}
-		if len(cand.Chapters) > 0 {
-			prev := cand.Chapters[len(cand.Chapters)-1]
-			extra["previousChapter"] = map[string]any{"chapter": prev.Chapter, "body": prev.Body, "note": "仅供承接，不要重复输出"}
+		// 本章伏笔：只给本章要埋/要收的条目与已埋未收清单。
+		// 按章变化，所以必须走 extra（payload 尾部），不能留在 documents。
+		if foreshadow := contextsvc.ForeshadowForChapter(snap, unit, ch); foreshadow != "" {
+			extra[contextsvc.ChapterForeshadowsKey] = foreshadow
 		}
+		if tail, source := contextsvc.PreviousChapterTail(snap, unit, cand.Chapters, ch); tail != "" {
+			extra["previousChapterTail"] = map[string]any{
+				"chapter": ch - 1, "body": tail, "source": source,
+				"note": "仅供语感与承接，不要复述上一章剧情",
+			}
+		}
+		originalExtras[ch] = extra
 		user := contextsvc.MergeExtraIntoUserPayload(r.withKnowledge(chapterPacket.UserPrompt), extra)
 		draft, rec, err := r.generateChapter(ctx, modelID, chapterPacket, user, ch, &calls)
 		if err != nil {
@@ -132,7 +122,7 @@ func (r *Runner) RunWrite(ctx context.Context, snap domain.BookSnapshot, unit do
 		cand.Chapters = append(cand.Chapters, draft)
 	}
 	// 按章定向修复：单章硬门不过只重生成该章，其他章不动。
-	cand.Chapters = r.repairFailedChapters(ctx, modelID, packet, unit, cand.Chapters, target, &calls)
+	cand.Chapters = r.repairFailedChapters(ctx, modelID, packet, unit, cand.Chapters, target, &calls, originalExtras)
 	rep := gates.CheckProseWithRules(cand.Chapters, target, r.proseRules())
 	cand.Findings = append(cand.Findings, rep.Findings...)
 	return Result{Candidate: cand, Calls: calls, Packet: packet, LocalGate: rep}, nil
@@ -165,16 +155,8 @@ func (r *Runner) RunOutline(ctx context.Context, snap domain.BookSnapshot, volum
 		if err := ValidateOutlineContract(units, unitIDs); err != nil {
 			return err
 		}
-		if volumeDoc, ok := books.StructuredOutlineFor(snap, fmt.Sprintf("outline/volumes/v%02d.md", volume)); ok && volumeDoc.Valid() {
-			for _, unit := range units {
-				seed, found := volumeDoc.Entity("单元", unit.UnitID)
-				if !found {
-					return contractFail("细纲父子合同", []Violation{{Path: "unitId", Want: "卷纲已有单元种子", Got: unit.UnitID}})
-				}
-				if err := ValidateUnitSeedInheritance(unit, seed); err != nil {
-					return err
-				}
-			}
+		if err := ValidateOutlineInheritance(snap, volume, units); err != nil {
+			return err
 		}
 		cand.UnitOutlines = units
 		return nil
@@ -260,17 +242,35 @@ func (r *Runner) RunRewriteEntity(ctx context.Context, snap domain.BookSnapshot,
 	})
 }
 
-// RunFinalize performs local gates only — no extra LLM review loop.
-func (r *Runner) RunFinalize(_ context.Context, snap domain.BookSnapshot, unit domain.UnitInfo) (Result, error) {
+// RunFinalize performs local gates plus bounded per-chapter actual-ledger reconciliation.
+func (r *Runner) RunFinalize(ctx context.Context, snap domain.BookSnapshot, unit domain.UnitInfo, reviewFindings []domain.ReviewFinding, modelID string) (Result, error) {
 	chapters := gates.ParseProseChapters(unit.ProseRaw)
+	if err := validateChapters("定稿正文", chapters, unit.ChapterFrom, unit.ChapterTo); err != nil {
+		return Result{}, err
+	}
 	local := gates.CheckProseWithRules(chapters, books.ChapterTarget(unit), r.proseRules())
+	if len(reviewFindings) > 0 {
+		local.Findings = append(local.Findings, reviewFindings...)
+	}
+	if verdict := domain.ReviewVerdict(reviewFindings); verdict == domain.ReviewBlocking || verdict == domain.ReviewUnfinished {
+		local.OK = false
+	}
 	cand := domain.Candidate{
 		ID: uuid.NewString(), BookID: snap.Summary.ID, Kind: domain.TaskFinalize,
 		Status: domain.CandidateOpen, BaseRevision: snap.Revision,
 		TargetPath: unit.ProsePath, UnitID: unit.UnitID,
 		Chapters: chapters, Findings: local.Findings, CreatedAt: time.Now().UTC(),
 	}
-	return Result{Candidate: cand, LocalGate: local}, nil
+	var calls []domain.CallRecord
+	for _, ch := range chapters {
+		actual, recs, err := r.reconcileChapter(ctx, snap, unit, ch, modelID)
+		calls = append(calls, recs...)
+		if err != nil {
+			return Result{Candidate: cand, Calls: calls}, err
+		}
+		cand.ActualChapters = append(cand.ActualChapters, actual)
+	}
+	return Result{Candidate: cand, Calls: calls, LocalGate: local, Packet: domain.ContextPacket{TaskKind: domain.TaskFinalize, BookID: snap.Summary.ID, UnitID: unit.UnitID, Policy: domain.CallPolicy{MaxCalls: len(chapters) * 2, AllowOneRepair: true, TimeoutSec: 600}}}, nil
 }
 
 // generateChapter produces one chapter, returning the parsed draft.
@@ -340,9 +340,9 @@ func parseChapterDraft(raw string, ch int) (domain.ChapterDraft, error) {
 			Got:  "空",
 		}})
 	}
-	// 章号由调用方决定：这是"一次一章"的调用，模型给错号说明它理解偏差，
-	// 但正文仍属本章，覆盖比丢弃更安全（丢弃会让整单元重写）。
-	parsed.Chapters[0].Chapter = ch
+	if parsed.Chapters[0].Chapter != ch {
+		return domain.ChapterDraft{}, contractFail(fmt.Sprintf("第 %d 章正文", ch), []Violation{{Path: "chapters[0].chapter", Want: fmt.Sprint(ch), Got: fmt.Sprint(parsed.Chapters[0].Chapter)}})
+	}
 	return parsed.Chapters[0], nil
 }
 
@@ -351,7 +351,7 @@ func parseChapterDraft(raw string, ch int) (domain.ChapterDraft, error) {
 //
 // target 必须与审校阶段一致（books.ChapterTarget），否则写作阶段会
 // 觉得"字数够了"而审校阶段判 blocking，白跑一轮修复。
-func (r *Runner) repairFailedChapters(ctx context.Context, modelID string, packet domain.ContextPacket, unit domain.UnitInfo, chapters []domain.ChapterDraft, target int, calls *[]domain.CallRecord) []domain.ChapterDraft {
+func (r *Runner) repairFailedChapters(ctx context.Context, modelID string, packet domain.ContextPacket, unit domain.UnitInfo, chapters []domain.ChapterDraft, target int, calls *[]domain.CallRecord, originalExtras map[int]map[string]any) []domain.ChapterDraft {
 	rep := gates.CheckProseWithRules(chapters, target, r.proseRules())
 	if rep.OK {
 		return chapters
@@ -370,13 +370,15 @@ func (r *Runner) repairFailedChapters(ctx context.Context, modelID string, packe
 		// 用与生成该章时完全相同的包（同样的 blocks、同样的节拍位置），
 		// 修复才能直接命中刚才那次生成留下的前缀缓存；多塞一句诊断只在尾部。
 		chapterPacket, beats := contextsvc.NarrowBeats(packet, unit, ch.Chapter)
-		extra := map[string]any{
-			"chapter": ch.Chapter,
-			"repairChapter": map[string]any{
-				"findings": detailedFindings(fs),
-				"body":     ch.Body,
-				"rule":     repairRule(ch.Chapter, fs, target),
-			},
+		extra := map[string]any{}
+		for key, value := range originalExtras[ch.Chapter] {
+			extra[key] = value
+		}
+		extra["chapter"] = ch.Chapter
+		extra["repairChapter"] = map[string]any{
+			"findings": detailedFindings(fs),
+			"body":     ch.Body,
+			"rule":     repairRule(ch.Chapter, fs, target),
 		}
 		if beats != "" {
 			extra[contextsvc.ChapterBeatsKey] = beats
@@ -428,7 +430,22 @@ func (r *Runner) runJSON(
 	parse func(string, *domain.Candidate) error,
 	gateFn func(domain.Candidate) gates.Report,
 ) (Result, error) {
-	if modelID == "" {
+	return r.runJSONWithRecord(ctx, snap, packet, modelID, kind, unitID, targetPath, func(raw string, cand *domain.Candidate, _ domain.CallRecord) error {
+		return parse(raw, cand)
+	}, gateFn)
+}
+
+func (r *Runner) runJSONWithRecord(
+	ctx context.Context,
+	snap domain.BookSnapshot,
+	packet domain.ContextPacket,
+	modelID string,
+	kind domain.TaskKind,
+	unitID, targetPath string,
+	parse func(string, *domain.Candidate, domain.CallRecord) error,
+	gateFn func(domain.Candidate) gates.Report,
+) (Result, error) {
+	if modelID == "" && kind != domain.TaskFinalize {
 		return Result{}, fmt.Errorf("modelId required")
 	}
 	var calls []domain.CallRecord
@@ -475,7 +492,7 @@ func (r *Runner) runJSON(
 			VolumeID:     packet.VolumeID,
 			CreatedAt:    time.Now().UTC(),
 		}
-		if err := parse(raw, &cand); err != nil {
+		if err := parse(raw, &cand, rec); err != nil {
 			lastErr = err
 			truncated := truncatedOutput(rec)
 			if truncated {

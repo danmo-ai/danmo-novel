@@ -28,7 +28,8 @@ func ClassifySetting(path string) SettingLayer {
 		return LayerAuthorOnly
 	case p == "outline/book_outline.md", p == "book-bible.md",
 		strings.HasPrefix(p, "canon/cast/"), p == books.IdentityTimelinePath,
-		p == "canon/reveal-schedule.md", p == "canon/world.md", p == "canon/goldfinger.md":
+		p == books.ForeshadowSchedulePath,
+		p == "canon/world.md", p == "canon/goldfinger.md":
 		return LayerDerived
 	default:
 		return LayerCraft
@@ -129,8 +130,8 @@ func AddRewriteBasis(snap domain.BookSnapshot, target string, add func(id, label
 		addVolume()
 		addBible()
 		// 揭示计划只作公开节奏参考，不带底牌细节。
-		if body := strings.TrimSpace(snap.Files["canon/reveal-schedule.md"]); body != "" && target != "canon/reveal-schedule.md" {
-			add("basis-reveal", "依据·揭示计划", "canon/reveal-schedule.md", clip(body, 1000))
+		if body := strings.TrimSpace(snap.Files[books.ForeshadowSchedulePath]); body != "" && target != books.ForeshadowSchedulePath {
+			add("basis-foreshadow", "依据·伏笔登记表", books.ForeshadowSchedulePath, clip(body, 1000))
 		}
 		if cont := ExtractContinuityLatest(snap, []string{stem}, ContinuityForReview); cont != "" {
 			add("basis-continuity", "依据·人物当前状态", books.StatePath, clip(cont, 1200))
@@ -147,7 +148,7 @@ func AddRewriteBasis(snap domain.BookSnapshot, target string, add func(id, label
 			}
 		}
 
-	case target == "canon/reveal-schedule.md":
+	case target == books.ForeshadowSchedulePath:
 		// 揭示计划依据：总纲 + 当前卷纲 + 公开账本（已揭/未揭），不读 author-lore 到公开重写里。
 		addVolume()
 		addBible()
@@ -159,8 +160,8 @@ func AddRewriteBasis(snap domain.BookSnapshot, target string, add func(id, label
 		addVolume()
 		addBible()
 		// 底牌重写允许读揭示计划（同层），不注入公开正文。
-		if body := strings.TrimSpace(snap.Files["canon/reveal-schedule.md"]); body != "" {
-			add("basis-reveal", "依据·揭示计划", "canon/reveal-schedule.md", clip(body, 1600))
+		if body := strings.TrimSpace(snap.Files[books.ForeshadowSchedulePath]); body != "" {
+			add("basis-foreshadow", "依据·伏笔登记表", books.ForeshadowSchedulePath, clip(body, 1600))
 		}
 
 	case target == books.IdentityTimelinePath:

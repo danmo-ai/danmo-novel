@@ -145,23 +145,20 @@ func NewRouter(app *App) *gin.Engine {
 			_ = app.Settings.Update(func(s *config.Settings) { s.ModelAssignments = body.Assignments })
 			c.JSON(200, app.Settings.Get())
 		})
-		// 审校分章是唯一的粒度开关；人工审校、审校页重审与「通过」后的定稿都读它，
-		// 否则同一个单元会得到不同粒度的 findings。
+		// 审校固定按章；设置只控制并行度与轮数。
 		api.GET("/settings/review", func(c *gin.Context) {
 			c.JSON(200, gin.H{"review": app.Settings.Get().Review})
 		})
 		api.PUT("/settings/review", func(c *gin.Context) {
 			var body struct {
-				SplitByChapter bool `json:"splitByChapter"`
-				Concurrency    int  `json:"concurrency"`
-				Rounds         int  `json:"rounds"`
+				Concurrency int `json:"concurrency"`
+				Rounds      int `json:"rounds"`
 			}
 			if err := c.BindJSON(&body); err != nil {
 				c.JSON(400, gin.H{"error": err.Error()})
 				return
 			}
 			_ = app.Settings.Update(func(s *config.Settings) {
-				s.Review.SplitByChapter = body.SplitByChapter
 				if body.Concurrency > 0 {
 					s.Review.Concurrency = body.Concurrency
 				}
@@ -493,6 +490,29 @@ func registerBooks(api *gin.RouterGroup, app *App) {
 			return
 		}
 		c.JSON(200, rep)
+	})
+	// 一次性迁移：揭示计划 → 伏笔登记表，并清掉 outline 里的两个旧引用字段。
+	api.POST("/books/:id/migrate-foreshadow", func(c *gin.Context) {
+		root, _, err := app.Store.GetBookRoot(c.Request.Context(), c.Param("id"))
+		if err != nil {
+			c.JSON(404, gin.H{"error": err.Error()})
+			return
+		}
+		// 顺序固定：先按新 schema 平移伏笔（揭示计划还得先读得到），
+		// 再规整字段与旧文件，最后回填章级位置。
+		mig, migErr := books.MigrateRevealToForeshadow(root)
+		norm, normErr := books.NormalizeBookData(root)
+		updated, backfillErr := books.BackfillForeshadowChapters(root)
+		if migErr != nil || normErr != nil {
+			c.JSON(500, gin.H{"error": errorString(firstErr(migErr, normErr)), "foreshadow": mig, "normalize": norm})
+			return
+		}
+		c.JSON(200, gin.H{
+			"foreshadow":         mig,
+			"normalize":          norm,
+			"chaptersBackfilled": updated,
+			"backfillError":      errorString(backfillErr),
+		})
 	})
 	api.POST("/books/:id/enable-write", func(c *gin.Context) {
 		root, _, err := app.Store.GetBookRoot(c.Request.Context(), c.Param("id"))
@@ -947,4 +967,22 @@ func clampInt(v, lo, hi int) int {
 		return hi
 	}
 	return v
+}
+
+// errorString 把可选错误渲染成 JSON 可读的字符串；nil 时返回空串。
+func errorString(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
+}
+
+// firstErr 返回第一个非 nil 的错误，便于把多步迁移的失败原因收敛成一句话。
+func firstErr(errs ...error) error {
+	for _, err := range errs {
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }

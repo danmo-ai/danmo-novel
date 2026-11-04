@@ -16,7 +16,7 @@ func TestPacketsDeferOutputBudgetToModelConfig(t *testing.T) {
 		"plan-reinit": BuildPlanPacketWithMode(snap, 1, domain.PlanModeReinit, ""),
 		"plan-volume": BuildPlanPacketWithMode(snap, 1, domain.PlanModeVolume, ""),
 		"outline":     BuildOutlinePacket(snap, 1, nil, ""),
-		"review":      BuildReviewPacket(snap, domain.UnitInfo{UnitID: "v01-U1", ChapterFrom: 1, ChapterTo: 1}, nil, ""),
+		"review":      BuildChapterReviewPacket(snap, domain.UnitInfo{UnitID: "v01-U1", ChapterFrom: 1, ChapterTo: 1}, domain.ChapterDraft{Chapter: 1}, "", ReviewBaseline{}),
 		"local-edit":  BuildLocalEditPacket(snap, domain.TextSelection{Text: "原文"}, "改一下"),
 	}
 	for name, p := range packets {

@@ -34,8 +34,8 @@ func volumeInheritanceFixture(goal string) (domain.BookSnapshot, string) {
 - thread_moves: main=未开始->已完成
 - deliverables: 完成第一次行动
 - open_questions: 下一步是什么
-- reveal_ids: R1
-- forbidden_reveal_ids: R2
+- plant_ids: FS-01
+- payoff_ids: FS-02
 - next_volume_entry: 继续行动
 
 ### 转折 · event-1
@@ -51,6 +51,9 @@ func volumeInheritanceFixture(goal string) (domain.BookSnapshot, string) {
 - source_arc_id: arc-v01
 - chapter_range: 1-6
 - goal: ` + goal + `
+- dramatic_question: 能否在质疑中完成目标？
+- thread_moves: main=未开始->已完成
+- deliverables: 完成第一次行动
 - central_conflict: 目标与阻碍
 - stakes: 失败代价
 - entry_state: 未开始
@@ -81,8 +84,8 @@ func volumeInheritanceFixture(goal string) (domain.BookSnapshot, string) {
 - clock_gap_days: 0
 - thread_ids: main
 - event_ids: event-1
-- reveal_ids: R1
-- forbidden_reveal_ids: R2
+- plant_ids: FS-01
+- payoff_ids: FS-02
 - next_hook: 信息缺口 | 签名不一致
 `
 	snap := domain.BookSnapshot{
@@ -90,7 +93,7 @@ func volumeInheritanceFixture(goal string) (domain.BookSnapshot, string) {
 		Files: map[string]string{
 			"outline/book_outline.md":          book,
 			"outline/volumes/v01.md":           volume,
-			"canon/reveal-schedule.md":         sampleSettings()["canon/reveal-schedule.md"],
+			ForeshadowSchedulePath:             sampleSettings()[ForeshadowSchedulePath],
 			"outline/volumes/v01.md#decorator": "ignore",
 		},
 		Cast: []domain.CastCard{{Stem: "lin", Name: "林晚", Status: domain.CastCanon}},

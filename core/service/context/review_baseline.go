@@ -13,12 +13,14 @@ import (
 // Built once per unit review so each chapter call only re-carries the mutable
 // part: that chapter's own prose plus the previous chapter's tail.
 type ReviewBaseline struct {
-	Contract string // NormalizeUnitContract(ContractWithoutBeats)
+	Contract     string
+	TimeContract string
 	// Facts 已废弃：连续性状态改由 continuity/state.yaml 提供。
 	Facts       string
 	CastCards   string // ExtractCastForWriteWithIdentity per on_stage
 	Relations   string // extractOnStageRelations
-	Reveal      string // ExtractRevealForVolume
+	Foreshadow  string // ForeshadowForReview（本单元负责埋/收的条目）
+	Ability     string // ExtractAbilityLimits（能力代价与上限）
 	Style       string // ExtractStyle + 写作规则压缩
 	LockedTerms string // ExtractLockedTerms 当前卷
 	GenreKB     string // GenreBullets
@@ -67,14 +69,16 @@ func BuildReviewBaseline(snap domain.BookSnapshot, unit domain.UnitInfo, localFi
 	b := ReviewBaseline{
 		// scenes 已由 BuildChapterReviewPacket 按章注入「场面节拍」块，
 		// 这里必须剥掉，否则同一份节拍在审校提示词里出现两遍。
-		Contract:    TrimContract(NormalizeUnitContract(ContractWithoutBeats(unit.OutlineRaw)), domain.TaskReview),
-		Relations:   extractOnStageRelations(snap.Cast, onStage),
-		Reveal:      ExtractRevealForVolume(snap.Files["canon/reveal-schedule.md"], unit.Volume),
-		Style:       ExtractStyle(snap.Files["canon/style-fingerprint.md"]) + "\n\n" + clip(snap.Files["canon/writing-rules.md"], 420),
-		LockedTerms: ExtractLockedTerms(snap.Files["canon/locked-terms.yaml"], volumeID),
-		GenreKB:     novel.GenreBullets(snap.Summary.Genre, snap.Summary.Subgenre),
+		Contract:     TrimContract(ContractWithoutBeats(unit.OutlineRaw), domain.TaskReview),
+		TimeContract: buildTimeGuidance(snap, unit),
+		Relations:    extractOnStageRelations(snap.Cast, onStage),
+		Foreshadow:   ForeshadowForReview(snap, unit),
+		Ability:      ExtractAbilityLimits(snap.Files["canon/world.md"], snap.Files["canon/goldfinger.md"]),
+		Style:        ExtractStyle(snap.Files["canon/style-fingerprint.md"]) + "\n\n" + clip(snap.Files["canon/writing-rules.md"], 420),
+		LockedTerms:  ExtractLockedTerms(snap.Files["canon/locked-terms.yaml"], volumeID),
+		GenreKB:      novel.GenreBullets(snap.Summary.Genre, snap.Summary.Subgenre),
 		// 卷摘要可能有几万字，只取尾部；与 BuildWritePacket 的 prev-summary 一致。
-		PrevSummary: clipTail(latestSummaryTail(snap, unit.Volume), 1200),
+		PrevSummary: clipTail(SummaryBeforeUnit(snap, unit), 1200),
 	}
 	// 规则来源优先级：本书文件 > 作者库覆盖 > 内置文章。
 	b.Rules, b.RulesSource = ResolveReviewRules(snap, libraryRules)
@@ -121,9 +125,8 @@ func localGateForChapter(findings []domain.ReviewFinding, chapter int) string {
 // 曾经两边各写一套：修订只有 8 块、审校 12 块，第 5 块顺序还不同——结果就是
 // 13819 字的共享正文一个 token 都没命中。
 //
-// 修订用不到的块（审校清单、上一章末）照带：它们已在前缀里，边际成本近零，
-// 而少带一块就多一处前缀分叉。
-func chapterContextBlocks(snap domain.BookSnapshot, unit domain.UnitInfo, ch domain.ChapterDraft, prevTail string, baseline ReviewBaseline) []domain.ContextBlock {
+// 审校清单只服务 review；修订共享人物、事实、正文和时序，不带整套审稿规则。
+func chapterContextBlocks(snap domain.BookSnapshot, unit domain.UnitInfo, ch domain.ChapterDraft, prevTail string, baseline ReviewBaseline, reviewRules bool) []domain.ContextBlock {
 	blocks := []domain.ContextBlock{}
 	add := func(id, label, source, content string) {
 		content = strings.TrimSpace(content)
@@ -134,9 +137,11 @@ func chapterContextBlocks(snap domain.BookSnapshot, unit domain.UnitInfo, ch dom
 	}
 
 	add("unit-contract", "单元合同", unit.OutlinePath, baseline.Contract)
+	add("time-contract", "本章时间合同", unit.OutlinePath, baseline.TimeContract)
 	add("continuity", "连续性状态", books.StatePath, ExtractContinuity(snap, unit, extractOnStage(unit.OutlineRaw), ContinuityForReview))
 	add("relations", "在场关系", "canon/cast", baseline.Relations)
-	add("reveal", "揭示约束", "canon/reveal-schedule.md", baseline.Reveal)
+	add("foreshadows", "本单元伏笔", books.ForeshadowSchedulePath, baseline.Foreshadow)
+	add("ability-limits", "能力上限", "canon/goldfinger.md", baseline.Ability)
 	add("style", "风格与写作规则", "canon/style-fingerprint.md", baseline.Style)
 	add("locked-terms", "锁词", "canon/locked-terms.yaml", baseline.LockedTerms)
 	add("genre-kb", "题材写时约束", "knowledge:"+snap.Summary.Genre, baseline.GenreKB)
@@ -148,9 +153,11 @@ func chapterContextBlocks(snap domain.BookSnapshot, unit domain.UnitInfo, ch dom
 	case RulesFromLibrary:
 		rulesSource = "knowledge:25-review-checklist.md（作者已编辑）"
 	}
-	add("review-rules", "审校清单", rulesSource, baseline.Rules)
+	if reviewRules {
+		add("review-rules", "审校清单", rulesSource, baseline.Rules)
+	}
 	add("cast", "在场人物", "canon/cast", baseline.CastCards)
-	if baseline.PrevSummary != "" && prevTail == baseline.PrevTail {
+	if prevTail == "" && baseline.PrevSummary != "" {
 		// 首章没有"本单元上一章"，带上单元摘要；其余章带上一章末。
 		add("prev-summary", "最近章摘要", "continuity/summaries", baseline.PrevSummary)
 	} else if prevTail != "" {
@@ -170,13 +177,13 @@ func chapterContextBlocks(snap domain.BookSnapshot, unit domain.UnitInfo, ch dom
 // BuildChapterReviewPacket assembles the per-chapter packet.
 // Baseline blocks are identical across chapters; the only variable parts are
 // the chapter's own prose and the previous chapter's tail (both static).
-func BuildChapterReviewPacket(snap domain.BookSnapshot, unit domain.UnitInfo, ch domain.ChapterDraft, prevTail string, baseline ReviewBaseline, modelMaxOut int) domain.ContextPacket {
+func BuildChapterReviewPacket(snap domain.BookSnapshot, unit domain.UnitInfo, ch domain.ChapterDraft, prevTail string, baseline ReviewBaseline) domain.ContextPacket {
 	policy := DefaultPolicy(domain.TaskReview, 1)
 
-	blocks := chapterContextBlocks(snap, unit, ch, prevTail, baseline)
+	blocks := chapterContextBlocks(snap, unit, ch, prevTail, baseline, true)
 	hashes := map[string]string{unit.ProsePath: shortHash(ch.Body)}
 	for _, b := range blocks {
-		hashes[b.Source] = shortHash(b.Content)
+		hashes[b.ID+"|"+b.Source] = shortHash(b.Content)
 	}
 
 	// system 只放两种任务都成立的规则，契约随 instruction 下发——这样审校与
@@ -220,10 +227,10 @@ func revisePacket(snap domain.BookSnapshot, unit domain.UnitInfo, ch domain.Chap
 	policy.MaxCalls = 3
 	policy.AllowOneRepair = true
 
-	blocks := chapterContextBlocks(snap, unit, ch, prevTail, baseline)
+	blocks := chapterContextBlocks(snap, unit, ch, prevTail, baseline, false)
 	hashes := map[string]string{unit.ProsePath: shortHash(ch.Body)}
 	for _, b := range blocks {
-		hashes[b.Source] = shortHash(b.Content)
+		hashes[b.ID+"|"+b.Source] = shortHash(b.Content)
 	}
 
 	extra := map[string]any{
@@ -256,7 +263,7 @@ func revisePacket(snap domain.BookSnapshot, unit domain.UnitInfo, ch domain.Chap
 //
 // system 与审校逐字相同（ChapterStageSystemPrompt），契约走 instruction：
 // 这样勾选后这次修订的 prompt 前缀几乎全部命中审校留下的缓存。
-func BuildReviseChapterPacket(snap domain.BookSnapshot, unit domain.UnitInfo, ch domain.ChapterDraft, findings []domain.ReviewFinding, prevTail string, baseline ReviewBaseline, modelMaxOut int) domain.ContextPacket {
+func BuildReviseChapterPacket(snap domain.BookSnapshot, unit domain.UnitInfo, ch domain.ChapterDraft, findings []domain.ReviewFinding, prevTail string, baseline ReviewBaseline) domain.ContextPacket {
 	return revisePacket(snap, unit, ch, findings, prevTail, baseline,
 		novel.ChapterStageSystemPrompt(), "revise_patch",
 		fmt.Sprintf("只修订第 %d 章，针对 reviseFindings 列出的问题给出最小改动。\n\n%s",
@@ -267,7 +274,7 @@ func BuildReviseChapterPacket(snap domain.BookSnapshot, unit domain.UnitInfo, ch
 // the patch path has failed: it is the last attempt before the run errors out.
 // Blocks 与 system 都与补丁包相同，只有 instruction 里的契约不同——所以前两次
 // 失败不会把这次也变成冷启动。
-func BuildReviseChapterFallbackPacket(snap domain.BookSnapshot, unit domain.UnitInfo, ch domain.ChapterDraft, findings []domain.ReviewFinding, prevTail string, baseline ReviewBaseline, modelMaxOut int) domain.ContextPacket {
+func BuildReviseChapterFallbackPacket(snap domain.BookSnapshot, unit domain.UnitInfo, ch domain.ChapterDraft, findings []domain.ReviewFinding, prevTail string, baseline ReviewBaseline) domain.ContextPacket {
 	return revisePacket(snap, unit, ch, findings, prevTail, baseline,
 		novel.ChapterStageSystemPrompt(), "revise",
 		fmt.Sprintf("只修订第 %d 章，针对 reviseFindings 列出的问题最小改动。\n\n%s",

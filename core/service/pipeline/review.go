@@ -17,10 +17,6 @@ import (
 
 // ReviewOptions configures a unit review run.
 type ReviewOptions struct {
-	// SplitByChapter runs one LLM call per chapter instead of one unit-wide call.
-	// The baseline context is built once; each chapter call only carries that
-	// chapter's prose plus the previous chapter's tail.
-	SplitByChapter bool
 	// Concurrency bounds how many chapter calls run in parallel (default 3).
 	Concurrency int
 	// Rounds is how many independent review passes each chapter gets (default 3).
@@ -51,10 +47,11 @@ func hasBlockingFinding(fs []domain.ReviewFinding) bool {
 	return false
 }
 
-// RunReviewByChapter runs one review call per chapter, in bounded parallel.
-// 单章失败不会带走其他章的结论：它们仍随候选一起落盘，另附一条「审校未覆盖」
-// 提示，下游据此判成"审校不完整"，不会被当成"没有问题"放行。
-func (r *Runner) RunReviewByChapter(ctx context.Context, snap domain.BookSnapshot, unit domain.UnitInfo, modelID string, opts ReviewOptions) (Result, error) {
+// RunReview 固定逐章审校；候选覆盖整个单元，未成功章节不会被当成无问题。
+func (r *Runner) RunReview(ctx context.Context, snap domain.BookSnapshot, unit domain.UnitInfo, modelID string, opts ReviewOptions) (Result, error) {
+	if err := contextsvc.ValidateUnitInput(snap, unit); err != nil {
+		return Result{}, err
+	}
 	chapters := gates.ParseProseChapters(unit.ProseRaw)
 	if len(chapters) == 0 {
 		return Result{}, fmt.Errorf("no chapters to review")
@@ -64,6 +61,10 @@ func (r *Runner) RunReviewByChapter(ctx context.Context, snap domain.BookSnapsho
 	// 身份一致性是确定性的本地判定，必须在审校清单里就能看见。
 	// 只在定稿查的代价是：正文全写完了才发现规划与时间线冲突，而那时"修哪个"已经很难。
 	local.Findings = append(local.Findings, books.IdentityDeltaFindings(snap.IdentitySegments, unit, unit.OutlineRaw)...)
+	// 陈旧状态提示：某个字段已经若干个单元没被刷新过。
+	// 它不阻断（过期与否要人判断），但必须可见——这是目前唯一能让作者注意到
+	// 「账本里还挂着六个单元前的伤势」的机制。
+	local.Findings = append(local.Findings, r.StaleCharacterFindings(snap, unit)...)
 	if hasBlockingFinding(local.Findings) {
 		local.OK = false
 	}
@@ -93,7 +94,7 @@ func (r *Runner) RunReviewByChapter(ctx context.Context, snap domain.BookSnapsho
 			if idx > 0 {
 				prevTail = tailOf(chapters[idx-1].Body, 800)
 			}
-			packet := contextsvc.BuildChapterReviewPacket(snap, unit, ch, prevTail, baseline, r.modelMaxOut(modelID))
+			packet := contextsvc.BuildChapterReviewPacket(snap, unit, ch, prevTail, baseline)
 			fs, calls, err := r.reviewChapter(ctx, modelID, packet, ch.Chapter, opts.Rounds, ch.Body)
 			results[idx].findings = fs
 			results[idx].calls = calls
@@ -128,7 +129,7 @@ func (r *Runner) RunReviewByChapter(ctx context.Context, snap domain.BookSnapsho
 
 	res := Result{Candidate: cand, Calls: allCalls, LocalGate: local}
 	// 让 run.Policy / ContextSummary 有真实值，否则 UI 显示"调用预算 0 次"。
-	res.Packet = contextsvc.BuildChapterReviewPacket(snap, unit, chapters[0], baseline.PrevTail, baseline, r.modelMaxOut(modelID))
+	res.Packet = contextsvc.BuildChapterReviewPacket(snap, unit, chapters[0], baseline.PrevTail, baseline)
 	// 预算是"每章 × 每轮最多 2 次"（一次审校 + 一次结构修复），不是单章的总和；
 	// 按章数记会让 UI 出现 6/2、7/3 这种越界数字。多轮时也必须乘上去，否则
 	// 3 轮跑完的调用数会显示成严重越界。
@@ -213,10 +214,10 @@ func (r *Runner) reviewChapterOnce(ctx context.Context, modelID string, packet d
 	// 用「更紧凑输出」重试，第二次仍截断才收下，并保留 budget advisory 让下游
 	// 判成"审校不完整"而不是"没有问题"。输出上限本身由模型配置决定。
 	attempt := 0
-	res, err := r.runJSON(ctx, domain.BookSnapshot{}, packet, modelID, domain.TaskReview, packet.UnitID, packet.UnitID+"#"+fmt.Sprint(chapter),
-		func(raw string, cand *domain.Candidate) error {
+	res, err := r.runJSONWithRecord(ctx, domain.BookSnapshot{}, packet, modelID, domain.TaskReview, packet.UnitID, packet.UnitID+"#"+fmt.Sprint(chapter),
+		func(raw string, cand *domain.Candidate, record domain.CallRecord) error {
 			attempt++
-			fs, err := parseReviewResponse(raw, chapter)
+			fs, err := parseReviewResponse(raw, chapter, truncatedOutput(record))
 			if err != nil {
 				return err
 			}
@@ -292,12 +293,15 @@ func hasTruncationFinding(fs []domain.ReviewFinding) bool {
 // 抢救路径（输出被输出预算截断）只做安全规范化：截断的产物判不出 severity，
 // 也补不出 id，所以按 advisory 收下并追加一条"已截断"提示，而不是丢掉整份
 // 结论——重试由 budget-escalation 负责，不是靠丢弃。
-func parseReviewResponse(raw string, wantChapter int) ([]domain.ReviewFinding, error) {
+func parseReviewResponse(raw string, wantChapter int, protocolTruncated ...bool) ([]domain.ReviewFinding, error) {
 	var parsed struct {
 		Verdict  string                 `json:"verdict"`
 		Findings []domain.ReviewFinding `json:"findings"`
 	}
 	if err := unmarshalJSON(raw, &parsed); err != nil {
+		if len(protocolTruncated) == 0 || !protocolTruncated[0] {
+			return nil, err
+		}
 		_, findings, truncated, serr := salvageReviewJSON(raw)
 		if serr != nil {
 			// 原始解析错误信息量更大（no JSON object / 截断位置）。
@@ -325,11 +329,6 @@ func parseReviewResponse(raw string, wantChapter int) ([]domain.ReviewFinding, e
 		if parsed.Findings[i].Source == "" {
 			parsed.Findings[i].Source = "ai_review"
 		}
-		// chapter=0 视为"没写"，按本次审校的章号补上（调用范围已限定在这一章）；
-		// 写了别的章号才是矛盾，交给校验报错。
-		if parsed.Findings[i].Chapter == 0 && wantChapter > 0 {
-			parsed.Findings[i].Chapter = wantChapter
-		}
 	}
 	if err := validateReviewFindings(parsed.Findings, wantChapter); err != nil {
 		return nil, err
@@ -346,28 +345,29 @@ func tailOf(s string, n int) string {
 	return string(r[len(r)-n:])
 }
 
-// RunReview keeps the unit-wide review path (used when SplitByChapter is off).
-func (r *Runner) RunReview(ctx context.Context, snap domain.BookSnapshot, unit domain.UnitInfo, modelID string) (Result, error) {
-	chapters := gates.ParseProseChapters(unit.ProseRaw)
-	target := books.ChapterTarget(unit)
-	local := gates.CheckProseWithRules(chapters, target, r.proseRules())
-	packet := contextsvc.BuildReviewPacket(snap, unit, local.Findings, r.ReviewChecklist)
-	res, err := r.runJSON(ctx, snap, packet, modelID, domain.TaskReview, unit.UnitID, unit.ProsePath, func(raw string, cand *domain.Candidate) error {
-		findings, err := parseReviewResponse(raw, 0)
-		if err != nil {
-			return err
-		}
-		// 整单元审校没有"本次只审这一章"的天然约束，必须对着本单元的章号表校验，
-		// 否则一条越界章号会让后续「自动修复」整批报无法定位。
-		if err := validateFindingsWithinUnit(findings, chapters); err != nil {
-			return err
-		}
-		cand.Findings = append(append([]domain.ReviewFinding{}, local.Findings...), findings...)
-		cand.Chapters = chapters
+// staleCharacterFindings 找出「进入本单元时仍然生效、但已经很久没被刷新」的
+// 人物状态字段，转成审校清单里的 advisory。
+//
+// 状态来自 continuity/state.yaml 的末段前置快照；「最近一次写入」只统计**已定稿**
+// 单元——未定稿细纲里的 delta 还没发生，算进去会误报。
+func (r *Runner) StaleCharacterFindings(snap domain.BookSnapshot, unit domain.UnitInfo) []domain.ReviewFinding {
+	states, err := books.LoadState(snap.Summary.RootPath)
+	if err != nil || len(states) == 0 {
 		return nil
-	}, func(cand domain.Candidate) gates.Report {
-		return gates.Report{OK: true, Counts: map[string]int{}}
-	})
-	res.LocalGate = local
-	return res, err
+	}
+	prior, ok := books.StateAt(states, unit.UnitID)
+	if !ok {
+		return nil
+	}
+	finalized := map[string]bool{}
+	for _, st := range states {
+		finalized[st.Unit] = true
+	}
+	var units []domain.UnitInfo
+	for _, u := range snap.Units {
+		if finalized[u.UnitID] {
+			units = append(units, u)
+		}
+	}
+	return books.StaleFieldFindings(unit, books.FindStaleCharacterFields(prior, units))
 }

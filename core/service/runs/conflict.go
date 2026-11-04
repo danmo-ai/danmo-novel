@@ -22,6 +22,8 @@ func taskKindLabel(kind domain.TaskKind) string {
 		return "细纲"
 	case domain.TaskWrite:
 		return "正文"
+	case domain.TaskOutlineReview:
+		return "细纲检查"
 	case domain.TaskReview:
 		return "审校"
 	case domain.TaskRevise:

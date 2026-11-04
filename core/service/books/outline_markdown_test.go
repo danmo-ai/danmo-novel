@@ -34,8 +34,8 @@ const testBookMD = `# 全书总纲 · 测试
 - thread_moves: main=未开始->已完成
 - deliverables: 完成第一次行动
 - open_questions: 下一步是什么
-- reveal_ids: R1
-- forbidden_reveal_ids: R2
+- plant_ids: FS-01
+- payoff_ids: FS-02
 - next_volume_entry: 继续行动
 
 ### 转折 · event-1
@@ -69,10 +69,10 @@ func TestStructuredMarkdownFieldPatchPreservesSource(t *testing.T) {
 	}
 }
 
-func TestRevealScheduleParsesEntitiesAfterEmptyFields(t *testing.T) {
-	doc := ParseStructuredMarkdown(sampleSettings()["canon/reveal-schedule.md"], "reveal-schedule/v1")
-	if len(doc.EntitiesOf("揭示")) != 2 {
-		t.Fatalf("reveal entities swallowed by empty field: %+v raw=%q", doc.Entities, sampleSettings()["canon/reveal-schedule.md"])
+func TestForeshadowScheduleParsesEntitiesAfterEmptyFields(t *testing.T) {
+	doc := ParseStructuredMarkdown(sampleSettings()[ForeshadowSchedulePath], ForeshadowProtocol)
+	if len(doc.EntitiesOf(ForeshadowEntityKind)) != 2 {
+		t.Fatalf("foreshadow entities swallowed by empty field: %+v raw=%q", doc.Entities, sampleSettings()[ForeshadowSchedulePath])
 	}
 }
 
@@ -115,7 +115,7 @@ func TestStructuredVolumeSeedInheritsUnitContract(t *testing.T) {
 		t.Fatal(err)
 	}
 	seedTestIdentity(t, root)
-	seedRevealSchedule(t, root)
+	seedForeshadowSchedule(t, root)
 	if err := writeTestFile(root, "outline/book_outline.md", testBookMD); err != nil {
 		t.Fatal(err)
 	}
@@ -126,6 +126,9 @@ func TestStructuredVolumeSeedInheritsUnitContract(t *testing.T) {
 - source_arc_id: arc-v01
 - chapter_range: 1-6
 - goal: 能否完成目标
+- dramatic_question: 能否完成目标？
+- thread_moves: main=未开始->已完成
+- deliverables: 完成第一次行动
 - central_conflict: 目标与阻碍
 - stakes: 失败代价
 - entry_state: 未开始
@@ -157,8 +160,8 @@ func TestStructuredVolumeSeedInheritsUnitContract(t *testing.T) {
 - timeline_id: main
 - thread_ids: main
 - event_ids: event-1
-- reveal_ids: R1
-- forbidden_reveal_ids: R2
+- plant_ids: FS-01
+- payoff_ids: FS-02
 - next_hook: 信息缺口 | 签名不一致
 `
 	cand := domain.Candidate{Mode: domain.PlanModeVolume, VolumeID: "v01", PlanMarkdown: map[string]string{"volume_outline": volume}}
@@ -183,11 +186,9 @@ func TestStructuredSeedStateChangesReachFinalizationLedger(t *testing.T) {
 	if compact.Cast["lin"].Goal != "复核" || compact.EndDay != 5 {
 		t.Fatalf("compact seed state was dropped: %+v", compact)
 	}
-	identified := StateFromOutline(unit, []domain.ChapterDraft{{Chapter: 3, Body: "正文"}}, []domain.IdentitySegment{{Stem: "lin", RoleTitle: "复核人", Org: "分局", FromUnit: "v01-U1"}})
-	if identified.Cast["lin"].RoleTitle != "复核人" {
-		t.Fatalf("identity timeline was not applied to state snapshot: %+v", identified)
-	}
-	if state.Cast["lin"].RoleTitle != "" || state.Cast["lin"].Goal != "复核" || state.StoryDay != 3 || state.EndDay != 3 {
+	// 身份由 identity-timeline 独占，账本不再存副本（曾经存过，人工修正时间线后
+	// 副本不跟着变，同一提示词里同一个人出现两个身份）。
+	if state.Cast["lin"].Goal != "复核" || state.StoryDay != 3 || state.EndDay != 3 {
 		t.Fatalf("seed state did not reach continuity: %+v", state)
 	}
 }
@@ -198,7 +199,7 @@ func TestVolumeIdentityChangeIsAtomicAndEffective(t *testing.T) {
 		t.Fatal(err)
 	}
 	seedTestIdentity(t, root)
-	seedRevealSchedule(t, root)
+	seedForeshadowSchedule(t, root)
 	if err := writeTestFile(root, "outline/book_outline.md", testBookMD); err != nil {
 		t.Fatal(err)
 	}
@@ -254,7 +255,7 @@ func TestStructuredVolumeSeedAcceptKeepsExistingProse(t *testing.T) {
 		t.Fatal(err)
 	}
 	seedTestIdentity(t, root)
-	seedRevealSchedule(t, root)
+	seedForeshadowSchedule(t, root)
 	if err := writeTestFile(root, "outline/book_outline.md", testBookMD); err != nil {
 		t.Fatal(err)
 	}
@@ -265,6 +266,9 @@ func TestStructuredVolumeSeedAcceptKeepsExistingProse(t *testing.T) {
 - source_arc_id: arc-v01
 - chapter_range: 1-6
 - goal: 能否完成目标
+- dramatic_question: 能否完成目标？
+- thread_moves: main=未开始->已完成
+- deliverables: 完成第一次行动
 - central_conflict: 目标与阻碍
 - stakes: 失败代价
 - entry_state: 未开始
@@ -296,8 +300,8 @@ func TestStructuredVolumeSeedAcceptKeepsExistingProse(t *testing.T) {
 - timeline_id: main
 - thread_ids: main
 - event_ids: event-1
-- reveal_ids: R1
-- forbidden_reveal_ids: R2
+- plant_ids: FS-01
+- payoff_ids: FS-02
 - next_hook: 信息缺口 | 签名不一致
 `
 	if err := writeTestFile(root, "outline/units/v01-U1.yaml", "unit_id: v01-U1\nstatus: drafted\ndesire: keep\n"); err != nil {
@@ -323,8 +327,8 @@ func TestStructuredVolumeSeedAcceptKeepsExistingProse(t *testing.T) {
 		t.Fatal("accept volume touched prose")
 	}
 	old, _ := readFile(root + "/outline/units/v01-U1.yaml")
-	if old != "unit_id: v01-U1\nstatus: drafted\ndesire: keep\n" {
-		t.Fatal("existing unit contract was overwritten")
+	if old != "unit_id: v01-U1\nstatus: proposed\ndesire: keep\n" {
+		t.Fatal("existing unit content must be preserved with proposed status")
 	}
 }
 
@@ -367,7 +371,7 @@ func TestUnitContractForSeedKeepsInlineArraysClean(t *testing.T) {
 - clock_end_day: 6
 - clock_gap_days: 0
 - thread_ids: [career,relationship]
-- reveal_ids: [R1]
+- plant_ids: [FS-01]
 - next_hook: 信息缺口 | 签名不一致
 `, VolumeOutlineProtocol)
 	seeds := SeedsFromStructuredVolume(doc)
@@ -424,78 +428,6 @@ func TestSplitListStripsInlineArraySyntax(t *testing.T) {
 		if got := strings.Join(splitList(raw), "|"); got != want {
 			t.Fatalf("splitList(%q)=%q want %q", raw, got, want)
 		}
-	}
-}
-
-func TestRevealIDListAcceptsAuthorPlaceholders(t *testing.T) {
-	cases := []struct {
-		raw  string
-		want []string
-	}{
-		{"r01,r02", []string{"r01", "r02"}},
-		{"r01、r02", []string{"r01", "r02"}},
-		{"[r01,r02]", []string{"r01", "r02"}},
-		{"【r01】", []string{"r01"}},
-		{"r01 r02", []string{"r01", "r02"}},
-		{"R1", []string{"R1"}},
-		{"无", nil},
-		{"无（第二部未解问题不得提前回答）", nil},
-		{"没有（本卷先不锁）", nil},
-		{"none", nil},
-		{"[]", nil},
-		{"", nil},
-		{"r01,r01", []string{"r01"}},
-	}
-	for _, c := range cases {
-		got := revealIDList(c.raw)
-		if strings.Join(got, "|") != strings.Join(c.want, "|") {
-			t.Fatalf("revealIDList(%q)=%v want %v", c.raw, got, c.want)
-		}
-	}
-}
-
-func TestAcceptPlanAcceptsEmptyRevealListWrittenAsProse(t *testing.T) {
-	root, err := CreateBookScaffold(t.TempDir(), "reveal-placeholder", "测试", "悬疑")
-	if err != nil {
-		t.Fatal(err)
-	}
-	seedTestIdentity(t, root)
-	seedRevealSchedule(t, root)
-	outline := strings.Replace(testBookMD, "- reveal_ids: R1", "- reveal_ids: 无（本卷没有可揭示内容）", 1)
-	outline = strings.Replace(outline, "- forbidden_reveal_ids: R2", "- forbidden_reveal_ids: [R2]", 1)
-	cand := domain.Candidate{Mode: domain.PlanModeInit, PlanMarkdown: map[string]string{"book_outline": outline, "cast_json": sampleCastJSON()}, PlanSettings: sampleSettings()}
-	if err := AcceptPlan(root, cand); err != nil {
-		t.Fatalf("placeholder reveal values must not block accept: %v", err)
-	}
-}
-
-func TestAcceptPlanRejectsUnknownRevealID(t *testing.T) {
-	root, err := CreateBookScaffold(t.TempDir(), "reveal-unknown", "测试", "悬疑")
-	if err != nil {
-		t.Fatal(err)
-	}
-	seedTestIdentity(t, root)
-	seedRevealSchedule(t, root)
-	outline := strings.Replace(testBookMD, "- reveal_ids: R1", "- reveal_ids: R99", 1)
-	cand := domain.Candidate{Mode: domain.PlanModeInit, PlanMarkdown: map[string]string{"book_outline": outline, "cast_json": sampleCastJSON()}, PlanSettings: sampleSettings()}
-	err = AcceptPlan(root, cand)
-	if err == nil || !strings.Contains(err.Error(), "v01.reveal_ids") || !strings.Contains(err.Error(), "R99") {
-		t.Fatalf("unknown reveal id must name the field and value: %v", err)
-	}
-}
-
-func TestAcceptPlanRejectsProseInRevealField(t *testing.T) {
-	root, err := CreateBookScaffold(t.TempDir(), "reveal-prose", "测试", "悬疑")
-	if err != nil {
-		t.Fatal(err)
-	}
-	seedTestIdentity(t, root)
-	seedRevealSchedule(t, root)
-	outline := strings.Replace(testBookMD, "- reveal_ids: R1", "- reveal_ids: R1、本卷暂不揭示", 1)
-	cand := domain.Candidate{Mode: domain.PlanModeInit, PlanMarkdown: map[string]string{"book_outline": outline, "cast_json": sampleCastJSON()}, PlanSettings: sampleSettings()}
-	err = AcceptPlan(root, cand)
-	if err == nil || !strings.Contains(err.Error(), "只接受揭示 ID 列表") {
-		t.Fatalf("prose in reveal field must be actionable: %v", err)
 	}
 }
 

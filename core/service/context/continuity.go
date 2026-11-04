@@ -25,6 +25,9 @@ const (
 //
 // 状态来自 continuity/state.yaml 的按单元段，取严格早于目标单元的最后一段：
 // 续写与重写因此读到同一份前置状态，后续单元的结果不会倒灌。
+//
+// 职务身份不在这份账本里：它由 canon/identity-timeline.yaml 独占，这里按目标
+// 单元现算（与人物卡上的「本单元身份」同源），避免两处各存一份副本后漂移。
 func ExtractContinuity(snap domain.BookSnapshot, unit domain.UnitInfo, onStage []string, stage ContinuityStage) string {
 	states, err := books.LoadState(snap.Summary.RootPath)
 	if err != nil || len(states) == 0 {
@@ -34,16 +37,35 @@ func ExtractContinuity(snap domain.BookSnapshot, unit domain.UnitInfo, onStage [
 	if !ok {
 		return ""
 	}
-	return renderContinuity(st, onStage, stage)
+	// 久未更新的字段必须带上「记于何时」，否则模型会把它当成此刻的事实。
+	// 实测一条 63 天前的伤势被当作当前身体状况写进了提示词。
+	stale := map[string]int{}
+	finalized := map[string]bool{}
+	for _, s := range states {
+		finalized[s.Unit] = true
+	}
+	var units []domain.UnitInfo
+	for _, u := range snap.Units {
+		if finalized[u.UnitID] {
+			units = append(units, u)
+		}
+	}
+	for _, f := range books.FindStaleCharacterFields(st, units) {
+		stale[f.Stem+"."+f.Field] = f.UnitsAgo
+	}
+	return renderContinuity(st, snap.IdentitySegments, unit.UnitID, onStage, stage, stale)
 }
 
 // renderContinuity formats one snapshot for the given stage.
-func renderContinuity(st domain.UnitState, onStage []string, stage ContinuityStage) string {
+//
+// identityUnitID 是「以哪个单元的身份为准」：写作/审校写的是目标单元，所以传
+// 目标单元；重写设定文件时没有目标单元，传最新已定稿单元。
+func renderContinuity(st domain.UnitState, identities []domain.IdentitySegment, identityUnitID string, onStage []string, stage ContinuityStage, stale map[string]int) string {
 	var out []string
 	if head := continuityHeader(st); head != "" {
 		out = append(out, head)
 	}
-	if people := continuityCast(st, onStage, stage); people != "" {
+	if people := continuityCast(st, identities, identityUnitID, onStage, stage, stale); people != "" {
 		out = append(out, people)
 	}
 	if loops := continuityLoops(st); loops != "" {
@@ -63,7 +85,8 @@ func ExtractContinuityLatest(snap domain.BookSnapshot, onStage []string, stage C
 	if err != nil || len(states) == 0 {
 		return ""
 	}
-	return renderContinuity(states[len(states)-1], onStage, stage)
+	last := states[len(states)-1]
+	return renderContinuity(last, snap.IdentitySegments, last.Unit, onStage, stage, nil)
 }
 
 // ExtractContinuityForUnit is the outline-stage variant: it takes the earliest
@@ -105,7 +128,10 @@ func continuityHeader(st domain.UnitState) string {
 
 // continuityCast renders only on-stage people. Ordering is stable so the prompt
 // hash stays comparable across runs with the same inputs.
-func continuityCast(st domain.UnitState, onStage []string, stage ContinuityStage) string {
+//
+// 身份从身份时间线现取（IdentityAt），不从账本读——账本已经不存这份副本。
+// 这样一来，人物卡上的「本单元身份」与这里永远是同一个值。
+func continuityCast(st domain.UnitState, identities []domain.IdentitySegment, identityUnitID string, onStage []string, stage ContinuityStage, stale map[string]int) string {
 	if len(st.Cast) == 0 {
 		return ""
 	}
@@ -123,20 +149,30 @@ func continuityCast(st domain.UnitState, onStage []string, stage ContinuityStage
 			continue
 		}
 		var parts []string
-		if c.RoleTitle != "" {
-			parts = append(parts, "身份="+c.RoleTitle)
+		annex := func(field, label, value string) string {
+			if value == "" {
+				return ""
+			}
+			if ago, ok := stale[stem+"."+field]; ok {
+				return label + "=" + value + fmt.Sprintf("（记于 %d 个单元前，可能已变）", ago)
+			}
+			return label + "=" + value
 		}
-		if c.Location != "" {
-			parts = append(parts, "位置="+c.Location)
+		for _, item := range []struct{ field, label, value string }{
+			{"location", "位置", c.Location},
+			{"goal", "当前目标", c.Goal},
+			{"health", "身体", c.Health},
+			{"resources", "资源", c.Resources},
+			{"relation", "关系", c.Relation},
+		} {
+			if v := annex(item.field, item.label, item.value); v != "" {
+				parts = append(parts, v)
+			}
 		}
-		if c.Goal != "" {
-			parts = append(parts, "当前目标="+c.Goal)
-		}
-		if c.Injury != "" {
-			parts = append(parts, "伤势="+c.Injury)
-		}
-		if c.Resources != "" {
-			parts = append(parts, "资源="+c.Resources)
+		// 生命状态必须一直可见：死者不该进 onStage，而这条是唯一能让写作者
+		// 与审校同时看见的信号。
+		if c.Life != "" && !strings.EqualFold(c.Life, "alive") {
+			parts = append(parts, annex("life", "生命状态", c.Life))
 		}
 		// 知情范围只给审校：写作看到它会把"他知道 X"直接写进旁白或让他猜中。
 		if stage == ContinuityForReview && len(c.Knows) > 0 {

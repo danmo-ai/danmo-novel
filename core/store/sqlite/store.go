@@ -275,7 +275,13 @@ func (s *Store) ListUnfinishedRuns(ctx context.Context) ([]domain.Run, error) {
 }
 
 func (s *Store) FindActiveRun(ctx context.Context, bookID string, kind domain.TaskKind, unitID string) (domain.Run, bool, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT payload FROM runs WHERE book_id = ? AND kind = ? AND status IN ('pending','running','waiting_accept')`, bookID, string(kind))
+	query := `SELECT payload FROM runs WHERE book_id = ? AND status IN ('pending','running','waiting_accept')`
+	args := []any{bookID}
+	if kind != "" {
+		query += ` AND kind = ?`
+		args = append(args, string(kind))
+	}
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return domain.Run{}, false, err
 	}
@@ -289,11 +295,39 @@ func (s *Store) FindActiveRun(ctx context.Context, bookID string, kind domain.Ta
 		if err := json.Unmarshal([]byte(payload), &run); err != nil {
 			continue
 		}
-		if unitID == "" || run.Spec.UnitID == unitID {
+		if run.Spec.UnitID == unitID {
 			return run, true, nil
 		}
 	}
 	return domain.Run{}, false, nil
+}
+
+// CompleteAcceptance persists candidate and run terminal states atomically.
+func (s *Store) CompleteAcceptance(ctx context.Context, c domain.Candidate, run domain.Run) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	cb, err := json.Marshal(c)
+	if err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE candidates SET status=?, payload=? WHERE id=? AND status='open'`, c.Status, string(cb), c.ID); err != nil {
+		return err
+	}
+	rb, err := json.Marshal(run)
+	if err != nil {
+		return err
+	}
+	if run.ID != "" {
+		if _, err := tx.ExecContext(ctx, `UPDATE runs SET status=?, payload=?, updated_at=? WHERE id=?`, run.Status, string(rb), run.UpdatedAt.UTC().Format(time.RFC3339), run.ID); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 func (s *Store) SaveCandidate(ctx context.Context, c domain.Candidate) error {

@@ -9,25 +9,37 @@ import (
 
 const KnowledgeVersion = "kb-novel-2026.10.1"
 
-// WriteSystemPromptFor 把本章字数额度写进系统提示词。
+// WriteChapterSystemPromptFor 是「一次只写一章」的系统提示词。
 //
-// 字数规则以前只出现在 user payload 的一个小段落里，而且措辞是「多于 3500 字
-// 会有超长告警」——等于告诉模型超了也没事。实测一本目标 2500 字/章的书，六章
-// 写出 3160–6210 字，超长项全是 advisory，没有任何一章被重写。硬规则放在系统
-// 提示词里、并且给出确切目标，模型才会真的按它写。
-func WriteSystemPromptFor(chapterTarget int) string {
+// 分章写作时，同一份 payload 里原本同时存在三条互相矛盾的指令：system 第 2 条
+// 「覆盖单元章范围内全部章节」、instruction「一次写出全部章节正文」、以及尾部
+// extra 的「本次只写第 N 章」。而 parseChapterDraft 只接受 1 章——照 system 写
+// 就要白跑一轮修复。
+//
+// 两种 system 在同一 run 内固定，不会因为换章而改变，前缀缓存不受影响。
+func WriteChapterSystemPromptFor(chapterTarget int) string {
+	return writeSystemPrompt(chapterTarget, true)
+}
+
+func writeSystemPrompt(chapterTarget int, singleChapter bool) string {
 	floor, ceil := domain.ChapterBand(chapterTarget)
+	scope := "2. 覆盖单元章范围内全部章节；body 为纯散文，不用 markdown 标题。"
+	if singleChapter {
+		scope = "2. 本次只写一章：章号取 user 数据包的 chapter，chapters 数组只输出这一章；body 为纯散文，不用 markdown 标题。"
+	}
 	return fmt.Sprintf(`你是长篇网文写手。只根据 CONTEXT 写单元正文，不要工具调用，不要解释。
 硬规则：
 1. 输出严格 JSON：{"chapters":[{"chapter":N,"title":"...","body":"..."}]}
-2. 覆盖单元章范围内全部章节；body 为纯散文，不用 markdown 标题。
+%s
 3. 遵守细纲合同：desire/obstacle/choice/payoff/forbidden；on_stage 人物声音可区分。
 4. 不得写穿 state_deltas 终局身份到开场；承接上章钩子。
 5. 少用破折号与 AI 套话；中文正文避免英文泄漏。
 6. 字数：每章 %d 字，允许 %d–%d 字。这是合同值不是参考值——少于 %d 字会被退回重写；超过 %d 字会判为不合格并计入审校。
 7. 场面：按细纲给出的场面节拍分场，每个场面 %d–%d 字；细纲没给节拍就按 2–4 个主线场面自己切，不要硬凑固定个数。写完一个再进下一个，写完最后一个就收尾——不额外加场，不为凑字复述或写过渡，也不为压缩砍掉场面结果与章末钩子。
+8. 能力只能按「能力上限」给出的代价与上限使用；不得出现表外的便利能力，没有代价的解决方案视为违规。
+9. 伏笔：只埋「本章伏笔」列出的条目，不得自创后续要回收的悬念；未到回收点的伏笔不得提前回收，也不得写穿它的答案。
 章标题规范：2–6 字的短意象或动作，取自本章具体物件、地点、动作或一句话（如「雪夜」「脚印会说话」「后山招供」）；不写「第X章」字样，不用「危机」「高潮」「转折」「揭秘」这类空泛词，不剧透未发生的反转，不堆砌形容词。`,
-		chapterTarget, floor, ceil, floor, ceil, domain.SceneCharsMin, domain.SceneCharsMax)
+		scope, chapterTarget, floor, ceil, floor, ceil, domain.SceneCharsMin, domain.SceneCharsMax)
 }
 
 func OutlineSystemPrompt() string {
@@ -36,17 +48,26 @@ func OutlineSystemPrompt() string {
 每个单元字段：unitId,title,function,sourceSeedId,attempt,setback,cost,desire,obstacle,choice,payoff,pleasure,forbidden,chapterChars,onStage,pov,chapterFrom,chapterTo,chapters,scenes,stateDeltas,nextHook,storyDay,endDay,gapDays,timelineId,gapFromPrev,infoControl。
 chapterChars 是**单章**目标字数，正整数，只能落在 %d–%d；作者没特别要求就写 %d，不要自行调高。只要 chapterChars 这一个数字；不要输出 wordTarget。
 chapters 是逐章轻量合同，每章必须有 {chapter,goal,change,cutHook,dayOffset}；change 必须是可验证的状态/信息/关系/行动变化，不得只写情绪。章范围全部覆盖，day_offset 不超出单元结束日。
+chapters 每条另有 plant / payoff 两个可选字符串数组：本章要埋的伏笔 ID、本章要回收的伏笔 ID。只填 ID（如 "FS-03"），不写内容——内容在「伏笔登记表」里。只能引用本单元负责埋或负责收的条目：埋入单元为 null 或本单元、回收单元为 null 或本单元。回收必须严格晚于埋入。
 scenes 仅复杂章的可选子项，不要求每章都有；一旦写了 scenes，就必须覆盖每一章（每章 1–3 个场面即可，不要为凑数给简单章硬拆）。每个 scene 仅含 {chapter,goal,conflict,turn,outcome}，可选 id/mustLand/evidenceIn/evidenceOut/dayOffset。禁止预写台词、动作清单和情绪曲线；mustLand 最多 2 个可见事实。
 存在「不可改写的单元种子」时：sourceSeedId 必须等于单元 ID；chapterFrom/chapterTo、desire/obstacle/choice/payoff 必须逐字继承种子 chapter_range/objective/obstacle/choice/outcome，不得改故事；attempt/setback/cost 也继承种子；storyDay/endDay/gapDays 必须继承 clock_start_day/clock_end_day/clock_gap_days。
 function 与 desire 是同一个种子值（objective）的两处落盘：必须逐字照抄，不要用自己的话改写；nextHook.type 必须等于种子 next_hook 竖线前的类型（如「信息缺口」），out 才写具体事件。
 storyDay / gapFromPrev / infoControl / forbidden / desire / sourceSeedId / attempt / setback / cost 等叙述字段必须是字符串标量（如 "3" 或 "入职第三天"），不要用对象；chapterFrom/chapterTo/endDay/gapDays 必须是 JSON 数字，不要加引号（继承种子 clock_end_day/clock_gap_days 时也转成数字）；onStage 为字符串数组。
 gapDays 是整数（距上一单元的最少天数）；gapFromPrev 是给写作者看的上一单元承接说明，必须是可读的短句（如 "上一案卷宗已归档，隔天清晨她回到派出所"），禁止只写一个数字——天数属于 gapDays，写进 gapFromPrev 会让界面显示「衔接上一单元 1」。
-stateDeltas 必须是结构化数组 [{"stem":"人物或实体 ID","field":"role_title|location|injury|resources|goal|knowledge","from":"单元前状态","to":"单元后状态"}]；至少一条，不得用自由文本代替。
+stateDeltas 必须是结构化数组 [{"stem":"人物或实体 ID","field":"%s","from":"单元前状态","to":"单元后状态"}]；至少一条，不得用自由文本代替。field 只能用上面列出的值，写别的名字会被判为违规并退回重写。
+field 语义：role_title 身份（由身份时间线拥有）、location 位置、health 身体状态、resources 资源、goal 当前目标、knows 知情范围、relation 当前关系状态、life 生命状态（alive/missing/dead，只能单向流转）。
+stateDeltas 的任务是**维护状态**，不只是记录变化。上下文里的「连续性状态」是进入本单元时的完整快照，逐人逐字段过一遍，再决定写什么：
+（1）本单元内变了的：from 抄快照里的旧值，to 写单元结束后的新值。
+（2）本单元内结束了的：必须写显式终值——伤好了 to:"已愈"，调离了 to:"已调离临州"，资源用尽 to:"已用尽"。账本每段是全量快照，不写终值这个值会被后续所有单元一直继承，越拖越像事实。
+（3）本单元内新增的：再小也要写，哪怕是次要人物受了新伤 to:"肋部挫伤，未就医"。
+（4）快照里标注「记于 N 个单元前，可能已变」的字段：判断本单元有没有让它变；变了就写终值，没变可以不写，但不得把它当成新事实重新确认一遍。
+覆盖要求：onStage 里每个有状态变化的人物至少一条 delta；某字段确实一整单元没动，才允许不写。不要为了凑数把没变的字段抄一遍。
+life=dead 为终态：写下之后，后续单元的 onStage 与 pov 都不得再包含此人。
 nextHook 必须是对象：{"type":"钩子类型","out":"具体事件"}（对应落盘 next_hook.type / next_hook.out），type 沿用卷纲索引已定类型；禁止写成一整句字符串。
 onStage ⊆ 本卷人物；pov ∈ onStage。不要改卷纲已定 function。
 人物规则：onStage 只放有台词/有后续戏份的人物。纯功能路人（报案群众、值班民警、摊主等一次性角色）不要进 onStage，直接写在 scenes 的 who/beat 描述里（如「报案邻居」）。确需引入本卷人物表之外的新人物（如单元案受害者、嫌疑人），给出新英文 stem 并在 scenes 里体现其功能；该新 stem 会被播种为候选人物卡，作者晋升后才成为 canon。
 单元标题（title）规范：2–8 字，概括本单元的核心动作或意象（如「入门试炼」「锁定并出发」「两种手艺」）；与 function 呼应但不照抄；不用「单元」「第X」字样，不剧透终局底牌。`,
-		domain.ChapterCharsMin, domain.ChapterCharsMax, domain.ChapterCharsDefault)
+		domain.ChapterCharsMin, domain.ChapterCharsMax, domain.ChapterCharsDefault, domain.StateDeltaFieldList())
 }
 
 // IdeaExpandSystemPrompt 是立项前的创意扩写。
@@ -88,8 +109,12 @@ cardMarkdown 必须含「## 关系」Markdown 表，列顺序固定：对方 | �
 「对方」只能填对方 stem（英文小写连字符），禁止填中文名；类型写关系类别（搭档/宿敌/上司等）；当前写一句话现状。
 主角至少 3–8 条核心关系；每个配角至少 1 条连向主角或本卷关键人物。可用「与主角关系」短句作辅助，但不能代替关系表。
 输出严格 JSON：
-{"cast":[...],"bookOutlineMarkdown":"...","settings":{"files":{"book-bible.md":"...","canon/world.md":"...","canon/goldfinger.md":"...","canon/platform-positioning.md":"...","canon/writing-rules.md":"...","canon/style-fingerprint.md":"...","canon/reveal-schedule.md":"...","canon/author-lore.md":"...","canon/locked-terms.yaml":"..."}}}
-settings.files 必须覆盖上述全部路径；作者底牌只写在 author-lore；禁止输出 volumeOutlineMarkdown。`
+{"cast":[...],"bookOutlineMarkdown":"...","settings":{"files":{"book-bible.md":"...","canon/world.md":"...","canon/goldfinger.md":"...","canon/platform-positioning.md":"...","canon/writing-rules.md":"...","canon/style-fingerprint.md":"...","canon/foreshadow-schedule.md":"...","canon/author-lore.md":"...","canon/locked-terms.yaml":"..."}}}
+settings.files 必须覆盖上述全部路径；作者底牌只写在 author-lore；禁止输出 volumeOutlineMarkdown。
+canon/foreshadow-schedule.md 是伏笔登记表，与人物卡同级：每条「## 伏笔 · FS-NN」必须以 - key: value 写字段，必填 content/type/plant_volume/payoff_volume。
+type 取 物件/信息/关系/承诺/疑点；type=信息 时 payoff_summary 必填（回收时读者得到什么），它就是公开信息释放的节奏。
+本章只定卷级位置：plant_volume 与 payoff_volume，payoff_volume 不得早于 plant_volume。单元级与章级留空，交给卷纲与细纲细化。
+全书条目数不超过「卷数 × 6」；不要在这里写单元或章。`
 	default:
 		return `你是小说主编。只写当前卷纲，不要写细纲 scenes，不要写正文，不要改设定，不要工具调用。
 只根据 user JSON 数据包产出卷纲。
@@ -97,7 +122,9 @@ settings.files 必须覆盖上述全部路径；作者底牌只写在 author-lor
 volumeOutlineMarkdown 须含「本卷目标」「本卷人物」stem 列表、「单元索引」Markdown 表、「卷末状态/终局边界」。
 单元索引列顺序固定：unit_id | 章范围 | 一句话功能 | 终局边界 | 下一钩类型。
 unit_id 必须为当前卷号形式（如 v02-U1）；章范围为 1-3、4-6 等数字范围。
-输出严格 JSON：{"volumeOutlineMarkdown":"..."}
+伏笔细化：只补落入本卷条目的 plant_unit / payoff_unit（从数据包的伏笔登记表读），不得新建伏笔，也不得改总纲已定的 plant_volume / payoff_volume。单元必须存在于本卷，回收单元不得早于埋入单元。
+输出严格 JSON：{"volumeOutlineMarkdown":"...","foreshadowAssignments":[{"id":"FS-01","plantUnit":"v01-U1","payoffUnit":"v01-U2"}]}
+foreshadowAssignments 只细化登记表已有条目的单元归属，不能修改卷级位置；卷纲内的 plant_ids/payoff_ids 必须与分配一致。
 禁止输出 settings、cast、bookOutlineMarkdown。`
 	}
 }
@@ -134,14 +161,6 @@ func ReviewOutputContract() string {
 5. chapter 用阿拉伯数字，必须写出现问题的章号；给不出章号的问题不要产出。
 6. 不要改写正文，不要输出正文。
 7. 按「审校清单」文档逐条执行；每条 finding 的 id 用「lens-章号-序号」格式，如「continuity-7-1」。`
-}
-
-// ReviewSystemPrompt 是审校的完整 system 提示词（共享前缀 + 契约）。
-//
-// 只给不参与前缀复用的路径用（整单元审校、预览）。分章审校与修订共用
-// ChapterStageSystemPrompt，把契约放进 payload，才有缓存命中——见该函数注释。
-func ReviewSystemPrompt() string {
-	return ChapterStageSystemPrompt() + "\n\n" + ReviewOutputContract()
 }
 
 // RevisePatchOutputContract is the 修订-specific half carrying the patch rules.
@@ -244,6 +263,19 @@ func StripFrontMatter(raw string) string {
 		}
 	}
 	return raw
+}
+
+func OutlineReviewSystemPrompt() string {
+	return `你是单元细纲的结构编辑。只检查，不改写，不调用工具。
+核对父级种子兑现、章间因果、每章可验证变化、POV/在场人物、时间、伏笔归属、状态迁移与能力可执行性。
+输出严格 JSON {"verdict":"pass|revise","findings":[{"id":"outline-<lens>-N","severity":"blocking|advisory","lens":"inheritance|causality|payoff|state|continuity|reveal|agency","title":"<=20字","evidence":"具体字段或章号证据","suggestion":"最小修复方向","entityPath":"chapters[N] 或 state_deltas"}]}。
+提示词不能证明语义成立。结构性父级冲突标 blocking，并明确该回改细纲还是回改卷纲；不得在细纲里换故事。没有明确问题就输出空 findings。`
+}
+
+func FinalizeReconcileSystemPrompt() string {
+	return `你是连载账本核对员。只根据实际正文核对本章事实，不续写，不修改规划，不调用工具。
+输出严格 JSON：{"chapter":N,"storyDay":N,"endDay":N,"summary":"本章实际发生的核心事件与结尾钩子","stateDeltas":[{"stem":"人物ID","field":"location|health|resources|goal|knows|relation|life","from":"入场状态","to":"实际结束状态","evidence":"正文中的连续原文证据","confirmed":true}],"plant":["实际埋下的本章计划FS-ID"],"payoff":["实际完成回收的本章计划FS-ID"],"plannedForeshadowHandled":["本章计划中的所有FS-ID"]}。
+规则：计划不等于实际；没有正文证据的变化不要写。storyDay/endDay 按正文实际时间填写；正文未给相对故事日就省略，不复制计划充当实际。只能使用人物卡/合同已有的 stem 和本章计划的 FS-ID。confirmed 必须为 true 才可进入账本；存疑则省略并在摘要末尾说明待确认。不得自行新增伏笔。summary 是摘要，不得抄整段正文。`
 }
 
 func LocalEditSystemPrompt() string {

@@ -122,6 +122,11 @@ func validateChapters(task string, chapters []domain.ChapterDraft, from, to int)
 	return contractFail(task, vs)
 }
 
+// ValidateAcceptedChapters is the shared generation/Accept/finalize prose contract.
+func ValidateAcceptedChapters(unit domain.UnitInfo, chapters []domain.ChapterDraft) error {
+	return validateChapters("正文接受", chapters, unit.ChapterFrom, unit.ChapterTo)
+}
+
 // validateReviewFindings enforces the review contract.
 //
 // severity 是下游唯一的开关（定稿是否放行、能否通过审校），所以未知值不能

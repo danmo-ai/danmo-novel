@@ -11,7 +11,7 @@ var PlanSettingsPaths = []string{
 	"canon/platform-positioning.md",
 	"canon/writing-rules.md",
 	"canon/style-fingerprint.md",
-	"canon/reveal-schedule.md",
+	ForeshadowSchedulePath,
 	"canon/author-lore.md",
 	"canon/locked-terms.yaml",
 }

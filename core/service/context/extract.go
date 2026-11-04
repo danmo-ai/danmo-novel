@@ -3,11 +3,11 @@ package contextsvc
 import (
 	"fmt"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 
 	"github.com/danmo-ai/danmo-novel/core/domain"
-	"github.com/danmo-ai/danmo-novel/core/service/books"
 	"gopkg.in/yaml.v3"
 )
 
@@ -120,112 +120,17 @@ func keepMarkdownTableTail(raw string, maxDataRows int) string {
 	return strings.Join(append(header, data...), "\n")
 }
 
-// ExtractRevealForVolume returns the public reveal constraints effective for
-// the given volume: 可暗示/可确认 for unlocked rows + 禁止写穿 for locked rows.
-// 作者底牌细节不得写入本文件；只保留节奏与边界。Empty → no reveal block.
-func ExtractRevealForVolume(raw string, volume int) string {
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		return ""
-	}
-	if volume < 1 {
-		volume = 1
-	}
-	if doc := books.ParseStructuredMarkdown(raw, "reveal-schedule/v1"); !doc.Legacy && len(doc.EntitiesOf("揭示")) > 0 {
-		return extractStructuredReveal(doc, volume)
-	}
-	allowed, locked := splitRevealRows(raw, volume)
-	var out []string
-	out = append(out, fmt.Sprintf("揭示约束（当前卷 v%02d）：只写已解锁信息；未解锁内容不得写穿、不得点名真名/真相。", volume))
-	if len(allowed) > 0 {
-		out = append(out, "可暗示/可确认：\n"+strings.Join(allowed, "\n"))
-	}
-	if len(locked) > 0 {
-		out = append(out, "禁止写穿（锁后续卷）：\n"+strings.Join(locked, "\n"))
-	}
-	if len(allowed) == 0 && len(locked) == 0 {
-		return clip(raw, 700)
-	}
-	return clip(strings.Join(out, "\n\n"), 1400)
-}
-
-func extractStructuredReveal(doc domain.StructuredMarkdown, volume int) string {
-	var allowed, locked []string
-	for _, e := range doc.EntitiesOf("揭示") {
-		n, _ := strconv.Atoi(strings.TrimPrefix(e.Value("earliest_volume"), "v"))
-		summary := e.ID + "：" + e.Value("public_summary")
-		if terms := e.Value("locked_terms"); terms != "" && terms != "无" {
-			summary += "（锁词：" + terms + "）"
-		}
-		if n <= volume {
-			allowed = append(allowed, "- "+summary)
-		} else {
-			locked = append(locked, "- "+summary)
-		}
-	}
-	var out []string
-	out = append(out, fmt.Sprintf("揭示约束（当前卷 v%02d）：只写已解锁信息；未解锁内容不得写穿、不得点名真名/真相。", volume))
-	if len(allowed) > 0 {
-		out = append(out, "可暗示/可确认：\n"+strings.Join(allowed, "\n"))
-	}
-	if len(locked) > 0 {
-		out = append(out, "禁止写穿（锁后续卷）：\n"+strings.Join(locked, "\n"))
-	}
-	return clip(strings.Join(out, "\n\n"), 1800)
-}
-
-// splitRevealRows best-effort parses reveal rows with a 最早卷/卷号 column.
-// Rows without a parseable volume are treated as always-relevant boundary notes.
-func splitRevealRows(raw string, volume int) (allowed, locked []string) {
-	for _, line := range strings.Split(raw, "\n") {
-		s := strings.TrimSpace(line)
-		if s == "" || strings.HasPrefix(s, "#") {
-			continue
-		}
-		if strings.HasPrefix(s, "|") && (strings.Contains(s, "---") || strings.Contains(s, "信息") || strings.Contains(s, "底牌")) {
-			continue
-		}
-		v := revealRowVolume(s)
-		isRow := strings.HasPrefix(s, "|") || strings.HasPrefix(s, "-") || strings.HasPrefix(s, "*")
-		if !isRow {
-			continue
-		}
-		if v <= 0 {
-			// 无卷号：永久边界（如「不得写穿」）保留为禁止项；其余略过。
-			if strings.Contains(s, "禁") || strings.Contains(s, "不得") || strings.Contains(s, "锁") {
-				locked = append(locked, clip(s, 200))
-			}
-			continue
-		}
-		if v <= volume {
-			allowed = append(allowed, clip(s, 220))
-		} else {
-			locked = append(locked, clip(s, 200))
-		}
-	}
-	if len(allowed) > 10 {
-		allowed = allowed[:10]
-	}
-	if len(locked) > 8 {
-		locked = locked[:8]
-	}
-	return allowed, locked
-}
-
-func revealRowVolume(s string) int {
-	// v07 / v7 / 第7卷 / 卷7 / 最早卷: 7
-	re := regexp.MustCompile(`(?i)(?:^|[^0-9a-z])v0*([0-9]{1,2})(?:[^0-9]|$)`)
-	if m := re.FindStringSubmatch(s); len(m) == 2 {
-		n, _ := strconv.Atoi(m[1])
-		return n
-	}
-	re2 := regexp.MustCompile(`(?:第|卷|最早[^0-9]{0,6})([0-9]{1,2})`)
-	if m := re2.FindStringSubmatch(s); len(m) == 2 {
-		n, _ := strconv.Atoi(m[1])
-		return n
-	}
-	return 0
-}
+// 这里曾经有 ExtractRevealForVolume：把揭示计划按卷渲染成「可暗示/可确认」与
+// 「禁止写穿」两段。它有两个致命问题，融合后整体删除：
+//
+//  1. 「禁止写穿」的条目也输出了 public_summary 全文。写第 38 章时提示词里
+//     写着「陆沉来自 2024 年」「2009 年陆沉苏醒」——全书结局被直接交底。
+//     AssertNoAuthorLore 只按文件来源判断，抓不到这种「合法文件里的剧透」。
+//  2. 揭示计划本身已并入伏笔登记表（type=信息），「读者能否知道」由回收位置
+//     派生，不再需要独立的渲染器。
+//
+// 现在的替代是 ForeshadowForChapter / ForeshadowForWriteUnit：
+// 只给本章该埋该收的条目，未到回收点的条目连回收摘要都不给。
 
 // ExtractCastForWrite compresses a cast card to the fields a writer needs:
 // name+role, 本单元职务身份, 三锚点, POV 知识边界, one voice sample, 关系.
@@ -256,11 +161,6 @@ func ExtractCastForWriteWithIdentity(card domain.CastCard, pov, identity string)
 			out = append(out, "台词："+v)
 			break
 		}
-	}
-	if v := bulletValue(raw, "与主角关系"); v != "" {
-		out = append(out, "关系："+v)
-	} else if rel := firstFormalRelationLine(raw); rel != "" {
-		out = append(out, "关系："+rel)
 	}
 	if len(out) == 1 {
 		return clip(raw, 500)
@@ -308,28 +208,86 @@ func ExtractStyle(raw string) string {
 	return clip(raw, 340)
 }
 
-// ExtractLockedTerms surfaces only the current volume's locked-term guidance
-// without printing future secrets.
+// ExtractLockedTerms returns actual forbidden words, never a pointer to their file.
 func ExtractLockedTerms(raw, volumeID string) string {
 	if strings.TrimSpace(raw) == "" {
 		return ""
 	}
-	// Do not print future secrets; only show terms applicable before this volume.
-	vol := 1
+	var file struct {
+		LockedUntil map[string]any `yaml:"locked_until"`
+		Compliance  []any          `yaml:"compliance"`
+		Aliases     map[string]any `yaml:"aliases"`
+	}
+	if err := yaml.Unmarshal([]byte(raw), &file); err != nil {
+		return "锁词配置无法解析：禁止定稿，先修复 canon/locked-terms.yaml。"
+	}
+	vol := 0
 	fmt.Sscanf(strings.TrimPrefix(volumeID, "v"), "%d", &vol)
-	var out []string
-	for _, m := range regexp.MustCompile(`(?m)^\s{2}(v\d+):\s*$`).FindAllStringSubmatch(raw, -1) {
+	rows := flattenStrings(file.Compliance)
+	for unlock, value := range file.LockedUntil {
 		n := 0
-		fmt.Sscanf(strings.TrimPrefix(m[1], "v"), "%d", &n)
-		if n >= vol {
+		fmt.Sscanf(strings.TrimPrefix(unlock, "v"), "%d", &n)
+		// 到期卷已经允许使用；只有尚未到期的条目对当前章生效。
+		if n > 0 && vol >= n {
 			continue
 		}
-		out = append(out, m[1])
+		rows = append(rows, flattenStrings([]any{value})...)
 	}
-	if len(out) == 0 {
-		return "按卷锁词已配置；无额外当前卷锁词。"
+	for term, alias := range file.Aliases {
+		if slicesContains(rows, term) {
+			rows = append(rows, flattenStrings([]any{alias})...)
+		}
 	}
-	return "当前卷锁词：见 canon/locked-terms.yaml 的 locked_until（到期卷 " + strings.Join(out, ", ") + "）。"
+	rows = uniqueSortedStrings(rows)
+	if len(rows) == 0 {
+		return "当前章无生效锁词；仍须遵守伏笔条目的回收边界。"
+	}
+	return "以下词语/别名当前禁止出现：" + strings.Join(rows, "；")
+}
+
+func flattenStrings(values []any) []string {
+	var out []string
+	for _, value := range values {
+		switch v := value.(type) {
+		case string:
+			for _, part := range strings.Split(v, "；") {
+				if part = strings.TrimSpace(part); part != "" {
+					out = append(out, part)
+				}
+			}
+		case []any:
+			out = append(out, flattenStrings(v)...)
+		case map[string]any:
+			for _, key := range []string{"term", "word", "text", "alias", "rule"} {
+				if text, ok := v[key]; ok {
+					out = append(out, flattenStrings([]any{text})...)
+				}
+			}
+		}
+	}
+	return out
+}
+
+func slicesContains(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
+}
+
+func uniqueSortedStrings(values []string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, value := range values {
+		if value = strings.TrimSpace(value); value != "" && !seen[value] {
+			seen[value] = true
+			out = append(out, value)
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 func firstFormalRelationLine(raw string) string {

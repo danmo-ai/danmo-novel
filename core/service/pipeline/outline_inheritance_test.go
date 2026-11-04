@@ -70,6 +70,14 @@ func TestUnitSeedInheritanceLocksFunction(t *testing.T) {
 }
 
 // next_hook 的类型由卷纲定，细纲只写具体事件。
+func TestUnitSeedInheritanceLocksStateTransitions(t *testing.T) {
+	draft := inheritedUnitDraft()
+	draft.StateDeltas = []any{map[string]any{"stem": "lu-chen", "field": "goal", "from": "自保", "to": "换成另一个故事"}}
+	if err := ValidateUnitSeedInheritance(draft, testSeed(testSeedFields())); err == nil || !strings.Contains(err.Error(), "stateDeltas") {
+		t.Fatalf("state transition must inherit the volume seed: %v", err)
+	}
+}
+
 func TestUnitSeedInheritanceLocksNextHookType(t *testing.T) {
 	draft := inheritedUnitDraft()
 	draft.NextHook = map[string]any{"type": "高代价选择", "out": "卷宗少了一页。"}

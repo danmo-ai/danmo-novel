@@ -29,7 +29,7 @@ const labels: Record<string, string> = {
   deliverables: '结果兑现', open_questions: '保留问题', next_volume_entry: '下一卷入口', cast: '本卷人物',
   objective: '目标', obstacle: '阻碍', attempt: '尝试', setback: '方法缺口', choice: '关键选择', cost: '代价',
   outcome: '不可逆结果', entry_cause: '前置原因', exit_result: '离场结果', state_changes: '状态迁移',
-  thread_ids: '故事线', event_ids: '关联事件', reveal_ids: '可揭示', forbidden_reveal_ids: '禁止提前揭示', next_hook: '下一钩',
+  thread_ids: '故事线', event_ids: '关联事件', plant_ids: '埋入伏笔', payoff_ids: '回收伏笔', next_hook: '下一钩',
   event: '事件', cause: '原因', effect: '影响', chapter_window: '落点范围',
   clock_start_day: '开场日', clock_end_day: '结束日', clock_gap_days: '最小间隔', clock_deadline: '关键死线', timeline_id: '时间线',
 }
@@ -56,11 +56,11 @@ function clockLabel(entity: MarkdownEntity) {
 function nextAction(id: string) {
   const unit = unitFor(id)
   if (!unit) return '待生成细纲'
-  return ({ proposed: '生成细纲', accepted: '写正文', drafted: '审校正文', reviewed: '查看定稿' } as Record<string, string>)[unit.status] || '进入生产'
+  return ({ proposed: '生成细纲', accepted: '写正文', drafted: '审校正文', reviewed: '定稿', finalized: '查看定稿' } as Record<string, string>)[unit.status] || '进入生产'
 }
 function status(id: string) {
   const value = unitFor(id)?.status || 'proposed'
-  return ({ proposed: '待细纲', accepted: '待写', drafted: '草稿', reviewed: '定稿' } as Record<string, string>)[value] || value
+  return ({ proposed: '待细纲', accepted: '待写', drafted: '草稿', reviewed: '已审校', finalized: '定稿' } as Record<string, string>)[value] || value
 }
 </script>
 

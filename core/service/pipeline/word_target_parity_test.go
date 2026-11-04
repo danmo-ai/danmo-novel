@@ -22,7 +22,7 @@ func TestWriteGateUsesSameChapterTargetAsReview(t *testing.T) {
 	// 写死 2000 时阈值 1800 判定通过，按 3500 判定阈值 2100，判不足。
 	unit := domain.UnitInfo{
 		UnitID: "v01-U1", ChapterFrom: 1, ChapterTo: 1,
-		OutlineRaw: "word_target: 3500\n",
+		OutlineRaw: "chapter_chars: 3500\n",
 	}
 	target := books.ChapterTarget(unit)
 	if target != 3500 {

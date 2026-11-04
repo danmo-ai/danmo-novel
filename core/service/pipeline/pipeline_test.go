@@ -74,7 +74,7 @@ func TestReviewDoesNotRetryOrDuplicateLocalFindings(t *testing.T) {
 	unit.ProseRaw = "## 第1章\n\n短。" // 字数远低于目标 → 本地硬门判 blocking
 	mock := llm.NewMock().AddText(`{"verdict":"pass","findings":[{"id":"ai-1","severity":"advisory","chapter":1,"title":"节奏略平","evidence":"全章只有一句推进"}]}`)
 	r := New(mock)
-	res, err := r.RunReview(context.Background(), snap, unit, "mock/mock-gpt-4")
+	res, err := r.RunReview(context.Background(), snap, unit, "mock/mock-gpt-4", ReviewOptions{Concurrency: 1, Rounds: 1})
 	if err != nil {
 		t.Fatal(err)
 	}

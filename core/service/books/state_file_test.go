@@ -77,13 +77,14 @@ func TestLoadStateMissingFileIsNotAnError(t *testing.T) {
 	}
 }
 
-// state_deltas 是状态的唯一来源；解析兼容旧版 state_deltas_json 字符串。
+// state_deltas 是状态的唯一来源。旧版的 state_deltas_json 已删除，
+// 字段名也不再兼容别名——写错就在细纲接受时报错。
 func TestStateFromOutlineReadsBothShapes(t *testing.T) {
 	listShape := `unit_id: v01-U1
 story_day: 12
 state_deltas:
   - {stem: linchen, field: location, from: "山门", to: "内门"}
-  - {stem: linchen, field: knowledge, from: "", to: "知道刀柄的来历"}
+  - {stem: linchen, field: knows, from: "", to: "知道刀柄的来历"}
 `
 	st := StateFromOutline(domain.UnitInfo{UnitID: "v01-U1", Volume: 1, OutlineRaw: listShape},
 		[]domain.ChapterDraft{{Chapter: 3}})
@@ -97,15 +98,6 @@ state_deltas:
 		t.Fatalf("knows=%v", st.Cast["linchen"].Knows)
 	}
 
-	// 旧版把 deltas 序列化成 JSON 字符串，仍要能读。
-	jsonShape := `unit_id: v01-U2
-state_deltas_json: '[{"stem":"linchen","field":"location","from":"内门","to":"城镇"}]'
-`
-	st = StateFromOutline(domain.UnitInfo{UnitID: "v01-U2", OutlineRaw: jsonShape},
-		[]domain.ChapterDraft{{Chapter: 6}})
-	if st.Cast["linchen"].Location != "城镇" {
-		t.Fatalf("legacy json shape not parsed: %+v", st.Cast)
-	}
 }
 
 // 没有 state_deltas 的单元不产生空段：空状态比没有状态更误导。

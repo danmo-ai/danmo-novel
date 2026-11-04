@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
-	"time"
 
 	"github.com/danmo-ai/danmo-novel/core/domain"
 	"gopkg.in/yaml.v3"
@@ -61,6 +60,9 @@ func AcceptPlan(root string, cand domain.Candidate) error {
 		} else {
 			mode = domain.PlanModeVolume
 		}
+	}
+	if mode != domain.PlanModeInit && mode != domain.PlanModeReinit && mode != domain.PlanModeVolume {
+		return fmt.Errorf("未知 plan mode %q", mode)
 	}
 	full := mode == domain.PlanModeInit || mode == domain.PlanModeReinit
 	if full {
@@ -128,14 +130,14 @@ func acceptPlanBook(root string, cand domain.Candidate) error {
 		for path, body := range cand.PlanSettings {
 			snap.Files[path] = body
 		}
-		revealDoc := ParseStructuredMarkdown(cand.PlanSettings["canon/reveal-schedule.md"], "reveal-schedule/v1")
-		snap.StructuredOutlines["canon/reveal-schedule.md"] = &revealDoc
+		foreshadowDoc := ParseStructuredMarkdown(cand.PlanSettings[ForeshadowSchedulePath], ForeshadowProtocol)
+		snap.StructuredOutlines[ForeshadowSchedulePath] = &foreshadowDoc
 		if err := ValidateStructuredOutlineFile(snap, "outline/book_outline.md", cand.PlanMarkdown["book_outline"]); err != nil {
 			return err
 		}
 		writes["outline/book_outline.md"] = []byte(cand.PlanMarkdown["book_outline"])
 	}
-	if err := ValidateRevealSchedule(cand.PlanSettings["canon/reveal-schedule.md"]); err != nil {
+	if err := ValidateForeshadowSchedule(cand.PlanSettings[ForeshadowSchedulePath]); err != nil {
 		return err
 	}
 	for path, body := range cand.PlanSettings {
@@ -274,9 +276,16 @@ func acceptPlanVolume(root string, cand domain.Candidate) error {
 	if err != nil {
 		return err
 	}
+	foreshadowRaw, err := RenderForeshadowAssignments(root, cand.ForeshadowAssignments)
+	if err != nil {
+		return fmt.Errorf("卷纲伏笔细化失败：%w", err)
+	}
 	writes := map[string][]byte{
 		"outline/volumes/" + cand.VolumeID + ".md": []byte(outline),
 		IdentityTimelinePath:                       identityBody,
+	}
+	if len(cand.ForeshadowAssignments) > 0 {
+		writes[ForeshadowSchedulePath] = foreshadowRaw
 	}
 	seeds := SeedsFromStructuredVolume(doc)
 	if len(seeds) == 0 {
@@ -294,8 +303,12 @@ func acceptPlanVolume(root string, cand domain.Candidate) error {
 			}
 		}
 		abs := filepath.Join(root, filepath.FromSlash(rel))
-		if _, err := os.Stat(abs); err == nil {
-			// Never overwrite existing unit contracts (prose progress preserved).
+		if old, err := os.ReadFile(abs); err == nil {
+			// The parent changed: preserve prose/history but require fresh child acceptance.
+			marker := regexp.MustCompile(`(?m)^status:.*$`)
+			if marker.MatchString(string(old)) {
+				writes[rel] = []byte(marker.ReplaceAllString(string(old), "status: proposed"))
+			}
 			continue
 		}
 		body, err := yaml.Marshal(contract)
@@ -373,12 +386,12 @@ func UnitContractForSeed(s UnitSeed, volumeCast []string, segments []domain.Iden
 // reviewed 共 119 个，**一个都没有**。
 var seedOwnedFields = []string{
 	"entry_cause", "exit_result", "state_changes", "thread_ids",
-	"event_ids", "reveal_ids", "forbidden_reveal_ids", "clock_deadline",
+	"event_ids", "clock_deadline",
 }
 
 // seedListFields 是种子里的 YAML 列表字段，回填时写成行内数组。
 var seedListFields = map[string]bool{
-	"thread_ids": true, "event_ids": true, "reveal_ids": true, "forbidden_reveal_ids": true,
+	"thread_ids": true, "event_ids": true,
 }
 
 // CarrySeedOwnedFields appends the seed-owned contract fields that the accepted
@@ -439,41 +452,9 @@ func hasUnitField(raw, key string) bool {
 }
 
 func commitPlanWrites(root string, writes map[string][]byte, state map[string]string) error {
-	stamp := time.Now().UTC().Format("20060102-150405")
-	backupRoot := filepath.Join(root, "backups", "pre-accept-"+stamp)
-	stageRoot := filepath.Join(backupRoot, "staging")
-	if err := os.MkdirAll(stageRoot, 0o755); err != nil {
+	if err := AtomicWriteFiles(root, writes); err != nil {
 		return err
 	}
-	for rel, body := range writes {
-		abs := filepath.Join(root, filepath.FromSlash(rel))
-		if raw, err := os.ReadFile(abs); err == nil {
-			bak := filepath.Join(backupRoot, filepath.FromSlash(rel))
-			if err := os.MkdirAll(filepath.Dir(bak), 0o755); err != nil {
-				return err
-			}
-			if err := os.WriteFile(bak, raw, 0o644); err != nil {
-				return err
-			}
-		}
-		staged := filepath.Join(stageRoot, filepath.FromSlash(rel))
-		if err := os.MkdirAll(filepath.Dir(staged), 0o755); err != nil {
-			return err
-		}
-		if err := os.WriteFile(staged, body, 0o644); err != nil {
-			return err
-		}
-	}
-	for rel, body := range writes {
-		abs := filepath.Join(root, filepath.FromSlash(rel))
-		if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
-			return err
-		}
-		if err := os.WriteFile(abs, body, 0o644); err != nil {
-			return err
-		}
-	}
-	_ = os.RemoveAll(stageRoot)
 	return updateState(root, state)
 }
 
@@ -518,13 +499,16 @@ func normalizeRole(role string) string {
 // SeedCandidateCast creates a skeleton candidate card for a stem discovered
 // during outline/write. It never promotes to canon — the author completes the
 // card and晋升 in the Bible page. Existing cards are never touched.
-func SeedCandidateCast(root, stem string, onStageExisting []string) error {
+func CandidateCastFile(root, stem string) (string, []byte, bool, error) {
 	if stem == "" {
-		return nil
+		return "", nil, false, nil
 	}
-	path := filepath.Join(root, "canon", "cast", stem+".md")
+	rel := "canon/cast/" + stem + ".md"
+	path := filepath.Join(root, filepath.FromSlash(rel))
 	if _, err := os.Stat(path); err == nil {
-		return nil // 已有卡（canon 或 candidate）不覆盖
+		return rel, nil, false, nil
+	} else if !os.IsNotExist(err) {
+		return "", nil, false, err
 	}
 	md := fmt.Sprintf(`# %s
 
@@ -534,10 +518,15 @@ func SeedCandidateCast(root, stem string, onStageExisting []string) error {
 > 临时人物：由细纲/写作引入。请补全三锚点、知识边界与台词样例后，
 > 在设定页晋升 canon，才能进入正式人物关系与后续单元。
 `, stem)
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	return rel, []byte(md), true, nil
+}
+
+func SeedCandidateCast(root, stem string, onStageExisting []string) error {
+	rel, body, ok, err := CandidateCastFile(root, stem)
+	if err != nil || !ok {
 		return err
 	}
-	return os.WriteFile(path, []byte(md), 0o644)
+	return AtomicWriteFiles(root, map[string][]byte{rel: body})
 }
 
 // UpdateState 是 updateState 的导出包装，供 runs 在任务接受时推进 novel-state。

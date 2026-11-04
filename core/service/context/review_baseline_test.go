@@ -10,13 +10,25 @@ import (
 	"github.com/danmo-ai/danmo-novel/core/service/books"
 )
 
+func testChapterReviewPacket(snap domain.BookSnapshot, unit domain.UnitInfo, ch domain.ChapterDraft, tail string, baseline ReviewBaseline, _ ...int) domain.ContextPacket {
+	return BuildChapterReviewPacket(snap, unit, ch, tail, baseline)
+}
+
+func testRevisePacket(snap domain.BookSnapshot, unit domain.UnitInfo, ch domain.ChapterDraft, fs []domain.ReviewFinding, tail string, baseline ReviewBaseline, _ ...int) domain.ContextPacket {
+	return BuildReviseChapterPacket(snap, unit, ch, fs, tail, baseline)
+}
+
+func testReviseFallbackPacket(snap domain.BookSnapshot, unit domain.UnitInfo, ch domain.ChapterDraft, fs []domain.ReviewFinding, tail string, baseline ReviewBaseline, _ ...int) domain.ContextPacket {
+	return BuildReviseChapterFallbackPacket(snap, unit, ch, fs, tail, baseline)
+}
+
 func TestOutlinePacketIncludesSeedAndExistingCanon(t *testing.T) {
 	unit := domain.UnitInfo{UnitID: "v01-U1", Volume: 1, OutlinePath: "outline/units/v01-U1.yaml", OutlineRaw: "unit_id: v01-U1\nstatus: proposed\non_stage: [lin]\npov: lin\nstory_day: 3\ngap_from_prev: 次日\n"}
-	volumeRaw := "# 卷纲 · v01\n- schema_version: 1\n- volume_id: v01\n\n## 单元 · v01-U1\n- title: 入门\n- chapter_range: 1-3\n- objective: 立足\n- obstacle: 质疑\n- attempt: 复查\n- setback: 证据不足\n- choice: 承担复核\n- cost: 责任\n- outcome: 获得许可\n- entry_cause: 开卷\n- exit_result: 获得许可\n- state_changes: lin.role_title=新人->复核人\n- thread_ids: main\n- event_ids: event-1\n- next_hook: 信息缺口 | 签名不合\n"
+	volumeRaw := "# 卷纲 · v01\n- schema_version: 1\n- volume_id: v01\n\n## 单元 · v01-U1\n- title: 入门\n- chapter_range: 1-3\n- objective: 立足\n- obstacle: 质疑\n- attempt: 复查\n- setback: 证据不足\n- choice: 承担复核\n- cost: 责任\n- outcome: 获得许可\n- entry_cause: 开卷\n- exit_result: 获得许可\n- state_changes: lin.role_title=新人->复核人\n- clock_start_day: 3\n- clock_end_day: 5\n- clock_gap_days: 0\n- thread_ids: main\n- event_ids: event-1\n- next_hook: 信息缺口 | 签名不合\n"
 	doc := books.ParseStructuredMarkdown(volumeRaw, books.VolumeOutlineProtocol)
-	snap := domain.BookSnapshot{Summary: domain.BookSummary{ID: "b"}, Volumes: []domain.VolumeInfo{{Volume: 1, Raw: volumeRaw, Cast: []string{"lin"}, Structured: &doc}}, Units: []domain.UnitInfo{unit}, Cast: []domain.CastCard{{Stem: "lin", Name: "林晚", Raw: "# 林晚\n"}}, Files: map[string]string{"outline/volumes/v01.md": volumeRaw, "canon/reveal-schedule.md": "# 揭示计划\n- schema_version: 1\n\n## 揭示 · R1\n- public_summary: 可公开线索\n- earliest_volume: v01\n- hint_unit_ids: v01-U1\n- confirm_unit_id: v01-U1\n- status: planted\n- locked_terms: 无\n"}}
+	snap := domain.BookSnapshot{Summary: domain.BookSummary{ID: "b"}, Volumes: []domain.VolumeInfo{{Volume: 1, Raw: volumeRaw, Cast: []string{"lin"}, Structured: &doc}}, Units: []domain.UnitInfo{unit}, Cast: []domain.CastCard{{Stem: "lin", Name: "林晚", Raw: "# 林晚\n"}}, Files: map[string]string{"outline/volumes/v01.md": volumeRaw, "canon/foreshadow-schedule.md": "# 伏笔登记表\n- schema_version: 1\n\n## 伏笔 · FS-01\n- content: 可公开线索\n- type: 信息\n- plant_volume: v01\n- plant_unit: v01-U1\n- payoff_volume: v01\n- payoff_unit: v01-U1\n- payoff_summary: 读者得知线索\n- status: planned\n"}}
 	packet := BuildOutlinePacket(snap, 1, []string{"v01-U1"}, "")
-	for _, want := range []string{"不可改写的单元种子", "objective", "state_changes", "人物·林晚", "story_day", "可公开线索"} {
+	for _, want := range []string{"不可改写的单元种子", "objective", "state_changes", "人物·林晚", "clock_start_day", "可公开线索"} {
 		if !strings.Contains(packet.UserPrompt, want) {
 			t.Fatalf("outline packet lost %q", want)
 		}
@@ -24,30 +36,34 @@ func TestOutlinePacketIncludesSeedAndExistingCanon(t *testing.T) {
 }
 
 func TestStructuredCanonRetainsIdentityClockAndReveal(t *testing.T) {
-	unit := domain.UnitInfo{UnitID: "v02-U1", Volume: 2, ChapterFrom: 4, ChapterTo: 4, OutlinePath: "outline/units/v02-U1.yaml", ProsePath: "units/v02-U1.md", ProseRaw: "正文", OutlineRaw: "unit_id: v02-U1\nsource_seed_id: v02-U1\ndesire: 立足\nobstacle: 质疑\nchoice: 复查\npayoff: 获得许可\nforbidden: 禁揭\non_stage: [lin]\npov: lin\nstory_day: 12\ngap_from_prev: 三天后\nscenes:\n  - id: S1\n    chapter: 4\n    goal: 复查\n"}
+	unit := domain.UnitInfo{UnitID: "v02-U1", Volume: 2, ChapterFrom: 4, ChapterTo: 4, OutlinePath: "outline/units/v02-U1.yaml", ProsePath: "units/v02-U1.md", ProseRaw: "正文", OutlineRaw: "unit_id: v02-U1\nsource_seed_id: v02-U1\ndesire: 立足\nobstacle: 质疑\nchoice: 复查\npayoff: 获得许可\nforbidden: 禁揭\non_stage: [lin]\npov: lin\nstory_day: 12\ngap_from_prev: 三天后\nchapters:\n  - chapter: 4\n    goal: 复查\n    change: 拿到旧刀\n    cut_hook: 刀柄有字\n    day_offset: 0\n    plant: [FS-01]\nscenes:\n  - id: S1\n    chapter: 4\n    goal: 复查\n"}
 	snap := domain.BookSnapshot{Summary: domain.BookSummary{ID: "b", Genre: "悬疑"}, Cast: []domain.CastCard{{Stem: "lin", Name: "林晚", Raw: "# 林晚\n\n## 三锚点\n- 视觉：先看手\n\n## 知识边界\n- 不知未来\n\n## 台词\n- 先复核。\n"}}, IdentitySegments: []domain.IdentitySegment{{Stem: "lin", RoleTitle: "重案队试用", Org: "分局", FromUnit: "v02-U1"}}, Files: map[string]string{
-		"canon/reveal-schedule.md": "# 揭示计划\n- schema_version: 1\n\n## 揭示 · R-ORIGIN\n- public_summary: 旧刀来源\n- earliest_volume: v03\n- hint_unit_ids: v03-U1\n- confirm_unit_id: v03-U2\n- status: locked\n- locked_terms: 原主\n",
-		"canon/author-lore.md":     "未来真相禁止注入",
+		"canon/foreshadow-schedule.md": "# 伏笔登记表\n- schema_version: 1\n\n## 伏笔 · FS-01\n- content: 旧刀来源\n- type: 信息\n- plant_volume: v02\n- plant_unit: v02-U1\n- payoff_volume: v03\n- payoff_unit: v03-U1\n- payoff_summary: 刀主是前任主簿\n- status: planned\n- locked_terms: 原主\n",
+		"canon/author-lore.md":         "未来真相禁止注入",
 	}}
-	for name, packet := range map[string]domain.ContextPacket{"write": BuildWritePacket(snap, unit, "", 0), "review": BuildReviewPacket(snap, unit, nil, "")} {
+	for name, packet := range map[string]domain.ContextPacket{"write": BuildWritePacket(snap, unit, ""), "review": testChapterReviewPacket(snap, unit, domain.ChapterDraft{Chapter: 4, Body: "正文四"}, "", BuildReviewBaseline(snap, unit, nil, ""))} {
 		if !strings.Contains(packet.UserPrompt, "重案队试用") || !strings.Contains(packet.UserPrompt, "先看手") {
 			t.Fatalf("%s lost cast/identity: %s", name, packet.UserPrompt)
 		}
-		if !strings.Contains(packet.UserPrompt, "旧刀来源") || !strings.Contains(packet.UserPrompt, "禁止写穿") {
-			t.Fatalf("%s lost structured reveal: %s", name, packet.UserPrompt)
+		// 写作绝不能看到回收摘要（那就是结局）；审校必须看到，才能判「收得够不够」。
+		if name == "write" && strings.Contains(packet.UserPrompt, "刀主是前任主簿") {
+			t.Fatalf("write leaked a future payoff summary: %s", packet.UserPrompt)
+		}
+		if name == "review" && !strings.Contains(packet.UserPrompt, "刀主是前任主簿") {
+			t.Fatalf("review must see the payoff summary to judge it: %s", packet.UserPrompt)
 		}
 		if strings.Contains(packet.UserPrompt, "未来真相禁止注入") {
 			t.Fatalf("%s leaked author lore", name)
 		}
 	}
-	write := BuildWritePacket(snap, unit, "", 0)
+	write := BuildWritePacket(snap, unit, "")
 	if !strings.Contains(write.UserPrompt, "第 12 天") || !strings.Contains(write.UserPrompt, "三天后") {
 		t.Fatal("story clock guidance was dropped")
 	}
 	baseline := BuildReviewBaseline(snap, unit, nil, "")
-	revise := BuildReviseChapterPacket(snap, unit, domain.ChapterDraft{Chapter: 4, Body: "正文"}, nil, "", baseline, 0)
+	revise := testRevisePacket(snap, unit, domain.ChapterDraft{Chapter: 4, Body: "正文"}, nil, "", baseline, 0)
 	if !strings.Contains(revise.UserPrompt, "重案队试用") || !strings.Contains(revise.UserPrompt, "旧刀来源") {
-		t.Fatal("revise lost identity or reveal constraints")
+		t.Fatal("revise lost identity or foreshadow constraints")
 	}
 }
 
@@ -70,8 +86,8 @@ func TestRevisePacketsDifferOnlyInOutputContract(t *testing.T) {
 	baseline := BuildReviewBaseline(snap, unit, nil, "")
 	ch := domain.ChapterDraft{Chapter: 4, Title: "门", Body: "第4章正文"}
 
-	patch := BuildReviseChapterPacket(snap, unit, ch, nil, "", baseline, 0)
-	fallback := BuildReviseChapterFallbackPacket(snap, unit, ch, nil, "", baseline, 0)
+	patch := testRevisePacket(snap, unit, ch, nil, "", baseline, 0)
+	fallback := testReviseFallbackPacket(snap, unit, ch, nil, "", baseline, 0)
 
 	if len(patch.Blocks) != len(fallback.Blocks) {
 		t.Fatalf("block count differs: patch=%d fallback=%d", len(patch.Blocks), len(fallback.Blocks))
@@ -133,20 +149,26 @@ func TestChapterReviewAndReviseShareTheSamePrefix(t *testing.T) {
 	ch := domain.ChapterDraft{Chapter: 4, Title: "门", Body: "第4章正文"}
 	prevTail := "上一章末尾的一段。"
 
-	review := BuildChapterReviewPacket(snap, unit, ch, prevTail, baseline, 0)
-	revise := BuildReviseChapterPacket(snap, unit, ch, nil, prevTail, baseline, 0)
+	review := testChapterReviewPacket(snap, unit, ch, prevTail, baseline)
+	revise := testRevisePacket(snap, unit, ch, nil, prevTail, baseline, 0)
 
 	if review.SystemPrompt != revise.SystemPrompt {
 		t.Fatal("review and revise must share one system prompt; otherwise the whole payload re-bills")
 	}
-	if len(review.Blocks) != len(revise.Blocks) {
-		t.Fatalf("block count differs: review=%d revise=%d", len(review.Blocks), len(revise.Blocks))
+	if len(revise.Blocks) != len(review.Blocks)-1 {
+		t.Fatalf("revise must drop only the review checklist: review=%d revise=%d", len(review.Blocks), len(revise.Blocks))
 	}
-	for i := range review.Blocks {
-		if review.Blocks[i].ID != revise.Blocks[i].ID || review.Blocks[i].Content != revise.Blocks[i].Content {
-			t.Fatalf("block %d differs (%q vs %q); prefix cache would miss",
-				i, review.Blocks[i].ID, revise.Blocks[i].ID)
+	shared := map[string]domain.ContextBlock{}
+	for _, b := range review.Blocks {
+		shared[b.ID] = b
+	}
+	for _, b := range revise.Blocks {
+		if shared[b.ID] != b {
+			t.Fatalf("shared fact block differs: %s", b.ID)
 		}
+	}
+	if strings.Contains(revise.UserPrompt, "审校清单") {
+		t.Fatal("revision must not carry the entire review checklist")
 	}
 	// 正文必须是同一块且内容相同——它占 prompt 的绝大部分。
 	var reviewProse, reviseProse string
@@ -192,8 +214,8 @@ func TestAdjacentChapterPacketsShareMostOfTheirBytes(t *testing.T) {
 	ch4 := domain.ChapterDraft{Chapter: 4, Title: "门", Body: "第四章的正文内容，写得足够长以便占比明显。"}
 	ch5 := domain.ChapterDraft{Chapter: 5, Title: "影", Body: "第五章的正文内容，与第四章完全不同。"}
 
-	p4 := BuildChapterReviewPacket(snap, unit, ch4, baseline.PrevTail, baseline, 0)
-	p5 := BuildChapterReviewPacket(snap, unit, ch5, ch4.Body, baseline, 0)
+	p4 := testChapterReviewPacket(snap, unit, ch4, baseline.PrevTail, baseline)
+	p5 := testChapterReviewPacket(snap, unit, ch5, ch4.Body, baseline)
 
 	// 章号不得出现在 payload 的最前面：book 是第一个字段，章号放进去会让
 	// 相邻两章从第 19 字节就分叉。
@@ -249,7 +271,7 @@ func TestChapterReviewPacketClipsSummaryAndScopesProse(t *testing.T) {
 	}
 
 	ch := domain.ChapterDraft{Chapter: 2, Title: "门", Body: "第2章正文"}
-	packet := BuildChapterReviewPacket(snap, unit, ch, "上一章末尾", baseline, 128000)
+	packet := testChapterReviewPacket(snap, unit, ch, "上一章末尾", baseline)
 
 	var prose, prevTail, contract string
 	for _, b := range packet.Blocks {
@@ -299,8 +321,8 @@ func TestChapterReviewPacketCarriesOnlyItsOwnLocalFindings(t *testing.T) {
 	}
 	baseline := BuildReviewBaseline(snap, unit, local, "")
 
-	ch1 := BuildChapterReviewPacket(snap, unit, domain.ChapterDraft{Chapter: 1, Body: "一"}, "", baseline, 0)
-	ch2 := BuildChapterReviewPacket(snap, unit, domain.ChapterDraft{Chapter: 2, Body: "二"}, "", baseline, 0)
+	ch1 := testChapterReviewPacket(snap, unit, domain.ChapterDraft{Chapter: 1, Body: "一"}, "", baseline, 0)
+	ch2 := testChapterReviewPacket(snap, unit, domain.ChapterDraft{Chapter: 2, Body: "二"}, "", baseline, 0)
 	gate := func(p domain.ContextPacket) string {
 		raw, _ := DecodeUserPayload(p.UserPrompt)
 		s, _ := raw.Extra["localFindings"].(string)
@@ -342,17 +364,17 @@ func TestReviewPathsCarryTheSameBaseline(t *testing.T) {
 		Files: map[string]string{
 			"canon/style-fingerprint.md":  "# 文风\n\n- 短句为主，不用排比。\n",
 			"canon/writing-rules.md":      "- 不写心理总结。\n",
-			"canon/locked-terms.yaml":     "- term: 复核\n  note: 固定用词\n",
+			"canon/locked-terms.yaml":     "locked_until:\n  v03: [真相词]\n  v02: [已解锁词]\ncompliance: [永久红线]\naliases: {}\n",
 			"continuity/summaries/v02.md": "第二卷摘要：林晚已调入重案队。",
 		},
 	}
 
-	whole := BuildReviewPacket(snap, unit, nil, "")
+	whole := testChapterReviewPacket(snap, unit, domain.ChapterDraft{Chapter: 4, Body: "正文四"}, "", BuildReviewBaseline(snap, unit, nil, ""))
 	baseline := BuildReviewBaseline(snap, unit, nil, "")
-	narrow := BuildChapterReviewPacket(snap, unit, domain.ChapterDraft{Chapter: 4, Body: "正文四"}, "", baseline, 0)
+	narrow := testChapterReviewPacket(snap, unit, domain.ChapterDraft{Chapter: 4, Body: "正文四"}, "", baseline, 0)
 
-	// 两条路径都必须带上的依据。
-	for _, want := range []string{"先看手", "短句为主", "当前卷锁词", "已调入重案队"} {
+	// 固定按章后，同一事实输入只构建一次。
+	for _, want := range []string{"先看手", "短句为主", "真相词", "永久红线"} {
 		if !strings.Contains(whole.UserPrompt, want) {
 			t.Errorf("whole-unit review lost %q", want)
 		}
@@ -368,10 +390,11 @@ func TestReviewPathsCarryTheSameBaseline(t *testing.T) {
 		}
 	}
 
-	// 整单元路径没有「本章场面节拍」切片，所以合同必须保留 scenes，
-	// 否则模型整单元审校时看不到任何章级节拍。
+	if strings.Contains(whole.UserPrompt, "已解锁词") {
+		t.Error("expired lock term must not be injected")
+	}
 	if !strings.Contains(whole.UserPrompt, "goal: 复查") {
-		t.Error("whole-unit review lost scenes; it has no per-chapter beats to fall back on")
+		t.Error("chapter review lost its chapter contract")
 	}
 	// 分章路径不能出现两遍节拍：合同里剥掉 + 单独的本章节拍块。
 	beats := 0
@@ -553,8 +576,8 @@ scenes:
 		t.Fatal("contract must not repeat scenes")
 	}
 
-	ch1 := BuildChapterReviewPacket(snap, unit, domain.ChapterDraft{Chapter: 1, Body: "正文一"}, "", baseline, 0)
-	ch2 := BuildChapterReviewPacket(snap, unit, domain.ChapterDraft{Chapter: 2, Body: "正文二"}, "", baseline, 0)
+	ch1 := testChapterReviewPacket(snap, unit, domain.ChapterDraft{Chapter: 1, Body: "正文一"}, "", baseline, 0)
+	ch2 := testChapterReviewPacket(snap, unit, domain.ChapterDraft{Chapter: 2, Body: "正文二"}, "", baseline, 0)
 
 	var b1, b2 string
 	for _, b := range ch1.Blocks {
@@ -637,7 +660,7 @@ func TestPacketSizeBudget(t *testing.T) {
 	snap := loadFixtureCopy(t)
 	unit := findUnit(t, snap, "v01-U1")
 
-	wp := BuildWritePacket(snap, unit, "", 0)
+	wp := BuildWritePacket(snap, unit, "")
 	narrowed, beats := NarrowBeats(wp, unit, unit.ChapterFrom)
 	if sum := blockBytes(narrowed.Blocks) + len(beats); sum > 32*1024 {
 		t.Fatalf("write packet %d B exceeds 32KB budget", sum)
@@ -645,7 +668,7 @@ func TestPacketSizeBudget(t *testing.T) {
 
 	baseline := BuildReviewBaseline(snap, unit, nil, "")
 	ch := domain.ChapterDraft{Chapter: unit.ChapterFrom, Body: "正文"}
-	rp := BuildChapterReviewPacket(snap, unit, ch, "", baseline, 0)
+	rp := testChapterReviewPacket(snap, unit, ch, "", baseline)
 	if sum := blockBytes(rp.Blocks); sum > 34*1024 {
 		t.Fatalf("review packet %d B exceeds 34KB budget", sum)
 	}

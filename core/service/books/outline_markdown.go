@@ -17,9 +17,39 @@ const (
 
 var (
 	entityHeadingRe = regexp.MustCompile(`^(#{1,6})\s+(.+?)\s*$`)
-	entityNameRe    = regexp.MustCompile(`^(全书总纲|卷纲|故事线|分卷|单元|节拍|转折|承诺|约束|揭示|卷末交接|问题|身份变更)\s*(?:·|:|：)?\s*(.*)$`)
+	entityNameRe    = regexp.MustCompile(`^(全书总纲|卷纲|故事线|分卷|单元|节拍|转折|承诺|约束|揭示|伏笔|卷末交接|问题|身份变更)\s*(?:·|:|：)?\s*(.*)$`)
 	markdownFieldRe = regexp.MustCompile(`^\s*-\s+([a-z][a-z0-9_]*)\s*:\s*(.*)$`)
 )
+
+// 结构化 Markdown 的四个协议各自绑定一个文件。
+const (
+	// ForeshadowSchedulePath 是伏笔的唯一权威登记表。
+	//
+	// 它与 canon/reveal-schedule.md 的关系是**继承**而不是并列：揭示计划回答
+	// 「读者此刻能不能知道某个秘密」，本质是 type=信息 的伏笔的一种。实测三本书
+	// 83 条揭示里 81 条的 hint_unit_ids ≠ confirm_unit_id——它早就在做「A 单元埋、
+	// B 单元收」，与伏笔是同一件事的两份登记。融合后一个事实只存在一处。
+	ForeshadowSchedulePath = "canon/foreshadow-schedule.md"
+	// ForeshadowProtocol 是伏笔登记表的结构化协议名。
+	ForeshadowProtocol = "foreshadow-schedule/v1"
+)
+
+// ProtocolForPath 返回某个 Markdown 文件使用的结构化协议；无协议时返回空串。
+//
+// 以前这段判断在 loadBook 与 StructuredOutlineFor 里各写一遍，两边不一致时
+// 同一份文件会按不同协议解析。现在只此一处。
+func ProtocolForPath(path string) string {
+	switch {
+	case path == "outline/book_outline.md":
+		return BookOutlineProtocol
+	case strings.HasPrefix(path, "outline/volumes/") && strings.HasSuffix(path, ".md"):
+		return VolumeOutlineProtocol
+	case path == ForeshadowSchedulePath:
+		return ForeshadowProtocol
+	default:
+		return ""
+	}
+}
 
 // ParseStructuredMarkdown parses the deliberately small, human-editable
 // Markdown grammar. Unknown structured syntax is diagnosed rather than
@@ -210,8 +240,8 @@ func StructuredOutlineFor(snap domain.BookSnapshot, path string) (domain.Structu
 	if !ok {
 		return domain.StructuredMarkdown{}, false
 	}
-	protocol := BookOutlineProtocol
-	if path != "outline/book_outline.md" {
+	protocol := ProtocolForPath(path)
+	if protocol == "" {
 		protocol = VolumeOutlineProtocol
 	}
 	return ParseStructuredMarkdown(raw, protocol), true
@@ -241,6 +271,15 @@ func stateDeltasFromMarkdown(raw string) []map[string]string {
 	return out
 }
 
+// StateDeltaKeysFromMarkdown exposes the canonical parent comparison keys.
+func StateDeltaKeysFromMarkdown(raw string) []string {
+	var out []string
+	for _, row := range stateDeltasFromMarkdown(raw) {
+		out = append(out, row["stem"]+"."+row["field"]+"="+row["from"]+"->"+row["to"])
+	}
+	return out
+}
+
 // splitList splits a comma/semicolon separated author list.
 //
 // 作者和模型常用行内数组写法（"[career,relationship]"）。以前只切逗号，
@@ -259,63 +298,6 @@ func splitList(raw string) []string {
 		}
 	}
 	return out
-}
-
-// revealNoteRe matches a bracketed explanation, e.g. "（第二部未解问题不得提前回答）".
-var revealNoteRe = regexp.MustCompile(`（[^）]*）|\([^)]*\)|【[^】]*】|\[[^\]]*\]`)
-
-// revealIDList splits a reveal-id field (reveal_ids / forbidden_reveal_ids) into IDs.
-//
-// 字段契约是「rNN 列表」，但作者和模型都会用自然语言表达「没有」：
-// "- forbidden_reveal_ids: 无（第二部未解问题不得提前回答）"。把它当成一个 ID
-// 会让整卷的接受流程失败在一个语义正确的句子上——所以整句说明先归一化为空列表，
-// 而不是留给下游当成「揭示计划里不存在的 ID」。
-//
-// 同时接受三种作者实际会用到的写法："r01,r02"、"r01、r02"、"［r01,r02］"（方括号）。
-func revealIDList(raw string) []string {
-	value := strings.TrimSpace(raw)
-	if value == "" {
-		return nil
-	}
-	value = strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(value, "["), "]"))
-	value = strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(value, "【"), "】"))
-	if value == "" {
-		return nil
-	}
-	head := strings.ToLower(strings.TrimSpace(revealNoteRe.ReplaceAllString(value, "")))
-	switch head {
-	case "", "无", "没有", "暂无", "空", "none", "n/a", "na", "null", "-", "—", "－", "/":
-		return nil
-	}
-	parts := strings.FieldsFunc(value, func(r rune) bool {
-		switch r {
-		case ',', '，', ';', '；', '、', '|', ' ', '\t', '\n':
-			return true
-		}
-		return false
-	})
-	seen := map[string]bool{}
-	out := make([]string, 0, len(parts))
-	for _, p := range parts {
-		p = strings.TrimSpace(strings.Trim(p, "[]【】"))
-		if p == "" || seen[strings.ToLower(p)] {
-			continue
-		}
-		seen[strings.ToLower(p)] = true
-		out = append(out, p)
-	}
-	return out
-}
-
-// looksLikeProse reports whether a reveal token is an explanation rather than an ID.
-// 揭示 ID 是标识符（r01 / R-SECRET 之类）；出现 CJK 说明模型把说明写进了字段。
-func looksLikeProse(token string) bool {
-	for _, r := range token {
-		if r >= 0x3000 {
-			return true
-		}
-	}
-	return false
 }
 
 func ChapterWindow(value string) (int, int) {

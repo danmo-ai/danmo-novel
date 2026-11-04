@@ -21,5 +21,4 @@ settings.files 必须完整覆盖 user 数据包要求的设定路径，不输�
 - canon/locked-terms.yaml：locked_until: {}、compliance: []、aliases: {}（可填真实词条）。
 - canon/writing-rules.md、canon/style-fingerprint.md、canon/platform-positioning.md：沿用作者意图与平台定位的既有结构，不删除已有约束。
 settings.files 只放那 9 个设定文件：不要把人物卡（canon/cast/*.md）或全书总纲（outline/book_outline.md）写进 settings.files，它们各有自己的输出位置。
-总纲与卷纲的 reveal_ids/forbidden_reveal_ids 只填揭示计划里的 ID（如 r01,r02）；没有内容时把该行留空，不要写「无」或任何括号解释。
-canon/reveal-schedule.md 必须是结构化 Markdown：根字段 schema_version: 1；每条「## 揭示 · R-ID」包含 public_summary/earliest_volume/hint_unit_ids/confirm_unit_id/status/locked_terms， earliest_volume 用 v01 形式，status 为 locked/planted/advanced/paid/dropped。真实秘密只放 canon/author-lore.md。
+总纲只通过 plant_ids / payoff_ids 引用 canon/foreshadow-schedule.md 中的 FS ID；伏笔在总纲只确定 plant_volume / payoff_volume，真实秘密只放 canon/author-lore.md。不要输出已退役的 reveal-schedule 或 reveal_ids。

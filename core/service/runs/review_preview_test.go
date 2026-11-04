@@ -65,10 +65,7 @@ func TestReviewPreviewMatchesActualMode(t *testing.T) {
 		return ""
 	}
 
-	// 默认设置 = 分章审校：预览只带第 1 章，预算按章数算。
-	if !settings.Get().Review.SplitByChapter {
-		t.Fatal("default should be split review")
-	}
+	// 审校固定按章：预览展示第一章与全单元总预算。
 	packet, err := svc.PreviewPacket(ctx, domain.TaskSpec{Kind: domain.TaskReview, BookID: snap.Summary.ID, UnitID: unitID})
 	if err != nil {
 		t.Fatalf("preview: %v", err)
@@ -76,35 +73,8 @@ func TestReviewPreviewMatchesActualMode(t *testing.T) {
 	if got := proseBlock(packet); got != "正文一" {
 		t.Fatalf("split preview should carry only chapter 1, got %q", got)
 	}
-	if packet.Policy.MaxCalls != 3*2 {
-		t.Fatalf("split preview maxCalls=%d, want 6 (3 chapters × 2)", packet.Policy.MaxCalls)
-	}
-
-	// 关掉分章：预览切换成整单元，正文是整份。
-	_ = settings.Update(func(s *config.Settings) { s.Review.SplitByChapter = false })
-	packet, err = svc.PreviewPacket(ctx, domain.TaskSpec{Kind: domain.TaskReview, BookID: snap.Summary.ID, UnitID: unitID})
-	if err != nil {
-		t.Fatalf("preview: %v", err)
-	}
-	if got := proseBlock(packet); got != prose {
-		t.Fatalf("whole-unit preview should carry the full unit, got %q", got)
-	}
-	if packet.Policy.MaxCalls != 2 {
-		t.Fatalf("whole-unit preview maxCalls=%d, want 2", packet.Policy.MaxCalls)
-	}
-
-	// spec 可以强制分章（审校页「重审该单元」），不受设置影响。
-	packet, err = svc.PreviewPacket(ctx, domain.TaskSpec{
-		Kind: domain.TaskReview, BookID: snap.Summary.ID, UnitID: unitID, SplitByChapter: true,
-	})
-	if err != nil {
-		t.Fatalf("preview: %v", err)
-	}
-	if got := proseBlock(packet); got != "正文一" {
-		t.Fatalf("forced split preview should carry only chapter 1, got %q", got)
-	}
-	if !svc.reviewSplit(domain.TaskSpec{SplitByChapter: true}) {
-		t.Fatal("spec.SplitByChapter must force split review even when settings say otherwise")
+	if packet.Policy.MaxCalls != 3*3*2 {
+		t.Fatalf("preview maxCalls=%d, want 18 (3 chapters × 3 rounds × 2)", packet.Policy.MaxCalls)
 	}
 }
 
@@ -147,44 +117,23 @@ func TestReviewSwitchDecidesCallCount(t *testing.T) {
 	unitID := snap.Units[0].UnitID
 	pass := `{"verdict":"pass","findings":[]}`
 
-	// 整单元：一次调用就够。轮数固定 1，单独测"分章 vs 整单元"这一个变量。
 	_ = settings.Update(func(s *config.Settings) { s.Review.Rounds = 1 })
-	mock := llm.NewMock().AddText(pass)
-	svc := New(db, settings, mock)
-	_ = settings.Update(func(s *config.Settings) { s.Review.SplitByChapter = false })
-	runWhole, err := svc.Start(ctx, domain.TaskSpec{
-		Kind: domain.TaskReview, BookID: snap.Summary.ID, UnitID: unitID, BaseRevision: snap.Revision,
-	})
-	if err != nil {
-		t.Fatalf("start whole-unit review: %v", err)
-	}
-	if !waitRunSettled(t, db, runWhole.ID, 5*time.Second) {
-		t.Fatal("whole-unit review did not finish")
-	}
-	if len(mock.Requests) != 1 {
-		t.Fatalf("whole-unit review calls=%d, want 1", len(mock.Requests))
-	}
-
-	// 分章：每章一次。
-	_ = settings.Update(func(s *config.Settings) { s.Review.SplitByChapter = true })
-	mock2 := llm.NewMock()
+	mock := llm.NewMock()
 	for i := 0; i < 3; i++ {
-		mock2.AddText(pass)
+		mock.AddText(pass)
 	}
-	svc2 := New(db, settings, mock2)
-	// 上一轮产出的清单会挡住新的审校；重审语义会先归档它。
-	runSplit, err := svc2.Start(ctx, domain.TaskSpec{
+	svc := New(db, settings, mock)
+	run, err := svc.Start(ctx, domain.TaskSpec{
 		Kind: domain.TaskReview, BookID: snap.Summary.ID, UnitID: unitID, BaseRevision: snap.Revision,
-		SupersedeReview: true,
 	})
 	if err != nil {
-		t.Fatalf("start split review: %v", err)
+		t.Fatalf("start per-chapter review: %v", err)
 	}
-	if !waitRunSettled(t, db, runSplit.ID, 5*time.Second) {
-		t.Fatal("split review did not finish")
+	if !waitRunSettled(t, db, run.ID, 5*time.Second) {
+		t.Fatal("review did not finish")
 	}
-	if len(mock2.Requests) != 3 {
-		t.Fatalf("split review calls=%d, want 3 (one per chapter at rounds=1)", len(mock2.Requests))
+	if len(mock.Requests) != 3 {
+		t.Fatalf("fixed per-chapter review calls=%d, want 3", len(mock.Requests))
 	}
 }
 
@@ -228,7 +177,6 @@ func TestReviewRoundsMultiplyCalls(t *testing.T) {
 	}
 
 	_ = settings.Update(func(s *config.Settings) {
-		s.Review.SplitByChapter = true
 		s.Review.Rounds = 2
 	})
 	mock := llm.NewMock()

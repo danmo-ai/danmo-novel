@@ -15,20 +15,42 @@ func sampleSettings() map[string]string {
 		out[p] = "# " + p + "\ncontent\n"
 	}
 	out["canon/locked-terms.yaml"] = "locked_until: {}\ncompliance: []\naliases: {}\n"
-	out["canon/reveal-schedule.md"] = "# 揭示计划\n- schema_version: 1\n\n## 揭示 · R1\n- public_summary: 可公开信息\n- earliest_volume: v01\n- hint_unit_ids: v01-U1\n- confirm_unit_id: v01-U2\n- status: locked\n- locked_terms: 无\n\n## 揭示 · R2\n- public_summary: 暂缓公开信息\n- earliest_volume: v02\n- hint_unit_ids: v02-U1\n- confirm_unit_id: v02-U2\n- status: locked\n- locked_terms: 无\n"
+	out[ForeshadowSchedulePath] = `# 伏笔登记表
+- schema_version: 1
+
+## 伏笔 · FS-01
+- content: 可公开的信息
+- type: 信息
+- plant_volume: v01
+- plant_unit: v01-U1
+- payoff_volume: v01
+- payoff_unit: v01-U2
+- payoff_summary: 读者得知该信息
+- status: planned
+
+## 伏笔 · FS-02
+- content: 暂缓公开的信息
+- type: 信息
+- plant_volume: v02
+- plant_unit: v02-U1
+- payoff_volume: v02
+- payoff_unit: v02-U2
+- payoff_summary: 读者较晚得知
+- status: planned
+`
 	return out
 }
 
-// seedRevealSchedule registers the reveal IDs the sample outlines reference.
+// seedForeshadowSchedule registers the FS IDs the sample outlines reference.
 // 卷纲与总纲现在走同一套引用校验，所以任何引用 R1/R2 的 fixture 都必须先
 // 有一份真的揭示计划；scaffold 默认是空计划，属于"尚未登记"而不是"存在 R1"。
-func seedRevealSchedule(t *testing.T, root string) {
+func seedForeshadowSchedule(t *testing.T, root string) {
 	t.Helper()
-	path := filepath.Join(root, "canon", "reveal-schedule.md")
+	path := filepath.Join(root, filepath.FromSlash(ForeshadowSchedulePath))
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(path, []byte(sampleSettings()["canon/reveal-schedule.md"]), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(sampleSettings()[ForeshadowSchedulePath]), 0o644); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -59,8 +81,8 @@ func sampleBookOutline() string {
 - thread_moves: main=未开始->已完成
 - deliverables: 完成第一次行动
 - open_questions: 下一步是什么
-- reveal_ids: R1
-- forbidden_reveal_ids: R2
+- plant_ids: FS-01
+- payoff_ids: FS-02
 - next_volume_entry: 继续行动
 
 ### 转折 · event-1
@@ -79,6 +101,9 @@ func sampleVolumeOutline() string {
 - source_arc_id: arc-v01
 - chapter_range: 1-6
 - goal: 能否完成目标
+- dramatic_question: 能否完成目标？
+- thread_moves: main=未开始->已完成
+- deliverables: 完成第一次行动
 - central_conflict: 目标与阻碍
 - stakes: 失败代价
 - entry_state: 未开始
@@ -110,8 +135,8 @@ func sampleVolumeOutline() string {
 - timeline_id: main
 - thread_ids: main
 - event_ids: event-1
-- reveal_ids: R1
-- forbidden_reveal_ids: R2
+- plant_ids: FS-01
+- payoff_ids: FS-02
 - next_hook: 信息缺口 | 签名不一致
 
 ## 单元 · v01-U2
@@ -133,8 +158,8 @@ func sampleVolumeOutline() string {
 - timeline_id: main
 - thread_ids: main
 - event_ids: event-1
-- reveal_ids: R1
-- forbidden_reveal_ids: R2
+- plant_ids: FS-01
+- payoff_ids: FS-02
 - next_hook: 信息缺口 | 实证指向旧识
 `
 }
@@ -312,7 +337,7 @@ func TestAcceptPlanVolumeDoesNotWriteSettingsCastOrBook(t *testing.T) {
 		t.Fatal(err)
 	}
 	seedTestIdentity(t, root)
-	seedRevealSchedule(t, root)
+	seedForeshadowSchedule(t, root)
 	if err := os.WriteFile(filepath.Join(root, "outline", "book_outline.md"), []byte(sampleBookOutline()), 0o644); err != nil {
 		t.Fatal(err)
 	}

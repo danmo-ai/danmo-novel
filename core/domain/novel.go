@@ -19,6 +19,7 @@ const (
 	TaskPolish          TaskKind = "polish"
 	TaskRewriteSel      TaskKind = "rewrite_selection"
 	TaskStructureReview TaskKind = "structure_review"
+	TaskOutlineReview   TaskKind = "outline_review"
 	// TaskIdea 是立项之前的自由创意扩写：产出作者可读的创意提案，
 	// 不写总纲/设定/人物，也不参与卷纲与单元生产。
 	TaskIdea TaskKind = "idea"
@@ -46,10 +47,11 @@ const (
 type UnitStatus string
 
 const (
-	UnitProposed UnitStatus = "proposed"
-	UnitAccepted UnitStatus = "accepted"
-	UnitDrafted  UnitStatus = "drafted"
-	UnitReviewed UnitStatus = "reviewed"
+	UnitProposed  UnitStatus = "proposed"
+	UnitAccepted  UnitStatus = "accepted"
+	UnitDrafted   UnitStatus = "drafted"
+	UnitReviewed  UnitStatus = "reviewed"
+	UnitFinalized UnitStatus = "finalized"
 )
 
 type CastStatus string
@@ -107,7 +109,6 @@ type CallPolicy struct {
 	MaxOutputTokens int  `json:"maxOutputTokens,omitempty"`
 	TimeoutSec      int  `json:"timeoutSec"`
 	AllowOneRepair  bool `json:"allowOneRepair"`
-	SplitByChapter  bool `json:"splitByChapter,omitempty"`
 }
 
 // TaskSpec starts a controlled generation run.
@@ -125,10 +126,9 @@ type TaskSpec struct {
 	Selection       *TextSelection `json:"selection,omitempty"`
 	Instruction     string         `json:"instruction,omitempty"`
 	IssueIDs        []string       `json:"issueIds,omitempty"`
-	TargetPath      string         `json:"targetPath,omitempty"` // rewrite_entity 目标文件
-	EntityKind      string         `json:"entityKind,omitempty"` // bible|cast|volume|world|style|rules|facts
-	Mode            string         `json:"mode,omitempty"`       // plan: init|reinit|volume
-	SplitByChapter  bool           `json:"splitByChapter,omitempty"`
+	TargetPath      string         `json:"targetPath,omitempty"`    // rewrite_entity 目标文件
+	EntityKind      string         `json:"entityKind,omitempty"`    // bible|cast|volume|world|style|rules|facts
+	Mode            string         `json:"mode,omitempty"`          // plan: init|reinit|volume
 	PreservePaths   []string       `json:"preservePaths,omitempty"` // reinit 接受时保留的既有设定/人物路径
 	ForceRiskAccept bool           `json:"forceRiskAccept,omitempty"`
 	// SupersedeReview 表示"这是一次重审"：该单元名下尚未处理的旧审校清单会被归档，
@@ -187,6 +187,14 @@ type ChapterPlan struct {
 	CutHook   string      `json:"cutHook"`
 	DayOffset int         `json:"dayOffset"`
 	Scenes    []ScenePlan `json:"scenes,omitempty"`
+	// Plant / Payoff 是本章负责埋下与回收的伏笔 ID。
+	//
+	// 章级此前没有任何「该埋什么」的契约：48 个产出过 chapters 的单元里，含章级
+	// scenes 的 0 个、mustLand 用过 0 次。于是写第 38 章时，第 42 章要兑现的
+	// 「张桂兰说出儿子的姓名与住院时间」根本不在上下文里，伏笔只能靠运气。
+	// 这两个字段把「本章该埋/该收」变成可校验的计划，正文只需按它执行。
+	Plant  []string `json:"plant,omitempty" yaml:"plant,omitempty"`
+	Payoff []string `json:"payoff,omitempty" yaml:"payoff,omitempty"`
 }
 
 type ScenePlan struct {
@@ -327,6 +335,34 @@ type CanonChange struct {
 	Locked      bool   `json:"locked,omitempty"`
 }
 
+type ForeshadowAssignment struct {
+	ID            string `json:"id"`
+	PlantUnit     string `json:"plantUnit,omitempty"`
+	PayoffUnit    string `json:"payoffUnit,omitempty"`
+	PlantChapter  int    `json:"plantChapter,omitempty"`
+	PayoffChapter int    `json:"payoffChapter,omitempty"`
+}
+
+type ChapterActualDelta struct {
+	Stem      string `json:"stem"`
+	Field     string `json:"field"`
+	From      string `json:"from"`
+	To        string `json:"to"`
+	Evidence  string `json:"evidence"`
+	Confirmed bool   `json:"confirmed"`
+}
+
+type ChapterActual struct {
+	Chapter                  int                  `json:"chapter"`
+	StoryDay                 int                  `json:"storyDay,omitempty"`
+	EndDay                   int                  `json:"endDay,omitempty"`
+	Summary                  string               `json:"summary"`
+	StateDeltas              []ChapterActualDelta `json:"stateDeltas,omitempty"`
+	Plant                    []string             `json:"plant,omitempty"`
+	Payoff                   []string             `json:"payoff,omitempty"`
+	PlannedForeshadowHandled []string             `json:"plannedForeshadowHandled,omitempty"`
+}
+
 type Candidate struct {
 	ID           string          `json:"id"`
 	RunID        string          `json:"runId"`
@@ -340,17 +376,19 @@ type Candidate struct {
 	Chapters     []ChapterDraft  `json:"chapters,omitempty"`
 	// BaseChapters is the pre-revision prose for a revise candidate, kept so the
 	// author can diff before accepting ("确认落盘" must not be a blind signature).
-	BaseChapters  []ChapterDraft     `json:"baseChapters,omitempty"`
-	UnitOutlines  []UnitOutlineDraft `json:"unitOutlines,omitempty"`
-	Mode          string             `json:"mode,omitempty"`          // plan: init|reinit|volume
-	PreservePaths []string           `json:"preservePaths,omitempty"` // reinit 接受时保留的既有路径
-	PlanMarkdown  map[string]string  `json:"planMarkdown,omitempty"`
-	PlanSettings  map[string]string  `json:"planSettings,omitempty"` // relative path → content (init/reinit)
-	Replacement   string             `json:"replacement,omitempty"`
-	Findings      []ReviewFinding    `json:"findings,omitempty"`
-	CanonChanges  []CanonChange      `json:"canonChanges,omitempty"`
-	CreatedAt     time.Time          `json:"createdAt"`
-	AcceptedAt    *time.Time         `json:"acceptedAt,omitempty"`
+	BaseChapters          []ChapterDraft         `json:"baseChapters,omitempty"`
+	UnitOutlines          []UnitOutlineDraft     `json:"unitOutlines,omitempty"`
+	Mode                  string                 `json:"mode,omitempty"`          // plan: init|reinit|volume
+	PreservePaths         []string               `json:"preservePaths,omitempty"` // reinit 接受时保留的既有路径
+	PlanMarkdown          map[string]string      `json:"planMarkdown,omitempty"`
+	PlanSettings          map[string]string      `json:"planSettings,omitempty"` // relative path → content (init/reinit)
+	ForeshadowAssignments []ForeshadowAssignment `json:"foreshadowAssignments,omitempty"`
+	ActualChapters        []ChapterActual        `json:"actualChapters,omitempty"`
+	Replacement           string                 `json:"replacement,omitempty"`
+	Findings              []ReviewFinding        `json:"findings,omitempty"`
+	CanonChanges          []CanonChange          `json:"canonChanges,omitempty"`
+	CreatedAt             time.Time              `json:"createdAt"`
+	AcceptedAt            *time.Time             `json:"acceptedAt,omitempty"`
 }
 
 type AcceptCommand struct {

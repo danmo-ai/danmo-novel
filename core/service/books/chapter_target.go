@@ -25,9 +25,9 @@ func ChapterTarget(unit domain.UnitInfo) int {
 	if n, ok := outlineInt(unit.OutlineRaw, "chapter_chars"); ok {
 		return domain.ClampChapterChars(n)
 	}
-	if n, ok := outlineInt(unit.OutlineRaw, "word_target"); ok {
-		return domain.ClampChapterChars(n / ChapterCount(unit))
-	}
+	// 不读 word_target：单元总字数是派生值，手写的那份会和章节数脱钩
+	// （30000/6 章曾被读成每章 5000）。旧书由迁移把 word_target 折算成
+	// chapter_chars 后删除。
 	return domain.ChapterCharsDefault
 }
 

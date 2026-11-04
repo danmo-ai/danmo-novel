@@ -74,13 +74,13 @@ func (f *chapterAwareLLM) count() int {
 }
 
 // 分章审校必须留下真实调用记录与 policy，否则 UI 显示"调用预算 0 次"、成本不可见。
-func TestRunReviewByChapterKeepsRealCallRecords(t *testing.T) {
+func TestRunReviewKeepsRealCallRecords(t *testing.T) {
 	snap, unit, _ := loadFixtureUnit(t)
 	fake := &chapterAwareLLM{withFindings: map[int]bool{1: true}}
 	r := New(fake)
 
-	res, err := r.RunReviewByChapter(context.Background(), snap, unit, "mock/mock-gpt-4", ReviewOptions{
-		SplitByChapter: true, Concurrency: 1,
+	res, err := r.RunReview(context.Background(), snap, unit, "mock/mock-gpt-4", ReviewOptions{
+		Concurrency: 1,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -120,8 +120,8 @@ func TestChapterReviewRetriesWhenProtocolSaysTruncated(t *testing.T) {
 	fake := &truncatingReviewLLM{}
 	r := New(fake)
 
-	res, err := r.RunReviewByChapter(context.Background(), snap, unit, "mock/mock-gpt-4", ReviewOptions{
-		SplitByChapter: true, Concurrency: 1,
+	res, err := r.RunReview(context.Background(), snap, unit, "mock/mock-gpt-4", ReviewOptions{
+		Concurrency: 1,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -186,7 +186,7 @@ func (f *truncatingReviewLLM) count() int {
 // 重审必须覆盖整个单元的每一章：以前记录过一个"从失败章继续"的游标，但那
 // 个值只写回 run，新 run 永远从 0 开始——既没生效，又在候选里声称"已通过的
 // 章不会重复审"。现在干脆审全单元，结论才完整。
-func TestRunReviewByChapterReviewsEveryChapter(t *testing.T) {
+func TestRunReviewReviewsEveryChapter(t *testing.T) {
 	snap, unit, _ := loadFixtureUnit(t)
 	mock := llm.NewMock()
 	for i := 0; i < 3; i++ {
@@ -194,8 +194,8 @@ func TestRunReviewByChapterReviewsEveryChapter(t *testing.T) {
 	}
 	r := New(mock)
 
-	if _, err := r.RunReviewByChapter(context.Background(), snap, unit, "mock/mock-gpt-4", ReviewOptions{
-		SplitByChapter: true, Concurrency: 1,
+	if _, err := r.RunReview(context.Background(), snap, unit, "mock/mock-gpt-4", ReviewOptions{
+		Concurrency: 1,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -204,26 +204,29 @@ func TestRunReviewByChapterReviewsEveryChapter(t *testing.T) {
 	}
 }
 
-// 每章目标只由 books.ChapterTarget 决定：细纲写了 chapter_chars 就用它，
-// 没有就按 word_target÷章数，且结果一律夹进合法区间。
+// 每章目标只由 books.ChapterTarget 决定：读细纲的 chapter_chars，夹进合法区间，
+// 缺失则取默认值。word_target 已不再参与——单元总字数是派生值，手写那份会和
+// 章数脱钩（30000/6 章曾被读成每章 5000）。
 func TestChapterTargetIsTheOnlyWordcountSource(t *testing.T) {
 	snap, unit, _ := loadFixtureUnit(t)
 	// fixture 的 chapter_chars 是 2500（3 章），与 word_target 7500 自洽。
 	if got := books.ChapterTarget(unit); got != 2500 {
 		t.Fatalf("chapterTarget=%d want 2500", got)
 	}
-	// 老书只有单元总字数：30000 / 6 章 = 5000，必须夹到单章上限，而不是照单全收。
-	legacy := domain.UnitInfo{
-		ChapterFrom: 1, ChapterTo: 6,
-		OutlineRaw: "word_target: 30000\n",
-	}
-	if got := books.ChapterTarget(legacy); got != domain.ChapterCharsMax {
+	// 超出上限的 chapter_chars 夹到上限，而不是照单全收。
+	over := domain.UnitInfo{ChapterFrom: 1, ChapterTo: 6, OutlineRaw: "chapter_chars: 5000\n"}
+	if got := books.ChapterTarget(over); got != domain.ChapterCharsMax {
 		t.Fatalf("chapterTarget=%d want %d (5000 must clamp)", got, domain.ChapterCharsMax)
 	}
-	// 低于下限同样夹回来：2500 总字数摊到 3 章是 833。
-	tiny := domain.UnitInfo{ChapterFrom: 1, ChapterTo: 3, OutlineRaw: "word_target: 2500\n"}
+	// 低于下限同样夹回来。
+	tiny := domain.UnitInfo{ChapterFrom: 1, ChapterTo: 3, OutlineRaw: "chapter_chars: 800\n"}
 	if got := books.ChapterTarget(tiny); got != domain.ChapterCharsMin {
 		t.Fatalf("chapterTarget=%d want %d", got, domain.ChapterCharsMin)
+	}
+	// 只剩 word_target 时不再折算：那是旧字段，迁移时已转成 chapter_chars。
+	legacy := domain.UnitInfo{ChapterFrom: 1, ChapterTo: 6, OutlineRaw: "word_target: 30000\n"}
+	if got := books.ChapterTarget(legacy); got != domain.ChapterCharsDefault {
+		t.Fatalf("word_target must be ignored, got %d", got)
 	}
 	// 两个键都没有 → 默认值。
 	if got := books.ChapterTarget(domain.UnitInfo{ChapterFrom: 1, ChapterTo: 2}); got != domain.ChapterCharsDefault {
@@ -234,7 +237,7 @@ func TestChapterTargetIsTheOnlyWordcountSource(t *testing.T) {
 	unit.ProseRaw = "## 第1章 夜\n\n" + strings.Repeat("字", 1000)
 	mock := llm.NewMock().AddText(`{"verdict":"pass","findings":[]}`)
 	r := New(mock)
-	res, err := r.RunReview(context.Background(), snap, unit, "mock/mock-gpt-4")
+	res, err := r.RunReview(context.Background(), snap, unit, "mock/mock-gpt-4", ReviewOptions{Concurrency: 1, Rounds: 1})
 	if err != nil {
 		t.Fatal(err)
 	}

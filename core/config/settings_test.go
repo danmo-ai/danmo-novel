@@ -17,8 +17,8 @@ func TestReviewDefaultsToSplitByChapter(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !m.Get().Review.SplitByChapter {
-		t.Fatal("fresh settings should default review.splitByChapter to true")
+	if m.Get().Review.Rounds != 3 {
+		t.Fatal("fresh settings should retain three review rounds")
 	}
 	if got := m.Get().Review.Concurrency; got != 3 {
 		t.Fatalf("concurrency=%d want 3", got)
@@ -41,13 +41,13 @@ func TestReviewDefaultSurvivesUnrelatedSettingsFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !m.Get().Review.SplitByChapter {
-		t.Fatal("missing review section must keep the split default")
+	if m.Get().Review.Rounds != 3 {
+		t.Fatal("missing review section must keep the default rounds")
 	}
 }
 
 // 作者显式关掉时必须被尊重：默认值只在"没写"的时候生效。
-func TestReviewExplicitFalseIsRespected(t *testing.T) {
+func TestReviewLegacySplitSettingIsIgnored(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("NOVEL_HOME", home)
 	path := runtimepaths.SettingsPath()
@@ -61,7 +61,7 @@ func TestReviewExplicitFalseIsRespected(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if m.Get().Review.SplitByChapter {
-		t.Fatal("explicit false must not be overridden by the default")
+	if m.Get().Review.Rounds != 3 {
+		t.Fatal("legacy splitByChapter must not change the fixed per-chapter mode")
 	}
 }

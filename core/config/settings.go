@@ -18,11 +18,10 @@ type Settings struct {
 	Review            ReviewSettings           `json:"review"`
 }
 
-// ReviewSettings controls how review calls are split and parallelised.
+// ReviewSettings controls bounded parallel per-chapter review.
 type ReviewSettings struct {
-	SplitByChapter bool   `json:"splitByChapter"` // default true；所有审校路径同源
-	Concurrency    int    `json:"concurrency"`    // default 3
-	Strictness     string `json:"strictness"`     // "loose" | "standard" | "strict"，default standard
+	Concurrency int    `json:"concurrency"` // default 3
+	Strictness  string `json:"strictness"`  // "loose" | "standard" | "strict"，default standard
 	// Rounds 是每章独立审校的轮数，默认 3，取并集。
 	//
 	// 单轮审校的覆盖率有硬上限：同一份正文跑 4 轮，并集 128 处里单轮平均只看到
@@ -57,11 +56,8 @@ func Load() (*Manager, error) {
 		},
 		LLMHTTPTimeoutSec: 600,
 		Review: ReviewSettings{
-			// 默认分章：单章 prompt 小、注意力集中，也不存在"输出预算被整单元
-			// 结论挤爆"的问题。所有审校路径都读这一个开关。
-			SplitByChapter: true,
-			Concurrency:    3,
-			Strictness:     "standard",
+			Concurrency: 3,
+			Strictness:  "standard",
 			// 默认 3 轮取并集：单轮只覆盖约 31% 的问题，是抽样不确定性而非
 			// 审校深度，所以必须多轮。3 轮把覆盖率提到约 75%。
 			Rounds: 3,

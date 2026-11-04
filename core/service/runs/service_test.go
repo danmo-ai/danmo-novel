@@ -210,6 +210,13 @@ func TestRejectReviseKeepsProseAndReviewOpen(t *testing.T) {
 		t.Fatal(err)
 	}
 	unitID := snap.Units[0].UnitID
+	if err := books.SetUnitStatus(root, unitID, domain.UnitDrafted); err != nil {
+		t.Fatal(err)
+	}
+	snap, err = books.LoadBook(root, false)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := db.UpsertBook(ctx, snap.Summary.ID, root, snap.Summary.Title, snap.Revision, false); err != nil {
 		t.Fatal(err)
 	}
@@ -404,6 +411,13 @@ func TestAcceptReviseStopsAtWritebackByDefault(t *testing.T) {
 		t.Fatal(err)
 	}
 	unitID := snap.Units[0].UnitID
+	if err := books.SetUnitStatus(root, unitID, domain.UnitDrafted); err != nil {
+		t.Fatal(err)
+	}
+	snap, err = books.LoadBook(root, false)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := db.UpsertBook(ctx, snap.Summary.ID, root, snap.Summary.Title, snap.Revision, false); err != nil {
 		t.Fatal(err)
 	}
@@ -437,8 +451,8 @@ func TestAcceptReviseStopsAtWritebackByDefault(t *testing.T) {
 		ID: "revise-author", RunID: reviseRun.ID, BookID: snap.Summary.ID, Kind: domain.TaskRevise,
 		Status:       domain.CandidateOpen,
 		BaseRevision: snap.Revision, UnitID: unitID,
-		BaseChapters: []domain.ChapterDraft{{Chapter: 1, Title: "一", Body: "原正文"}},
-		Chapters:     []domain.ChapterDraft{{Chapter: 1, Title: "一", Body: "修订后的正文"}},
+		BaseChapters: []domain.ChapterDraft{{Chapter: 1, Title: "一", Body: "原正文"}, {Chapter: 2, Title: "二", Body: "第二章保留"}, {Chapter: 3, Title: "三", Body: "第三章保留"}},
+		Chapters:     []domain.ChapterDraft{{Chapter: 1, Title: "一", Body: "修订后的正文"}, {Chapter: 2, Title: "二", Body: "第二章保留"}, {Chapter: 3, Title: "三", Body: "第三章保留"}},
 	}
 	for _, c := range []domain.Candidate{review, revise} {
 		if err := db.SaveCandidate(ctx, c); err != nil {
@@ -470,16 +484,11 @@ func TestAcceptReviseStopsAtWritebackByDefault(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stillOpen.Status != domain.CandidateOpen {
-		t.Fatalf("remaining review list status=%s want open (unfixed findings must stay actionable)",
-			stillOpen.Status)
+	if stillOpen.Status != domain.CandidateExpired {
+		t.Fatalf("old-prose review must be expired after revision, got %s", stillOpen.Status)
 	}
-	ids := make([]string, 0, len(stillOpen.Findings))
-	for _, f := range stillOpen.Findings {
-		ids = append(ids, f.ID)
-	}
-	if len(ids) != 1 || ids[0] != "f2" {
-		t.Fatalf("remaining findings=%v want only f2 (f1 was fixed by the revision)", ids)
+	if len(stillOpen.Findings) != 2 {
+		t.Fatal("expired review must retain unresolved findings for audit")
 	}
 	// 正文落盘。
 	after, err := books.LoadBook(root, false)
@@ -529,6 +538,13 @@ func TestAcceptReviseArchivesFullyAddressedList(t *testing.T) {
 		t.Fatal(err)
 	}
 	unitID := snap.Units[0].UnitID
+	if err := books.SetUnitStatus(root, unitID, domain.UnitDrafted); err != nil {
+		t.Fatal(err)
+	}
+	snap, err = books.LoadBook(root, false)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := db.UpsertBook(ctx, snap.Summary.ID, root, snap.Summary.Title, snap.Revision, false); err != nil {
 		t.Fatal(err)
 	}
@@ -558,8 +574,8 @@ func TestAcceptReviseArchivesFullyAddressedList(t *testing.T) {
 	revise := domain.Candidate{
 		ID: "revise-all", RunID: reviseRun.ID, BookID: snap.Summary.ID, Kind: domain.TaskRevise,
 		Status: domain.CandidateOpen, BaseRevision: snap.Revision, UnitID: unitID,
-		BaseChapters: []domain.ChapterDraft{{Chapter: 1, Title: "一", Body: "原正文"}},
-		Chapters:     []domain.ChapterDraft{{Chapter: 1, Title: "一", Body: "修订后的正文"}},
+		BaseChapters: []domain.ChapterDraft{{Chapter: 1, Title: "一", Body: "原正文"}, {Chapter: 2, Title: "二", Body: "第二章保留"}, {Chapter: 3, Title: "三", Body: "第三章保留"}},
+		Chapters:     []domain.ChapterDraft{{Chapter: 1, Title: "一", Body: "修订后的正文"}, {Chapter: 2, Title: "二", Body: "第二章保留"}, {Chapter: 3, Title: "三", Body: "第三章保留"}},
 	}
 	for _, c := range []domain.Candidate{review, revise} {
 		if err := db.SaveCandidate(ctx, c); err != nil {
@@ -578,20 +594,98 @@ func TestAcceptReviseArchivesFullyAddressedList(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Status != domain.CandidateAccepted {
-		t.Fatalf("fully addressed list status=%s want accepted", got.Status)
+	if got.Status != domain.CandidateExpired {
+		t.Fatalf("old-prose list must be expired, not auto-resolved: %s", got.Status)
 	}
-	if len(got.Findings) != 0 {
-		t.Fatalf("fully addressed list still has %d findings", len(got.Findings))
+	if len(got.Findings) != 2 {
+		t.Fatal("selected issue IDs must not erase unresolved findings")
 	}
 	// 它的 run 也必须收尾，否则会挡住该单元的下一次审校。
-	if r, err := db.GetRun(ctx, reviewRun.ID); err == nil && r.Status == domain.RunWaiting {
-		t.Fatal("archived review run is still waiting_accept; it would block the next review")
+	if r, err := db.GetRun(ctx, reviewRun.ID); err == nil && r.Status != domain.RunExpired {
+		t.Fatal("old review run must expire with its prose version")
 	}
 }
 
 // 0 阻断 ≠ 可以过：截断/分章失败留下的标记让清单变成 unfinished，
 // 否则"第 2 章没审完"会被读成"第 2 章没问题"。
+func TestStartWriteRequiresAcceptedOutline(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("NOVEL_HOME", home)
+	settings, err := config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = settings.Update(func(s *config.Settings) {
+		s.ModelAssignments = []domain.ModelAssignment{{Role: domain.StageWrite, ModelID: "mock/mock-gpt-4"}}
+	})
+	db, err := sqlite.Open(filepath.Join(home, "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	root, err := books.CreateBookFromDraft(home, books.DraftInput{BookID: "gate", Title: "门禁"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "outline", "units"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "outline", "units", "v01-U1.yaml"), []byte("unit_id: v01-U1\nstatus: proposed\nchapter_range: [1, 1]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	snap, err := books.LoadBook(root, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.UpsertBook(context.Background(), snap.Summary.ID, root, snap.Summary.Title, snap.Revision, false); err != nil {
+		t.Fatal(err)
+	}
+	svc := New(db, settings, llm.NewMock())
+	if _, err := svc.Start(context.Background(), domain.TaskSpec{Kind: domain.TaskWrite, BookID: snap.Summary.ID, UnitID: "v01-U1", BaseRevision: snap.Revision}); err == nil {
+		t.Fatal("proposed unit must not enter prose generation")
+	}
+}
+
+func TestFinalizeAcceptRequiresActualReconciliation(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("NOVEL_HOME", home)
+	settings, err := config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	db, err := sqlite.Open(filepath.Join(home, "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	root, err := books.CreateBookScaffold(home, "final-gate", "定稿", "玄幻")
+	if err != nil {
+		t.Fatal(err)
+	}
+	unitRaw := "unit_id: v01-U1\nstatus: reviewed\nchapter_range: [1, 1]\non_stage: [lin]\npov: lin\n"
+	if err := os.WriteFile(filepath.Join(root, "outline", "units", "v01-U1.yaml"), []byte(unitRaw), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := books.WriteUnitProse(root, "v01-U1", []domain.ChapterDraft{{Chapter: 1, Body: "实际正文"}}); err != nil {
+		t.Fatal(err)
+	}
+	snap, err := books.LoadBook(root, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.UpsertBook(context.Background(), snap.Summary.ID, root, snap.Summary.Title, snap.Revision, false); err != nil {
+		t.Fatal(err)
+	}
+	candidate := domain.Candidate{ID: "fin", BookID: snap.Summary.ID, Kind: domain.TaskFinalize, Status: domain.CandidateOpen, BaseRevision: snap.Revision, UnitID: "v01-U1", Chapters: []domain.ChapterDraft{{Chapter: 1, Body: "实际正文"}}}
+	if err := db.SaveCandidate(context.Background(), candidate); err != nil {
+		t.Fatal(err)
+	}
+	svc := New(db, settings, llm.NewMock())
+	if _, err := svc.Accept(context.Background(), domain.AcceptCommand{CandidateID: "fin", BaseRevision: snap.Revision}); err == nil {
+		t.Fatal("missing actual reconciliation must not be accepted")
+	}
+}
+
 func TestReviewGateTreatsTruncationAsUnfinished(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("NOVEL_HOME", home)
@@ -614,6 +708,13 @@ func TestReviewGateTreatsTruncationAsUnfinished(t *testing.T) {
 		t.Fatal(err)
 	}
 	unitID := snap.Units[0].UnitID
+	if err := books.SetUnitStatus(root, unitID, domain.UnitDrafted); err != nil {
+		t.Fatal(err)
+	}
+	snap, err = books.LoadBook(root, false)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := db.UpsertBook(ctx, snap.Summary.ID, root, snap.Summary.Title, snap.Revision, false); err != nil {
 		t.Fatal(err)
 	}
@@ -663,6 +764,13 @@ func TestSupersedeReviewArchivesOpenListAndStarts(t *testing.T) {
 		t.Fatal(err)
 	}
 	unitID := snap.Units[0].UnitID
+	if err := books.SetUnitStatus(root, unitID, domain.UnitDrafted); err != nil {
+		t.Fatal(err)
+	}
+	snap, err = books.LoadBook(root, false)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := db.UpsertBook(ctx, snap.Summary.ID, root, snap.Summary.Title, snap.Revision, false); err != nil {
 		t.Fatal(err)
 	}
@@ -686,10 +794,10 @@ func TestSupersedeReviewArchivesOpenListAndStarts(t *testing.T) {
 	svc := New(db, settings, llm.NewMock())
 	// 不带 supersede：必须报冲突，且提示要指向界面里真实存在的按钮。
 	_, err = svc.Start(ctx, domain.TaskSpec{
-		Kind: domain.TaskReview, BookID: snap.Summary.ID, UnitID: unitID, SplitByChapter: true,
+		Kind: domain.TaskReview, BookID: snap.Summary.ID, UnitID: unitID, BaseRevision: snap.Revision,
 	})
 	if err == nil {
-		t.Fatal("review with an open list must conflict without supersedeReview")
+		t.Fatalf("review with an open list must conflict without supersedeReview")
 	}
 	if !strings.Contains(err.Error(), "自动修复") || !strings.Contains(err.Error(), "拒绝") {
 		t.Fatalf("conflict hint must name the real actions (自动修复/拒绝), got: %v", err)
@@ -697,8 +805,8 @@ func TestSupersedeReviewArchivesOpenListAndStarts(t *testing.T) {
 
 	// 带 supersede：旧清单归档、旧 run 收尾，新审校起来了。
 	run, err := svc.Start(ctx, domain.TaskSpec{
-		Kind: domain.TaskReview, BookID: snap.Summary.ID, UnitID: unitID,
-		SplitByChapter: true, SupersedeReview: true,
+		Kind: domain.TaskReview, BookID: snap.Summary.ID, UnitID: unitID, BaseRevision: snap.Revision,
+		SupersedeReview: true,
 	})
 	if err != nil {
 		t.Fatalf("supersede review: %v", err)

@@ -14,69 +14,123 @@ import (
 )
 
 // ApplyFinalizationLedger is the唯一写回路径 for定稿接受. It updates, in one
-// commit: 单元状态 → reviewed、连续性状态段（continuity/state.yaml）、卷摘要、
+// commit: 单元状态 → finalized、连续性状态段（continuity/state.yaml）、卷摘要、
 // 定稿执行日志。只有 Accept 能调用它；生成阶段永不触碰这些文件。
 //
 // 不再写 facts.md：那份文件被逐轮追加成 571 KB 的散文日志，游标自相矛盾、
 // 人物快照 30 多段从不合并，读写双方还因标题后缀静默失效。状态改由
 // state.yaml 按单元段表达。
-func ApplyFinalizationLedger(root string, unit domain.UnitInfo, chapters []domain.ChapterDraft, findings []domain.ReviewFinding, identities ...[]domain.IdentitySegment) error {
-	if len(chapters) == 0 {
-		return fmt.Errorf("finalize: no chapters")
+func ApplyFinalizationLedger(root string, unit domain.UnitInfo, chapters []domain.ChapterDraft, actual []domain.ChapterActual, findings []domain.ReviewFinding, identities ...[]domain.IdentitySegment) error {
+	if len(chapters) == 0 || len(actual) != len(chapters) {
+		return fmt.Errorf("定稿必须逐章提供已核对的实际结果")
 	}
-
-	if err := SetUnitStatus(root, unit.UnitID, domain.UnitReviewed); err != nil {
-		return err
-	}
-
-	// 连续性状态：从细纲的 state_deltas 落一段，供后续单元与重写读取。
-	if err := AppendUnitState(root, StateFromOutline(unit, chapters, identities...)); err != nil {
-		return err
-	}
-
-	if err := appendVolumeSummary(root, unit, chapters); err != nil {
-		return err
-	}
-	return writeCommitLog(root, unit, chapters, findings)
-}
-
-// appendVolumeSummary upserts per-chapter 摘要 into continuity/summaries/vNN.md.
-//
-// 重写单元会再次定稿同一批章：旧实现按章追加，重写后同一章会出现两行。
-// 现在先按上一次定稿账本记录的章范围删除旧行，再写入新行（幂等）。
-func appendVolumeSummary(root string, unit domain.UnitInfo, chapters []domain.ChapterDraft) error {
-	path := filepath.Join(root, "continuity", "summaries", fmt.Sprintf("v%02d.md", unit.Volume))
-	var b strings.Builder
-	if raw, err := os.ReadFile(path); err == nil {
-		text := strings.TrimRight(string(raw), "\n")
-		if from, to := committedChapterRange(root, unit.UnitID); from > 0 && to >= from {
-			text = dropSummaryRows(text, from, to)
+	for i, ch := range chapters {
+		if actual[i].Chapter != ch.Chapter || strings.TrimSpace(actual[i].Summary) == "" {
+			return fmt.Errorf("第 %d 章缺少已核对的实际摘要", ch.Chapter)
 		}
-		b.WriteString(text)
-		b.WriteString("\n")
+		plannedPlant, plannedPayoff := ChapterLoops(unit)
+		for _, id := range append(append([]string{}, plannedPlant[ch.Chapter]...), plannedPayoff[ch.Chapter]...) {
+			if !containsString(actual[i].PlannedForeshadowHandled, id) {
+				return fmt.Errorf("第 %d 章计划伏笔 %s 尚未核对是否实际发生", ch.Chapter, id)
+			}
+		}
+		for _, d := range actual[i].StateDeltas {
+			if d.Confirmed && !strings.Contains(ch.Body, d.Evidence) {
+				return fmt.Errorf("第 %d 章状态迁移 %s.%s 没有逐字正文证据", ch.Chapter, d.Stem, d.Field)
+			}
+			if domain.CanonicalStateField(d.Field) == "" || domain.CanonicalStateField(d.Field) == "role_title" {
+				return fmt.Errorf("第 %d 章实际账本字段 %s 不合法", ch.Chapter, d.Field)
+			}
+		}
+	}
+	states, err := RebuildStateFromActual(root, unit.UnitID, actual)
+	if err != nil {
+		return err
+	}
+	stateRaw, err := marshalState(states)
+	if err != nil {
+		return err
+	}
+	actualRaw, err := MarshalActual(unit.UnitID, actual)
+	if err != nil {
+		return err
+	}
+	summary, err := renderVolumeSummary(root, unit, actual)
+	if err != nil {
+		return err
+	}
+	log := renderCommitLog(unit, chapters, actual, findings)
+	var outlineRaw []byte
+	if raw, readErr := os.ReadFile(filepath.Join(root, unit.OutlinePath)); readErr == nil {
+		outlineRaw = []byte(regexp.MustCompile(`(?m)^status:.*$`).ReplaceAllString(string(raw), "status: "+string(domain.UnitFinalized)))
 	} else {
-		fmt.Fprintf(&b, "# 第 %d 卷章摘要\n\n| 章 | 事件 | 状态变化 | 伏笔 | 钩子 |\n|----|------|----------|------|------|\n", unit.Volume)
+		return readErr
 	}
-	hook := scalarFromYAML(unit.OutlineRaw, "next_hook")
-	if hook == "" {
-		hook = mdYAMLMapValue(unit.OutlineRaw, "next_hook", "type")
-	}
-	for _, ch := range chapters {
-		events := firstSentence(ch.Body, 60)
-		state := scalarFromYAML(unit.OutlineRaw, "state_deltas")
-		if state == "" {
-			state = "见单元合同"
-		}
-		fmt.Fprintf(&b, "| %d | %s | %s | — | %s |\n", ch.Chapter, events, clipRunes(state, 30), clipRunes(hook, 20))
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	statePath := filepath.Join(root, "novel-state.yaml")
+	stateText, err := os.ReadFile(statePath)
+	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, []byte(b.String()), 0o644)
+	cursor := regexp.MustCompile(`(?m)^last_committed_ch:\s*.*$`).ReplaceAllString(string(stateText), "last_committed_ch: "+strconv.Itoa(chapters[len(chapters)-1].Chapter))
+	return AtomicWriteFiles(root, map[string][]byte{
+		StatePath: stateRaw, ActualPath(unit.UnitID): actualRaw,
+		fmt.Sprintf("continuity/summaries/v%02d.md", unit.Volume): []byte(summary),
+		"continuity/commits/" + unit.UnitID + ".md":               []byte(log),
+		unit.OutlinePath: outlineRaw, "novel-state.yaml": []byte(cursor),
+	})
 }
 
-// writeCommitLog records the定稿执行日志 per unit.
-func writeCommitLog(root string, unit domain.UnitInfo, chapters []domain.ChapterDraft, findings []domain.ReviewFinding) error {
+func renderVolumeSummary(root string, unit domain.UnitInfo, actual []domain.ChapterActual) (string, error) {
+	path := filepath.Join(root, "continuity", "summaries", fmt.Sprintf("v%02d.md", unit.Volume))
+	text := ""
+	if raw, err := os.ReadFile(path); err == nil {
+		text = strings.TrimRight(string(raw), "\n")
+	} else if !os.IsNotExist(err) {
+		return "", err
+	} else {
+		text = "# 第 " + strconv.Itoa(unit.Volume) + " 卷章摘要\n\n| 章 | 事件 | 状态变化 | 伏笔 |\n|----|------|----------|------|"
+	}
+	chapters := map[int]bool{}
+	for _, ch := range actual {
+		chapters[ch.Chapter] = true
+	}
+	var lines []string
+	for _, line := range strings.Split(text, "\n") {
+		if m := chapterRowRe.FindStringSubmatch(strings.TrimSpace(line)); m != nil {
+			n, _ := strconv.Atoi(m[1])
+			if chapters[n] {
+				continue
+			}
+		}
+		lines = append(lines, line)
+	}
+	for _, ch := range actual {
+		var deltas, loops []string
+		for _, d := range ch.StateDeltas {
+			if d.Confirmed {
+				deltas = append(deltas, d.Stem+"."+d.Field+"="+d.To)
+			}
+		}
+		loops = append(loops, ch.Plant...)
+		for _, id := range ch.Payoff {
+			loops = append(loops, id+"→已收")
+		}
+		if len(deltas) == 0 {
+			deltas = []string{"—"}
+		}
+		if len(loops) == 0 {
+			loops = []string{"—"}
+		}
+		lines = append(lines, fmt.Sprintf("| %d | %s | %s | %s |", ch.Chapter, markdownCell(ch.Summary), markdownCell(strings.Join(deltas, "；")), markdownCell(strings.Join(loops, "；"))))
+	}
+	return strings.Join(lines, "\n") + "\n", nil
+}
+
+func markdownCell(raw string) string {
+	return strings.NewReplacer("|", "\\|", "\r", " ", "\n", " ").Replace(strings.TrimSpace(raw))
+}
+
+func renderCommitLog(unit domain.UnitInfo, chapters []domain.ChapterDraft, actual []domain.ChapterActual, findings []domain.ReviewFinding) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "# 定稿账本 · %s\n\n", unit.UnitID)
 	fmt.Fprintf(&b, "- 定稿时间: %s\n", time.Now().UTC().Format(time.RFC3339))
@@ -98,14 +152,11 @@ func writeCommitLog(root string, unit domain.UnitInfo, chapters []domain.Chapter
 	if hook := mdYAMLMapValue(unit.OutlineRaw, "next_hook", "type"); hook != "" {
 		fmt.Fprintf(&b, "- 下一钩: %s\n", hook)
 	}
-	if deltas := mdYAMLSection(unit.OutlineRaw, "state_deltas"); deltas != "" {
-		fmt.Fprintf(&b, "\n## state_deltas\n%s\n", deltas)
+	fmt.Fprintf(&b, "\n## 已确认实际结果\n")
+	for _, ch := range actual {
+		fmt.Fprintf(&b, "- 第 %d 章：%s\n", ch.Chapter, ch.Summary)
 	}
-	path := filepath.Join(root, "continuity", "commits", unit.UnitID+".md")
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
-	return os.WriteFile(path, []byte(b.String()), 0o644)
+	return b.String()
 }
 
 // ---- helpers ----

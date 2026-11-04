@@ -9,6 +9,7 @@ import (
 
 	"github.com/danmo-ai/danmo-novel/core/domain"
 	"github.com/danmo-ai/danmo-novel/core/port"
+	"github.com/danmo-ai/danmo-novel/core/resource/novel"
 	contextsvc "github.com/danmo-ai/danmo-novel/core/service/context"
 	"github.com/danmo-ai/danmo-novel/core/service/prompt"
 )
@@ -100,7 +101,7 @@ func ExecuteTask[T any](ctx context.Context, runner *TaskRunner, call Invocation
 	hashes := map[string]string{}
 	for _, d := range payload.Documents {
 		blocks = append(blocks, domain.ContextBlock{ID: d.ID, Label: d.Label, Source: d.Path, Content: d.Content, Bytes: len(d.Content)})
-		hashes[d.Path] = shortHash(d.Content)
+		hashes[d.ID+"|"+d.Path] = shortHash(d.Content)
 	}
 	packet := domain.ContextPacket{
 		ContractVersion: fmt.Sprintf("%s@%d", contract.ID, contract.Version), TaskKind: call.Input.Spec.Kind,
@@ -108,6 +109,11 @@ func ExecuteTask[T any](ctx context.Context, runner *TaskRunner, call Invocation
 		Policy: policy,
 	}
 	packet.UserPrompt = contextsvc.EncodeUserPayload(payload)
+	for _, knowledge := range runner.Knowledge {
+		packet.UserPrompt = contextsvc.MergeKnowledgeIntoUserPayload(packet.UserPrompt, []string{knowledge})
+	}
+	packet.Blocks = blocks
+	packet.KnowledgeVersion = novel.KnowledgeVersion + "+" + shortHash(packet.UserPrompt)
 	packet.EstPromptTokens = (len([]rune(packet.SystemPrompt)) + len([]rune(packet.UserPrompt))) / 2
 	max := policy.MaxCalls
 	if max < 1 {
@@ -120,10 +126,7 @@ func ExecuteTask[T any](ctx context.Context, runner *TaskRunner, call Invocation
 		if attempt > 1 && !policy.AllowOneRepair {
 			break
 		}
-		user := contextsvc.EncodeUserPayload(payload)
-		for _, knowledge := range runner.Knowledge {
-			user = contextsvc.MergeKnowledgeIntoUserPayload(user, []string{knowledge})
-		}
+		user := packet.UserPrompt
 		if attempt > 1 {
 			user = contextsvc.MergeRepairIntoUserPayload(user, lastErr)
 		}

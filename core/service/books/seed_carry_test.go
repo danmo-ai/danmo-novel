@@ -26,8 +26,6 @@ chapter_range: [1, 6]
 		`state_changes: "lin.role=新人->复核人"`,
 		`thread_ids: [main]`,
 		`event_ids: [event-1]`,
-		`reveal_ids: [R1]`,
-		`forbidden_reveal_ids: [R2]`,
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("missing %q in:\n%s", want, got)
@@ -42,13 +40,13 @@ chapter_range: [1, 6]
 // 作者手改过的口径优先：文件里已有的键不被种子覆盖。
 func TestCarrySeedOwnedFieldsKeepsAuthorOverride(t *testing.T) {
 	snap, _ := volumeInheritanceFixture("目标")
-	raw := "unit_id: v01-U1\nreveal_ids: [R9]\n"
+	raw := "unit_id: v01-U1\nthread_ids: [custom]\n"
 	got := CarrySeedOwnedFields(snap, 1, "v01-U1", raw)
-	if !strings.Contains(got, "reveal_ids: [R9]") {
+	if !strings.Contains(got, "thread_ids: [custom]") {
 		t.Fatalf("author override lost: %s", got)
 	}
-	if n := countTopLevelKey(got, "reveal_ids"); n != 1 {
-		t.Fatalf("reveal_ids written %d times: %s", n, got)
+	if n := countTopLevelKey(got, "thread_ids"); n != 1 {
+		t.Fatalf("thread_ids written %d times: %s", n, got)
 	}
 }
 

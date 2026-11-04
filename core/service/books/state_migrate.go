@@ -44,7 +44,7 @@ func MigrateContinuity(root string) (MigrationReport, error) {
 	}
 
 	for _, u := range snap.Units {
-		if strings.ToLower(string(u.Status)) != string(domain.UnitReviewed) {
+		if u.Status != domain.UnitReviewed && u.Status != domain.UnitFinalized {
 			continue
 		}
 		if have[u.UnitID] {
@@ -52,12 +52,16 @@ func MigrateContinuity(root string) (MigrationReport, error) {
 			continue
 		}
 		// 没有 state_deltas 就重建不出可信状态：不猜，交给作者重写细纲。
-		if mdYAMLSection(u.OutlineRaw, "state_deltas") == "" && yamlScalarValue(u.OutlineRaw, "state_deltas_json") == "" {
+		if mdYAMLSection(u.OutlineRaw, "state_deltas") == "" && yamlScalarValue(u.OutlineRaw, "state_changes") == "" {
 			rep.UnitsSkipped = append(rep.UnitsSkipped, u.UnitID)
 			continue
 		}
 		chapters := []domain.ChapterDraft{{Chapter: u.ChapterTo}}
-		st := StateFromOutline(u, chapters)
+		// 必须带上前一段做基底：每段都应是全量快照。早期版本这里用
+		// StateFromOutline（空基底），于是重建出来的账本仍是增量——
+		// 实测 7 段里下载 5 段都丢了上游字段。
+		base, _ := StateAt(existing, u.UnitID)
+		st := StateFromOutlineWithBase(base, u, chapters)
 		if len(st.Cast) == 0 {
 			rep.UnitsSkipped = append(rep.UnitsSkipped, u.UnitID)
 			continue
@@ -65,6 +69,10 @@ func MigrateContinuity(root string) (MigrationReport, error) {
 		if err := AppendUnitState(root, st); err != nil {
 			return rep, err
 		}
+		// 本段进入 existing，后续单元才能把它当基底。
+		existing = append(existing, st)
+		sortStates(existing)
+		have[u.UnitID] = true
 		rep.UnitsRebuilt = append(rep.UnitsRebuilt, u.UnitID)
 	}
 

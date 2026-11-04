@@ -71,7 +71,7 @@ func TestReviewChapterRunsAllRoundsAndDeduplicates(t *testing.T) {
 	r := New(fake)
 
 	baseline := contextsvc.BuildReviewBaseline(snap, unit, nil, "")
-	packet := contextsvc.BuildChapterReviewPacket(snap, unit, ch, "", baseline, 0)
+	packet := contextsvc.BuildChapterReviewPacket(snap, unit, ch, "", baseline)
 	got, calls, err := r.reviewChapter(context.Background(), "mock/mock-gpt-4", packet, ch.Chapter, 3, body)
 	if err != nil {
 		t.Fatal(err)
@@ -130,7 +130,7 @@ func TestReviewChapterRoundInstructionChanges(t *testing.T) {
 	fake := &roundScriptLLM{}
 	r := New(fake)
 	baseline := contextsvc.BuildReviewBaseline(snap, unit, nil, "")
-	packet := contextsvc.BuildChapterReviewPacket(snap, unit, ch, "", baseline, 0)
+	packet := contextsvc.BuildChapterReviewPacket(snap, unit, ch, "", baseline)
 
 	if _, _, err := r.reviewChapter(context.Background(), "mock/mock-gpt-4", packet, ch.Chapter, 2, ch.Body); err != nil {
 		t.Fatal(err)

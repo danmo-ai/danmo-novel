@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/danmo-ai/danmo-novel/core/domain"
+	"github.com/danmo-ai/danmo-novel/core/service/gates"
 )
 
 // UserDoc is one document attached as data (never mixed into the system template).
@@ -186,6 +187,38 @@ func BuildUserPrompt(task, mode string, book map[string]any, instruction string,
 // 把它留在 documents 里，公共前缀就只能停在 documents 开头——实测单章命中
 // 率 5%，等于每章把整份上下文按全价重算一遍。
 const ChapterBeatsKey = "chapterBeats"
+
+// PreviousChapterTail 返回本章前一章的文末，用于语言级衔接。
+//
+// 它替代原来两套并存的做法：documents 里的 prev-tail（上**单元**文末，每章都带）
+// 与 extra 里塞的上一章**全文**。前者只对单元第一章有意义，后者实测每章多付
+// 2,500–7,000 字——而衔接只需要文末的语感与钩子，不需要重读整章剧情。
+//
+// 查找顺序：本次已生成的章节 → 本单元正文 → 上一单元正文。
+// 最后一步是必需的：单元第一章的前一章住在上一单元里，漏掉它整条衔接就断了。
+func PreviousChapterTail(snap domain.BookSnapshot, unit domain.UnitInfo, generated []domain.ChapterDraft, chapter int) (string, string) {
+	for i := len(generated) - 1; i >= 0; i-- {
+		if generated[i].Chapter == chapter-1 {
+			return clipTail(generated[i].Body, 800), unit.ProsePath
+		}
+	}
+	for _, ch := range gates.ParseProseChapters(unit.ProseRaw) {
+		if ch.Chapter == chapter-1 {
+			return clipTail(ch.Body, 800), unit.ProsePath
+		}
+	}
+	prev := previousUnit(snap, unit)
+	if prev == nil {
+		return "", ""
+	}
+	for _, ch := range gates.ParseProseChapters(prev.ProseRaw) {
+		if ch.Chapter == chapter-1 {
+			return clipTail(ch.Body, 800), prev.ProsePath
+		}
+	}
+	// 章号不可解析时退化成「上一单元文末」：有语感可承接，胜过什么都没有。
+	return clipTail(prev.ProseRaw, 800), prev.ProsePath
+}
 
 // NarrowBeats 把整单元的场面包裁剪成本章的一小段，并从 documents 中摘掉，
 // 交给调用方放进 payload 尾部（extra[ChapterBeatsKey]）。

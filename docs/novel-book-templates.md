@@ -25,7 +25,7 @@
     platform-positioning.md            平台、读者与篇幅定位
     writing-rules.md                   生产硬规则
     style-fingerprint.md               叙事风格
-    reveal-schedule.md                 公开信息释放计划
+    foreshadow-schedule.md             伏笔登记表（埋/收，含信息类）
     author-lore.md                     作者侧真相与未揭秘密
     locked-terms.yaml                  锁词与永久合规红线
   continuity/
@@ -408,20 +408,39 @@ segments:
 {{禁语与 AI 套话}}
 ```
 
-### `canon/reveal-schedule.md`
+### `canon/foreshadow-schedule.md`
+
+伏笔是带稳定 ID 的一等实体，与人物卡同级：总纲定卷、卷纲定单元、细纲定章。
 
 ```markdown
-# 揭示计划
+# 伏笔登记表（唯一权威来源）
 - schema_version: 1
 
-## 揭示 · {{reveal-id}}
-- public_summary: {{可向公开生产层说明的信息，不写作者真相}}
-- earliest_volume: v{{NN}}
-- hint_unit_ids: {{允许暗示的单元 ID 列表}}
-- confirm_unit_id: {{允许确认的单元 ID}}
-- status: {{locked|planted|advanced|paid|dropped}}
-- locked_terms: {{尚未允许公开的关键词，无则写“无”}}
+## 伏笔 · FS-01
+- content: {{埋的是什么，必须是可见可验的具体物或事}}
+- type: {{物件|信息|关系|承诺|疑点}}
+- plant_volume: v{{NN}}
+- plant_unit: v{{NN}}-U{{N}}          # 卷纲补，可空
+- plant_chapter: {{章号}}             # 细纲补，可空
+- payoff_volume: v{{NN}}
+- payoff_unit: v{{NN}}-U{{N}}
+- payoff_chapter: {{章号}}
+- payoff_summary: {{回收时读者得到什么；type=信息 时必填}}
+- locked_terms: {{回收前不得出现的词，可空}}
+- status: {{planned|planted|advanced|paid|dropped}}
+- note: {{一句话说明回收方式}}
 ```
+
+分级写入责任：
+
+| 层 | 只允许写 | 典型内容 |
+|---|---|---|
+| 总纲（立项） | `content/type/plant_volume/payoff_volume` | 全书有哪些伏笔、各自落在哪两卷 |
+| 卷纲 | 本卷条目的 `plant_unit/payoff_unit` | 细化到单元 |
+| 单元细纲 | `chapters[].plant` / `chapters[].payoff` | 细化到章，只填 FS ID |
+
+`type: 信息` 的伏笔就是原来的揭示计划（读者何时可以知道某个秘密），因此
+分卷与单元不再有 `reveal_ids` / `forbidden_reveal_ids`：能否揭示由回收位置派生。
 
 ### `canon/author-lore.md`
 

@@ -104,9 +104,17 @@ func ValidateOutlineContract(units []domain.UnitOutlineDraft, requested []string
 // ValidateOutlineInheritance rechecks the same contract at Accept time. It
 // prevents a persisted candidate from bypassing the generation validator.
 func ValidateOutlineInheritance(snap domain.BookSnapshot, volume int, units []domain.UnitOutlineDraft) error {
+	// 章级伏笔合同不依赖卷纲文档，先查：即使卷纲还没结构化，也要拦住发明 ID、
+	// 替别的单元埋收、回收早于埋入这三类错。
+	if err := books.ValidateForeshadowChapterRefs(snap, units); err != nil {
+		return err
+	}
 	doc, ok := books.StructuredOutlineFor(snap, fmt.Sprintf("outline/volumes/v%02d.md", volume))
-	if !ok || !doc.Valid() {
-		return nil
+	if !ok {
+		return contractFail("细纲父子合同", []Violation{{Path: "volume", Want: "已接受的结构化卷纲", Got: "不存在"}})
+	}
+	if !doc.Valid() {
+		return contractFail("细纲父子合同", []Violation{{Path: "volume", Want: "有效卷纲", Got: books.FormatOutlineDiagnostics(doc.Diagnostics)}})
 	}
 	for _, unit := range units {
 		seed, found := doc.Entity("单元", unit.UnitID)
@@ -155,6 +163,8 @@ func ValidateUnitSeedInheritance(unit domain.UnitOutlineDraft, seed domain.Markd
 	}
 	if unit.StateDeltas == nil {
 		vs = append(vs, Violation{Path: "stateDeltas", Want: "继承卷纲 state_changes 的结构化数组", Got: "缺失"})
+	} else if err := ValidateStateDeltaInheritance(unit.StateDeltas, seed.Value("state_changes")); err != nil {
+		vs = append(vs, Violation{Path: "stateDeltas", Want: "逐项继承卷纲 state_changes，可追加子级细化", Got: err.Error()})
 	}
 	if unit.SourceSeedID != seed.ID {
 		vs = append(vs, Violation{Path: "sourceSeedId", Want: seed.ID, Got: unit.SourceSeedID})
@@ -168,6 +178,29 @@ func ValidateUnitSeedInheritance(unit domain.UnitOutlineDraft, seed domain.Markd
 		}
 	}
 	return contractFail("细纲父子合同", vs)
+}
+
+// ValidateStateDeltaInheritance locks every parent transition; only additions are allowed.
+func ValidateStateDeltaInheritance(value any, parent string) error {
+	rows, ok := value.([]any)
+	if !ok {
+		return fmt.Errorf("stateDeltas 必须是数组")
+	}
+	children := map[string]bool{}
+	for _, row := range rows {
+		m, ok := row.(map[string]any)
+		if !ok {
+			return fmt.Errorf("每项必须是 {stem,field,from,to}")
+		}
+		key := fmt.Sprintf("%s.%s=%v->%v", m["stem"], m["field"], m["from"], m["to"])
+		children[key] = true
+	}
+	for _, expected := range books.StateDeltaKeysFromMarkdown(parent) {
+		if !children[expected] {
+			return fmt.Errorf("缺少父级迁移 %s", expected)
+		}
+	}
+	return nil
 }
 
 func mustAtoi(value string) int {

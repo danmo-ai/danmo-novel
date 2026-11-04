@@ -352,11 +352,32 @@ func identityFinding(unit domain.UnitInfo, delta stateDelta, want, msg string) d
 //
 // 审校清单是修问题最便宜的阶段：那时规划刚定、正文可能还没写。把它做成本地硬门
 // 而不是让 AI 审校去"感觉"身份不对——这条判定是确定性的，无需模型参与。
+//
+// 它原来只检查 state_deltas 里的 role_title 是否与时间线一致。身份副本从账本
+// 移除后，那份 delta 仍是「本单元切了身份」的声明，所以这条检查保留；同时补上
+// 更常见的一类：on_stage 里有人在本单元没有生效身份段。那本来只在细纲接受与
+// 定稿时才查，而那时正文已经写完。
 func IdentityDeltaFindings(segments []domain.IdentitySegment, unit domain.UnitInfo, outlineRaw string) []domain.ReviewFinding {
 	if f, err := stateDeltaIdentityConflict(segments, unit, outlineRaw); err != nil {
 		return []domain.ReviewFinding{f}
 	}
-	return nil
+	onStage := outlineOnStageForBooks(outlineRaw)
+	var missing []string
+	for _, stem := range onStage {
+		if IdentityAt(segments, stem, unit.UnitID) == nil {
+			missing = append(missing, stem)
+		}
+	}
+	if len(missing) == 0 {
+		return nil
+	}
+	return []domain.ReviewFinding{{
+		ID: "identity-missing-" + unit.UnitID, Severity: "blocking", Source: "local_gate", Lens: "identity",
+		Title:    "在场人物缺少生效身份",
+		Evidence: unit.UnitID + " 的 " + strings.Join(missing, "、") + " 没有覆盖该单元的身份段",
+		Suggestion: "在 canon/identity-timeline.yaml 补登记，或在卷纲里写「### 身份变更」；" +
+			"身份只由时间线拥有，不要在 state_deltas 里自行创造",
+	}}
 }
 
 // identityBefore returns the segment effective immediately before the one that

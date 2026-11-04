@@ -278,9 +278,7 @@ async function saveAssignments() {
   store.note('阶段模型已保存')
 }
 
-// 审校分章是唯一的粒度开关：所有审校路径读同一份设置，
-// 否则同一个单元在不同入口下会得到不同粒度的 findings。
-const reviewSplit = ref(true)
+// 审校固定按章；这里只调整并行度与覆盖轮数。
 const reviewConcurrency = ref(3)
 /**
  * 每章独立审校的轮数（1–5，默认 3），多轮结果取并集。
@@ -295,7 +293,6 @@ async function loadReviewSettings() {
   try {
     const res = await api.get<any>('/api/settings/review')
     if (res?.review) {
-      reviewSplit.value = Boolean(res.review.splitByChapter)
       reviewConcurrency.value = res.review.concurrency || 3
       reviewRounds.value = res.review.rounds || 3
     }
@@ -304,12 +301,10 @@ async function loadReviewSettings() {
 async function saveReviewSettings() {
   try {
     const res = await api.put<any>('/api/settings/review', {
-      splitByChapter: reviewSplit.value,
       concurrency: reviewConcurrency.value,
       rounds: reviewRounds.value,
     })
     if (res?.review) {
-      reviewSplit.value = Boolean(res.review.splitByChapter)
       reviewConcurrency.value = res.review.concurrency || 3
       reviewRounds.value = res.review.rounds || 3
     }
@@ -439,25 +434,7 @@ async function saveReviewSettings() {
           <h2>审校设置</h2>
           <button class="primary" @click="saveReviewSettings">{{ reviewSaved ? '已保存' : '保存' }}</button>
         </header>
-        <div class="assign-block">
-          <div class="assign-row">
-            <span class="assign-label">按章审校</span>
-            <div class="assign-controls">
-              <select :value="reviewSplit ? 'on' : 'off'" @change="reviewSplit = ($event.target as HTMLSelectElement).value === 'on'">
-                <option value="on">开启（每章一次调用）</option>
-                <option value="off">关闭（整单元一次调用）</option>
-              </select>
-            </div>
-          </div>
-          <p class="assign-hint">
-            所有审校入口读取同一个开关：开启时按章并行、prompt 更小、不会被整单元结论挤爆输出预算；
-            关闭时一次看完整单元，跨章连续性问题更容易被一起发现，但长单元可能截断。
-          </p>
-          <p class="assign-hint">
-            实测提醒：同样 3 轮下整单元更省（3 次调用 vs 章数×3 次），但两种粒度检出的问题几乎不重合
-            ——换粒度约等于换一次采样。省成本选整单元，想多捞一批问题选按章。
-          </p>
-        </div>
+        <p class="assign-hint">固定按章审校；每章携带同一事实基线、本章合同与上一章尾部。跨章问题由连续性块和章级证据核对。</p>
         <div class="assign-block">
           <div class="assign-row">
             <span class="assign-label">审校轮数</span>

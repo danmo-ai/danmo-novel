@@ -100,7 +100,7 @@ units:
 	}
 	snap.Files["canon/author-lore.md"] = "# Author lore\n\n## 终局真相\n头号宿敌是林尘生父。\n"
 
-	packet := BuildWritePacket(snap, unit, "", 0)
+	packet := BuildWritePacket(snap, unit, "")
 
 	// 1) 底牌禁读：任何 block 不得引用 author-lore。
 	for _, b := range packet.Blocks {
@@ -165,43 +165,38 @@ units:
 	}
 }
 
-func TestWritePacketCarriesTheChapterLengthTarget(t *testing.T) {
-	// 写的时候必须知道这一章该多长，否则只能猜，写完才被硬门拦。
+func TestWritePacketDropsTheChapterLengthBlock(t *testing.T) {
+	// 字数以前在四处重复：system 第 6/7 条、chapter-length 块、合同 chapter_chars、
+	// 每次调用的 chapterRule。块删掉后只剩后两者，数字仍与硬门同源。
 	unit := domain.UnitInfo{
 		UnitID: "v01-U1", Volume: 1, ChapterFrom: 1, ChapterTo: 2,
 		OutlinePath: "outline/units/v01-U1.yaml",
-		OutlineRaw:  "unit_id: v01-U1\nword_target: 10000\n",
+		OutlineRaw:  "unit_id: v01-U1\nchapter_chars: 3500\n",
 	}
-	packet := BuildWritePacket(domain.BookSnapshot{Summary: domain.BookSummary{ID: "b"}}, unit, "", 0)
-	var text string
+	packet := BuildWritePacket(domain.BookSnapshot{Summary: domain.BookSummary{ID: "b"}}, unit, "")
 	for _, b := range packet.Blocks {
 		if b.ID == "chapter-length" {
-			text = b.Content
+			t.Fatalf("chapter-length block must be gone:\n%s", b.Content)
 		}
 	}
-	if text == "" {
-		t.Fatal("write packet is missing the chapter-length block")
-	}
-	// 10000 / 2 章 = 5000 → 夹到上限 3500；提示词里的数字必须与硬门一致。
+	// 提示词里的数字必须与硬门同源。
 	target := books.ChapterTarget(unit)
 	if target != domain.ChapterCharsMax {
 		t.Fatalf("chapterTarget=%d want %d", target, domain.ChapterCharsMax)
 	}
 	floor, ceil := domain.ChapterBand(target)
 	for _, want := range []string{
-		"目标 3500 字",
+		fmt.Sprintf("每章 %d 字", target),
 		fmt.Sprintf("%d–%d 字", floor, ceil),
 	} {
-
-		if !strings.Contains(text, want) {
-			t.Fatalf("length guidance missing %q:\n%s", want, text)
+		if !strings.Contains(packet.SystemPrompt, want) {
+			t.Fatalf("system prompt missing %q:\n%s", want, packet.SystemPrompt)
 		}
 	}
 }
-
 func TestChapterContractNarrowsToCurrentChapterWithoutScenes(t *testing.T) {
 	unit := domain.UnitInfo{UnitID: "v01-U1", Volume: 1, ChapterFrom: 1, ChapterTo: 2, OutlinePath: "outline/units/v01-U1.yaml", OutlineRaw: "unit_id: v01-U1\ndesire: 立足\nobstacle: 质疑\nchoice: 复查\npayoff: 获得许可\nforbidden: 禁揭\non_stage: [lin]\npov: lin\nstory_day: 3\nend_day: 4\nchapters:\n  - chapter: 1\n    goal: 第一章目标\n    change: 第一章变化\n    cut_hook: 第一章钩子\n    day_offset: 0\n  - chapter: 2\n    goal: 第二章目标\n    change: 第二章变化\n    cut_hook: 第二章钩子\n    day_offset: 1\n"}
-	packet := BuildWritePacket(domain.BookSnapshot{Summary: domain.BookSummary{ID: "b"}}, unit, "", 0)
+	packet := BuildWritePacket(domain.BookSnapshot{Summary: domain.BookSummary{ID: "b"}}, unit, "")
 	narrowed, beats := NarrowBeats(packet, unit, 2)
 	if !strings.Contains(beats, "第二章目标") || strings.Contains(beats, "第一章目标") {
 		t.Fatalf("chapter-specific beats were not narrowed: %s", beats)
@@ -277,7 +272,7 @@ func TestStageInstructionAppended(t *testing.T) {
 	snap := loadFixture(t)
 	unit := findUnit(t, snap, "v01-U1")
 
-	withInstr := BuildWritePacket(snap, unit, "追加要求ABC", 0)
+	withInstr := BuildWritePacket(snap, unit, "追加要求ABC")
 	payload, err := DecodeUserPayload(withInstr.UserPrompt)
 	if err != nil {
 		t.Fatal(err)
@@ -285,11 +280,11 @@ func TestStageInstructionAppended(t *testing.T) {
 	if !strings.Contains(payload.Instruction, "追加要求ABC") {
 		t.Fatalf("write instruction not forwarded: %q", payload.Instruction)
 	}
-	if !strings.Contains(payload.Instruction, "请按单元合同与场面节拍") {
+	if !strings.Contains(payload.Instruction, "请按本章合同与场面节拍") {
 		t.Fatal("write default format contract must be preserved")
 	}
 
-	plain := BuildWritePacket(snap, unit, "", 0)
+	plain := BuildWritePacket(snap, unit, "")
 	plainPayload, err := DecodeUserPayload(plain.UserPrompt)
 	if err != nil {
 		t.Fatal(err)
@@ -319,61 +314,36 @@ func TestWritePacketSendsNoOutputCap(t *testing.T) {
 		UnitID: "v01-U1", Volume: 1, ChapterFrom: 1, ChapterTo: 6,
 		OutlinePath: "outline/units/v01-U1.yaml", OutlineRaw: "chapter_chars: 2500\n",
 	}
-	packet := BuildWritePacket(domain.BookSnapshot{Summary: domain.BookSummary{ID: "b"}}, unit, "", 384000)
+	packet := BuildWritePacket(domain.BookSnapshot{Summary: domain.BookSummary{ID: "b"}}, unit, "")
 	if packet.Policy.MaxOutputTokens != 0 {
 		t.Fatalf("maxOutputTokens=%d want 0 (model config decides)", packet.Policy.MaxOutputTokens)
 	}
-	// 按章调用仍由章节数量决定，与输出上限无关。
-	if !packet.Policy.SplitByChapter {
-		t.Fatal("a 6-chapter unit must still be written one chapter per call")
+	if packet.Policy.MaxCalls != 18 {
+		t.Fatalf("six chapters must use a fixed 18-call budget, got %d", packet.Policy.MaxCalls)
 	}
 }
 
-// 字数约束必须出现在模型真正会读的三处：系统提示词、额度块、单章指令。
-// 之前只写在额度块里，而且措辞是「多于 3500 字会有超长告警」——实测一本
-// 目标 2500 字/章的书六章写出 3160–6210 字。
-func TestLengthContractReachesEveryPromptSurface(t *testing.T) {
+// 字数约束只保留系统提示词一处：额度块与合同 chapter_chars 曾与它重复，
+// 还带着被 Clamp 前的原始数字（细纲写 5000、system 写 3500）。
+func TestLengthContractLivesOnlyInTheSystemPrompt(t *testing.T) {
 	unit := domain.UnitInfo{
 		UnitID: "v01-U1", Volume: 1, ChapterFrom: 1, ChapterTo: 6,
 		OutlinePath: "outline/units/v01-U1.yaml", OutlineRaw: "chapter_chars: 2500\n",
 	}
-	packet := BuildWritePacket(domain.BookSnapshot{Summary: domain.BookSummary{ID: "b"}}, unit, "", 384000)
+	packet := BuildWritePacket(domain.BookSnapshot{Summary: domain.BookSummary{ID: "b"}}, unit, "")
 
-	// 1) 系统提示词：硬规则里带确切目标，且写明不是参考值。
 	if !strings.Contains(packet.SystemPrompt, "每章 2500 字") {
 		t.Fatalf("system prompt lost the per-chapter target:\n%s", packet.SystemPrompt)
 	}
 	if !strings.Contains(packet.SystemPrompt, "合同值不是参考值") {
 		t.Fatalf("system prompt must say the target is a contract:\n%s", packet.SystemPrompt)
 	}
-	// 2) 额度块：只讲单章，给出区间与后果。
-	var guidance string
 	for _, b := range packet.Blocks {
 		if b.ID == "chapter-length" {
-			guidance = b.Content
+			t.Fatal("duplicate chapter-length block must be gone")
+		}
+		if b.ID == "unit-contract" && strings.Contains(b.Content, "chapter_chars") {
+			t.Fatalf("contract must not carry chapter_chars: %s", b.Content)
 		}
 	}
-	floor, ceil := domain.ChapterBand(2500)
-	for _, want := range []string{"目标 2500 字", fmt.Sprintf("%d–%d", floor, ceil), "会被退回重写", "判为不合格"} {
-		if !strings.Contains(guidance, want) {
-			t.Fatalf("length guidance missing %q:\n%s", want, guidance)
-		}
-	}
-	// 场面数不写死：细纲没给节拍时给区间，每场字数也有区间。
-	for _, want := range []string{"2–4 个主线场面", fmt.Sprintf("%d–%d 字", domain.SceneCharsMin, domain.SceneCharsMax)} {
-		if !strings.Contains(guidance, want) {
-			t.Fatalf("length guidance missing scene range %q:\n%s", want, guidance)
-		}
-	}
-	if strings.Contains(guidance, "3 个场面") || strings.Contains(guidance, "约 3 个") {
-		t.Fatalf("length guidance must not hardcode three scenes:\n%s", guidance)
-	}
-	// 单元章数不固定，不折算单元总量：只说这一章。
-	for _, banned := range []string{"本单元", "单元总", "共 6 章"} {
-		if strings.Contains(guidance, banned) {
-			t.Fatalf("length guidance must not talk about the unit total (%q):\n%s", banned, guidance)
-		}
-	}
-	// 3) 超长只是 advisory：审校页没法对整章做大改，不能把它做成阻断面。
-	//    这条由 gates 的测试守（这里不引 gates 包，避免循环依赖语义混乱）。
 }

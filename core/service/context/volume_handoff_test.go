@@ -135,7 +135,7 @@ func TestBuildPlanPacketVolumeIncludesPrevHandoff(t *testing.T) {
 			OutlinePath: "outline/units/v01-U1.yaml",
 			OutlineRaw:  "unit_id: v01-U1\nfunction: 开局试炼\nnext_hook:\n  type: 危机\n",
 			ProsePath:   "units/v01-U1.md",
-			ProseRaw:    "他回头望了一眼山门，没再说话。",
+			ProseRaw:    "他回头望了一眼山门，没再说话。", Status: domain.UnitReviewed,
 		}},
 		Cast: []domain.CastCard{{Stem: "lin", Name: "林尘", Role: "protagonist", Raw: "# 林尘\n"}},
 	}

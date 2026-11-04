@@ -47,7 +47,7 @@ func TestCallRecordCarriesCacheUsage(t *testing.T) {
 	fake := &cacheReportingLLM{}
 	r := New(fake)
 
-	res, err := r.RunReview(context.Background(), snap, unit, "mock/mock-gpt-4")
+	res, err := r.RunReview(context.Background(), snap, unit, "mock/mock-gpt-4", ReviewOptions{Concurrency: 1, Rounds: 1})
 	if err != nil {
 		t.Fatal(err)
 	}

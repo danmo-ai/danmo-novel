@@ -42,6 +42,12 @@ func (r *Runner) RunReviseWithOptions(ctx context.Context, snap domain.BookSnaps
 
 	byChapter := map[int][]domain.ReviewFinding{}
 	for _, f := range findings {
+		if f.EntityPath != "" && f.EntityPath != unit.ProsePath {
+			return Result{}, fmt.Errorf("审校问题 %s 属于 %s，请回改规划/身份，不要走正文补丁", f.ID, f.EntityPath)
+		}
+		if f.Source == "local_gate" && f.Lens == "identity" {
+			return Result{}, fmt.Errorf("审校问题 %s 属于身份规划，请先修身份时间线或细纲", f.ID)
+		}
 		byChapter[f.Chapter] = append(byChapter[f.Chapter], f)
 	}
 	// 章号对不上就修不了：以前静默无操作——候选与原稿逐字节相同，作者点「确认
@@ -90,7 +96,7 @@ func (r *Runner) RunReviseWithOptions(ctx context.Context, snap domain.BookSnaps
 	// 预算在任何调用之前就定下来：run 失败时也要能看到"上限是几次"，
 	// 否则 UI 显示"调用预算 0 次"，成本无从判断。补丁 → 补丁修复 → 整章兜底，
 	// 每章最多 3 次，按实际要修的章数申报。
-	packet := contextsvc.BuildReviseChapterPacket(snap, unit, chapters[0], findings, chapterPrevTail(chapters, 0, baseline), baseline, r.modelMaxOut(modelID))
+	packet := contextsvc.BuildReviseChapterPacket(snap, unit, chapters[0], findings, chapterPrevTail(chapters, 0, baseline), baseline)
 	touched := 0
 	for _, ch := range chapters {
 		if len(byChapter[ch.Chapter]) > 0 {
@@ -185,8 +191,8 @@ func chapterPrevTail(chapters []domain.ChapterDraft, idx int, baseline contextsv
 // 契约与尾部 repair 不同，所以三次都命中审校留下的前缀缓存——包括最后的整章
 // 兜底。prevTail 必须与审校那条路径传同一个值，否则那边块选择一变，前缀就散了。
 func (r *Runner) reviseChapter(ctx context.Context, modelID string, snap domain.BookSnapshot, unit domain.UnitInfo, ch domain.ChapterDraft, findings []domain.ReviewFinding, prevTail string, baseline contextsvc.ReviewBaseline) (domain.ChapterDraft, []domain.CallRecord, error) {
-	patchPacket := contextsvc.BuildReviseChapterPacket(snap, unit, ch, findings, prevTail, baseline, r.modelMaxOut(modelID))
-	fallbackPacket := contextsvc.BuildReviseChapterFallbackPacket(snap, unit, ch, findings, prevTail, baseline, r.modelMaxOut(modelID))
+	patchPacket := contextsvc.BuildReviseChapterPacket(snap, unit, ch, findings, prevTail, baseline)
+	fallbackPacket := contextsvc.BuildReviseChapterFallbackPacket(snap, unit, ch, findings, prevTail, baseline)
 
 	max := patchPacket.Policy.MaxCalls
 	if max < 1 {
@@ -246,7 +252,7 @@ func (r *Runner) reviseChapter(ctx context.Context, modelID string, snap domain.
 		}
 
 		rep := gates.CheckProseWithRules([]domain.ChapterDraft{draft}, 0, r.proseRules())
-		if !rep.OK && attempt < max {
+		if !rep.OK {
 			lastErr = fmt.Errorf("本地硬门未通过：\n%s", detailedFindings(rep.Findings))
 			attemptErrs = append(attemptErrs, fmt.Sprintf("%s: %v", step, lastErr))
 			continue

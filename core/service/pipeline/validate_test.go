@@ -181,7 +181,7 @@ func TestReviewValidationFeedbackReachesModel(t *testing.T) {
 	}}
 	r := New(fake)
 
-	res, err := r.RunReview(context.Background(), snap, unit, "mock/mock-gpt-4")
+	res, err := r.RunReview(context.Background(), snap, unit, "mock/mock-gpt-4", ReviewOptions{Concurrency: 1, Rounds: 1})
 	if err != nil {
 		t.Fatalf("second attempt should pass: %v", err)
 	}
@@ -223,7 +223,7 @@ func TestReviewSalvageNormalizesInsteadOfFailing(t *testing.T) {
 	// 截断产物：JSON 不完整，最后一条缺 severity。抢救路径应规范化收下，
 	// 而不是把整份结论丢掉——重试由 budget escalation 负责。
 	raw := `{"verdict":"pass","findings":[{"id":"a-1-1","severity":"blocking","chapter":1,"title":"主角被动","evidence":"全程被推着走"},{"id":"a-1-2","title":"对白说明化","chapter":1,"evidence":"`
-	findings, err := parseReviewResponse(raw, 1)
+	findings, err := parseReviewResponse(raw, 1, true)
 	if err != nil {
 		t.Fatalf("salvage should not fail: %v", err)
 	}

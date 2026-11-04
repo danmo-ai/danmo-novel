@@ -23,7 +23,7 @@ const definitions: Doc[] = [
   { path: 'book-bible.md', label: '作者意图与读者承诺', group: '总纲派生', description: '读者承诺、主角目标、故事引擎；重写携带总纲作依据', usage: '立项 · 重写带总纲' },
   { path: 'canon/world.md', label: '世界观与力量规则', group: '总纲派生', description: '力量/代价、势力地图、禁忌；重写携带总纲', usage: '立项 · 重写带总纲' },
   { path: 'canon/goldfinger.md', label: '金手指与资源', group: '总纲派生', description: '能力、代价、上限；重写携带总纲', usage: '立项 · 重写带总纲' },
-  { path: 'canon/reveal-schedule.md', label: '揭示计划', group: '总纲派生', description: '信息何时可暗示/确认；按卷注入正文与审校', usage: '立项 · 细纲 · 正文 · 审校 · 重写带总纲' },
+  { path: 'canon/foreshadow-schedule.md', label: '伏笔登记表', group: '总纲派生', description: '伏笔的埋与收；总纲定卷、卷纲定单元、细纲定章。信息类伏笔即原揭示计划', usage: '立项 · 卷纲 · 细纲 · 正文 · 审校 · 重写带总纲' },
   { path: 'canon/platform-positioning.md', label: '平台与篇幅定位', group: '生产约束', description: '平台、目标读者、更新与开篇承诺', usage: '立项 · 可独立优化' },
   { path: 'canon/writing-rules.md', label: '写作规则', group: '生产约束', description: '单元与单章生产约束', usage: '正文 · 审校 · 可独立优化' },
   { path: 'canon/style-fingerprint.md', label: '风格指纹', group: '生产约束', description: 'POV、句段、对话、感官与反模式', usage: '正文 · 局部编辑 · 审校 · 可独立优化' },
@@ -303,9 +303,9 @@ const canOptimize = computed(() => {
 })
 const optimizeLabel = computed(() => selectedCast.value ? '重写人物卡' : '重写设定')
 const optimizeHint = computed(() => {
-  if (selectedCast.value) return '携带总纲/卷纲/揭示计划/公开状态作依据；接受仅写本卡'
+  if (selectedCast.value) return '携带总纲/卷纲/伏笔登记表/公开状态作依据；接受仅写本卡'
   const p = currentFilePath.value
-  if (p === 'canon/reveal-schedule.md') return '携带总纲/卷纲/公开账本；正文按卷注入约束'
+  if (p === 'canon/foreshadow-schedule.md') return '携带总纲/卷纲/公开账本；正文按章注入本章该埋该收的条目'
   if (p === 'canon/world.md' || p === 'canon/goldfinger.md' || p === 'book-bible.md' || p === 'canon/author-lore.md') {
     return '总纲派生：携带总纲等依据；接受仅写本文件'
   }
