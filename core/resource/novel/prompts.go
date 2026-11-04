@@ -7,7 +7,7 @@ import (
 	"github.com/danmo-ai/danmo-novel/core/domain"
 )
 
-const KnowledgeVersion = "kb-novel-2026.10.1"
+const KnowledgeVersion = "kb-novel-2026.11.1"
 
 // WriteChapterSystemPromptFor 是「一次只写一章」的系统提示词。
 //
