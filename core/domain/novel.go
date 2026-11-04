@@ -95,6 +95,12 @@ const (
 	StageWrite     StageModelRole = "write"
 	StageReview    StageModelRole = "review"
 	StageLocalEdit StageModelRole = "local_edit"
+	// StageFinalize 只服务定稿核对（正文 → 结构化实际账本）。
+	//
+	// 它不创作也不评判，只是把已经定稿的正文读成一张账本；与审校共用推理强度
+	// 会让最机械的一步按最贵的档位计费。单独成一个角色，作者就能给它配便宜的
+	// 模型或更低的 effort。未配置时 resolveModel 退回 StageReview。
+	StageFinalize StageModelRole = "finalize"
 )
 
 // CallPolicy is fixed before a run starts. Tools are always empty.

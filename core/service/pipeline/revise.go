@@ -41,18 +41,31 @@ func (r *Runner) RunReviseWithOptions(ctx context.Context, snap domain.BookSnaps
 	baseline := contextsvc.BuildReviewBaseline(snap, unit, nil, r.ReviewChecklist)
 
 	byChapter := map[int][]domain.ReviewFinding{}
+	// 不属于任何一章正文的意见（角色状态账本、身份规划、审校覆盖标记）改正文修不了。
+	// 它们过去混进「章号对不上」的报错里，提示只说"请改选带章号的意见"，作者既不知道
+	// 该去哪儿修，也不知道其实这类问题本来就不该选。逐条给出去处，才谈得上可操作。
+	var notProse []string
 	for _, f := range findings {
 		if f.EntityPath != "" && f.EntityPath != unit.ProsePath {
 			return Result{}, fmt.Errorf("审校问题 %s 属于 %s，请回改规划/身份，不要走正文补丁", f.ID, f.EntityPath)
 		}
-		if f.Source == "local_gate" && f.Lens == "identity" {
-			return Result{}, fmt.Errorf("审校问题 %s 属于身份规划，请先修身份时间线或细纲", f.ID)
+		if f.Chapter <= 0 {
+			label := f.Title
+			if label == "" {
+				label = f.ID
+			}
+			notProse = append(notProse, fmt.Sprintf("「%s」%s", label, notProseAdvice(f)))
+			continue
 		}
 		byChapter[f.Chapter] = append(byChapter[f.Chapter], f)
 	}
+	if len(notProse) > 0 {
+		return Result{LocalGate: local}, fmt.Errorf(
+			"这些审校意见不属于任何一章正文，逐章修订改不了：%s；请在勾选里去掉它们（这类问题不走「自动修复」），按上面的去处回规划/状态层处理",
+			strings.Join(notProse, "；"))
+	}
 	// 章号对不上就修不了：以前静默无操作——候选与原稿逐字节相同，作者点「确认
-	// 落盘」等于什么都没发生。整单元审校产出的"全单元级"意见（chapter=0）必然
-	// 落到这里，所以必须报出来，而不是假装修过了。
+	// 落盘」等于什么都没发生。所以必须报出来，而不是假装修过了。
 	known := map[int]bool{}
 	for _, ch := range chapters {
 		known[ch.Chapter] = true
@@ -66,16 +79,11 @@ func (r *Runner) RunReviseWithOptions(ctx context.Context, snap domain.BookSnaps
 		if label == "" {
 			label = f.ID
 		}
-		if f.Chapter > 0 {
-			label = fmt.Sprintf("第 %d 章：%s", f.Chapter, label)
-		} else {
-			label = "（未标章号）" + label
-		}
-		unmapped = append(unmapped, label)
+		unmapped = append(unmapped, fmt.Sprintf("第 %d 章：%s", f.Chapter, label))
 	}
 	if len(unmapped) > 0 {
 		return Result{LocalGate: local}, fmt.Errorf(
-			"这些审校意见无法定位到具体章节，逐章修订无从下手：%s；请改选带章号的意见，或先按章重新审校",
+			"这些审校意见的章号在正文里不存在，逐章修订无从下手：%s；请按章重新审校后再修",
 			strings.Join(unmapped, "；"))
 	}
 
@@ -295,6 +303,23 @@ func parseRevisedChapterBody(raw string, ch domain.ChapterDraft) (domain.Chapter
 		return domain.ChapterDraft{}, err
 	}
 	return draft, nil
+}
+
+// notProseAdvice tells the author where a unit-level finding actually gets fixed.
+//
+// 这类意见没有章号，补丁路径无从下手；只回一句"请改选带章号的意见"等于让
+// 作者自己猜去哪儿改。三类来源各有明确归口，逐条说清才有下一步。
+func notProseAdvice(f domain.ReviewFinding) string {
+	switch {
+	case f.Source == "local_gate" && f.Lens == "identity":
+		return "属于身份规划：先修身份时间线或该单元细纲的 state_deltas，改正文改不了它"
+	case f.Source == "local_gate" && f.Lens == "continuity":
+		// stale-<stem>-<field>：账本里某字段很久没刷新，修法是写显式终值。
+		return "属于状态账本：在该单元细纲的 state_deltas 里写一条显式终值（如 from: 受伤, to: 已愈）"
+	case f.ID == domain.FindingReviewTruncated || f.ID == domain.FindingReviewIncomplete:
+		return "是「这一章没审完」的标记：先重新审校该单元，不要当成正文问题去修"
+	}
+	return "没有对应章节，只能回规划层处理"
 }
 
 // chapterHash returns a short hash of a chapter draft for byte-identity checks.

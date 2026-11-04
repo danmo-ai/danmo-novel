@@ -281,6 +281,152 @@ func BuildReviseChapterFallbackPacket(snap domain.BookSnapshot, unit domain.Unit
 			ch.Chapter, novel.ReviseBodyOutputContract(ch.Chapter)))
 }
 
+// BuildFinalizeChapterPacket assembles one chapter's actual-ledger reconcile packet.
+//
+// 定稿是逐章核对，所以它和审校/修订受同一条缓存约束：documents 里只放**整个单元
+// 每章都一样**的基线（单元合同、时间合同、连续性、本单元伏笔、在场人物与关系、
+// 锁词），按章变化的只有本章正文，而且必须排在基线之后；章号、本章计划、本章
+// 伏笔计划一律走 extra（序列化在 documents/instruction 之后）。
+//
+// 旧版把「本章计划」放成第一个 document，相邻两章从 prompt 的第 20 个字节就
+// 分叉——实测 6 章定稿的命中率只有 6–10%，每章都把同一份上下文按全价重算。
+func BuildFinalizeChapterPacket(snap domain.BookSnapshot, unit domain.UnitInfo, ch domain.ChapterDraft, baseline ReviewBaseline) domain.ContextPacket {
+	policy := DefaultPolicy(domain.TaskFinalize, 1)
+	// 每章最多 2 次：核对 → 一次结构/证据修复。
+	policy.MaxCalls = 2
+	policy.AllowOneRepair = true
+
+	blocks := []domain.ContextBlock{}
+	add := func(id, label, source, content string) {
+		content = strings.TrimSpace(content)
+		if content == "" {
+			return
+		}
+		blocks = append(blocks, domain.ContextBlock{ID: id, Label: label, Source: source, Content: content, Bytes: len(content)})
+	}
+	// 以上共享块必须逐字相同：它们的顺序一旦按章变化，本章正文之后的一切都会失效。
+	add("unit-contract", "单元合同", unit.OutlinePath, baseline.Contract)
+	add("time-contract", "时间合同", unit.OutlinePath, baseline.TimeContract)
+	add("continuity", "连续性状态", books.StatePath, ExtractContinuity(snap, unit, extractOnStage(unit.OutlineRaw), ContinuityForReview))
+	add("foreshadows", "本单元伏笔", books.ForeshadowSchedulePath, baseline.Foreshadow)
+	add("cast", "在场人物", "canon/cast", baseline.CastCards)
+	add("relations", "在场关系", "canon/cast", baseline.Relations)
+	add("locked-terms", "锁词", "canon/locked-terms.yaml", baseline.LockedTerms)
+	// 以下每章都不同，必须排在共享基线之后。
+	add("prose", "本章正文", unit.ProsePath, ch.Body)
+
+	hashes := map[string]string{unit.ProsePath: shortHash(ch.Body)}
+	for _, b := range blocks {
+		hashes[b.ID+"|"+b.Source] = shortHash(b.Content)
+	}
+	system := novel.FinalizeReconcileSystemPrompt()
+	extra := map[string]any{
+		"finalizeChapter":   ch.Chapter,
+		"chapterPlan":       ChapterContract(unit.OutlineRaw, ch.Chapter),
+		"chapterForeshadow": ForeshadowForChapter(snap, unit, ch.Chapter),
+		// 计划伏笔的 ID 清单要单独给出来：模型必须逐条回答"到底发生了没有"，
+		// 藏在自然语言里它只会挑提到的那几条，漏掉的会在接受时整份被拒。
+		"plannedForeshadow": plannedLoopsForChapter(unit, ch.Chapter),
+	}
+	// book 只放整本书恒定的字段；章号进 extra，否则 statements 从第一个字段就分叉。
+	instruction := fmt.Sprintf("只核对第 %d 章实际正文。不得把计划自动视为已发生。", ch.Chapter)
+	user := BuildUserPrompt("finalize_reconcile", "", map[string]any{
+		"id": snap.Summary.ID, "unitId": unit.UnitID,
+	}, instruction, blocks, extra)
+
+	return domain.ContextPacket{
+		ContractVersion: ContractVersion, TaskKind: domain.TaskFinalize, BookID: snap.Summary.ID, UnitID: unit.UnitID,
+		InputHashes: hashes, Blocks: blocks,
+		KnowledgeVersion: novel.KnowledgeVersion, EstPromptTokens: (len([]rune(system)) + len([]rune(user))) / 2,
+		Policy: policy, SystemPrompt: system, UserPrompt: user,
+	}
+}
+
+// BuildFinalizeUnitPacket assembles the whole-unit ledger packet (one call).
+//
+// 输入只有「基线 + 全单元正文」，篇幅上完全不值得拆成六次：六次调用会把同一
+// 份基线重复携带六遍，而产出只是一张账本。但一份 JSON 承载全单元意味着任何
+// 一章不合规都整份作废，所以调用方（RunFinalize）必须保留逐章兜底。
+func BuildFinalizeUnitPacket(snap domain.BookSnapshot, unit domain.UnitInfo, chapters []domain.ChapterDraft, baseline ReviewBaseline) domain.ContextPacket {
+	policy := DefaultPolicy(domain.TaskFinalize, 1)
+	// 两次：整单元核对 → 一次定向修复（补漏章 / 重抄回证）。
+	policy.MaxCalls = 2
+	policy.AllowOneRepair = true
+
+	blocks := []domain.ContextBlock{}
+	add := func(id, label, source, content string) {
+		content = strings.TrimSpace(content)
+		if content == "" {
+			return
+		}
+		blocks = append(blocks, domain.ContextBlock{ID: id, Label: label, Source: source, Content: content, Bytes: len(content)})
+	}
+	add("unit-contract", "单元合同", unit.OutlinePath, baseline.Contract)
+	add("time-contract", "时间合同", unit.OutlinePath, baseline.TimeContract)
+	add("continuity", "连续性状态", books.StatePath, ExtractContinuity(snap, unit, extractOnStage(unit.OutlineRaw), ContinuityForReview))
+	add("foreshadows", "本单元伏笔", books.ForeshadowSchedulePath, baseline.Foreshadow)
+	add("cast", "在场人物", "canon/cast", baseline.CastCards)
+	add("relations", "在场关系", "canon/cast", baseline.Relations)
+	add("locked-terms", "锁词", "canon/locked-terms.yaml", baseline.LockedTerms)
+	// 全单元正文作为一个块：整份正文就是这一次调用的唯一变动部分。
+	add("prose", "本单元正文", unit.ProsePath, unit.ProseRaw)
+
+	hashes := map[string]string{unit.ProsePath: shortHash(unit.ProseRaw)}
+	for _, b := range blocks {
+		hashes[b.ID+"|"+b.Source] = shortHash(b.Content)
+	}
+	// 章号清单与逐章计划走 extra：它们是"要求覆盖哪些章"的清单，不是正文。
+	chapterList := make([]int, 0, len(chapters))
+	plans := make([]map[string]any, 0, len(chapters))
+	for _, ch := range chapters {
+		chapterList = append(chapterList, ch.Chapter)
+		plans = append(plans, map[string]any{
+			"chapter":           ch.Chapter,
+			"plan":              ChapterContract(unit.OutlineRaw, ch.Chapter),
+			"foreshadow":        ForeshadowForChapter(snap, unit, ch.Chapter),
+			"plannedForeshadow": plannedLoopsForChapter(unit, ch.Chapter),
+		})
+	}
+	extra := map[string]any{
+		"finalizeChapters": chapterList,
+		"chapterPlans":     plans,
+	}
+	instruction := fmt.Sprintf("逐章核对第 %d–%d 章的实际正文，一章一条，不得遗漏。不得把计划自动视为已发生。",
+		chapters[0].Chapter, chapters[len(chapters)-1].Chapter)
+	user := BuildUserPrompt("finalize_reconcile_unit", "", map[string]any{
+		"id": snap.Summary.ID, "unitId": unit.UnitID,
+	}, instruction, blocks, extra)
+	system := novel.FinalizeUnitReconcileSystemPrompt()
+
+	return domain.ContextPacket{
+		ContractVersion: ContractVersion, TaskKind: domain.TaskFinalize, BookID: snap.Summary.ID, UnitID: unit.UnitID,
+		InputHashes: hashes, Blocks: blocks,
+		KnowledgeVersion: novel.KnowledgeVersion, EstPromptTokens: (len([]rune(system)) + len([]rune(user))) / 2,
+		Policy: policy, SystemPrompt: system, UserPrompt: user,
+	}
+}
+
+// plannedLoopsForChapter lists the foreshadow ids this chapter must check.
+//
+// 接受路径会逐条要求 plannedForeshadowHandled 覆盖它们；把清单直接写进包体，
+// 模型才知道"这几条都要回答"，而不是只挑正文里提到的那几条。
+func plannedLoopsForChapter(unit domain.UnitInfo, chapter int) []string {
+	if chapter <= 0 {
+		return []string{}
+	}
+	plant, payoff := books.ChapterLoops(unit)
+	out := make([]string, 0, len(plant[chapter])+len(payoff[chapter]))
+	seen := map[string]bool{}
+	for _, id := range append(append([]string{}, plant[chapter]...), payoff[chapter]...) {
+		if seen[id] {
+			continue
+		}
+		seen[id] = true
+		out = append(out, id)
+	}
+	return out
+}
+
 // reviseFindingRows renders author-selected findings for the revision prompt.
 func reviseFindingRows(findings []domain.ReviewFinding) []map[string]any {
 	rows := make([]map[string]any, 0, len(findings))

@@ -4,7 +4,7 @@ import { RouterLink } from 'vue-router'
 import { api } from '@/api/client'
 import { useAppStore } from '@/stores/app'
 import { STATUS_LABELS } from '@/utils/runLabels'
-import { VERDICT_LABEL, isBlockingFinding, isUnfinishedFinding, reviewVerdict } from '@/utils/reviewState'
+import { VERDICT_LABEL, isBlockingFinding, isProseFixable, isUnfinishedFinding, reviewVerdict } from '@/utils/reviewState'
 import type { Candidate, ReviewFinding, UnitInfo } from '@/types'
 import ChapterDiff from './ChapterDiff.vue'
 
@@ -47,14 +47,17 @@ function addressedIds(c: Candidate): Set<string> {
 }
 
 /**
- * 修复卡片副标题：说清这次修了哪几条、还有多少没勾（落盘后仍可继续修）。
- * run 记录缺失时退回一句中性描述，不谎报「针对 0 条」。
+ * 修复卡片副标题：说清这次修了哪几条、还有多少没勾。
+ *
+ * 落盘会换掉整份正文，服务端据此把该单元所有未处理的审校清单归档（保留在
+ * 历史里只读）——旧清单是按旧正文定位的，留着也没法继续修。所以这里不能
+ * 承诺"未勾选的仍可继续修"，否则作者点完落盘会找不到那批问题。
  */
 function reviseSummary(g: { addressedRows: Row[]; remaining: number }) {
   const parts: string[] = []
   if (g.addressedRows.length) parts.push(`针对 ${g.addressedRows.length} 条`)
-  if (g.remaining) parts.push(`另有 ${g.remaining} 条未勾选，落盘后仍在清单里`)
-  return parts.join(' · ') || '落盘后本次修掉的问题从清单摘掉'
+  if (g.remaining) parts.push(`另有 ${g.remaining} 条未勾选，落盘后随清单归档`)
+  return parts.join(' · ') || '落盘后这份清单归档到历史'
 }
 
 /** 正在生成修复的单元：还没产出候选，但这一处也已经进入「只显示这一步」。 */
@@ -92,6 +95,8 @@ const groups = computed(() => {
         blocking: g.rows.filter(isBlockingFinding).length,
         // 截断/分章失败的标记：有它就不是"没有问题"，而是"这章没审完"。
         unfinished: g.rows.filter(isUnfinishedFinding).length,
+        // 整单元结论（状态账本/身份规划）：改正文修不了，不参与勾选，界面要说清。
+        unitLevel: g.rows.filter((f) => !isProseFixable(f) && !isUnfinishedFinding(f)).length,
         verdict: reviewVerdict(g.rows),
         chapters: [...new Set(g.rows.map((f) => f.chapter).filter(Boolean))].sort((a, b) => (a as number) - (b as number)) as number[],
         revise,
@@ -140,7 +145,11 @@ watch(
     for (const g of groups.value) {
       const valid = new Set(g.rows.map(keyOf))
       const kept = picksOf(g.unitId).filter((k) => valid.has(k))
-      const def = g.rows.filter((f) => f.severity === 'blocking').map(keyOf)
+      // 默认只勾阻断项，且必须真的能靠正文补丁修：整单元结论（身份/状态账本）
+      // 一旦预勾上，作者点「自动修复」就只会收到一条整批拒绝的错误。
+      const def = g.rows
+        .filter((f) => f.severity === 'blocking' && canPick(f))
+        .map(keyOf)
       picked[g.unitId] = [...new Set([...kept, ...def])]
     }
   },
@@ -149,7 +158,10 @@ watch(
 
 function issueIdsOf(g: { unitId: string; rows: Row[] }) {
   const ids: string[] = []
-  for (const f of g.rows) if (isPicked(f, g.unitId) && !ids.includes(f.id)) ids.push(f.id)
+  for (const f of g.rows) {
+    if (!canPick(f)) continue
+    if (isPicked(f, g.unitId) && !ids.includes(f.id)) ids.push(f.id)
+  }
   return ids
 }
 
@@ -161,10 +173,15 @@ function visibleRows(g: { unitId: string; rows: Row[] }) {
   return f === 'all' ? g.rows : g.rows.filter((r) => r.chapter === f)
 }
 
-// 可勾选 = 当前筛选下真正"要修的问题"。截断/分章失败标记是"没审完"的证据，
-// 送去修订只会让模型去"修"一条并不存在的问题，所以全选必须跳过它们。
+// 可勾选 = 当前筛选下真正"要修的问题"。两类不参与：
+//   1. 截断/分章失败标记——送去修订只会让模型去"修"一条并不存在的问题；
+//   2. 没有章号的整单元结论（stale-*、身份规划）——正文补丁无从下手，
+//      服务端会整批拒绝，一条就足以让另外几十条白选。
+function canPick(f: Row) {
+  return isProseFixable(f) && !isUnfinishedFinding(f)
+}
 function selectableRows(g: { unitId: string; rows: Row[] }) {
-  return visibleRows(g).filter((f) => !isUnfinishedFinding(f))
+  return visibleRows(g).filter(canPick)
 }
 const allSelected = (g: { unitId: string; rows: Row[] }) => {
   const rows = selectableRows(g)
@@ -187,6 +204,13 @@ function allLabel(g: { unitId: string; rows: Row[] }) {
   const scoped = filterOf(g.unitId) !== 'all'
   if (allSelected(g)) return scoped ? '取消本章全选' : '取消全选'
   return scoped ? '全选本章' : '全选'
+}
+
+/** 勾选框说明：为什么这一条不能送进「自动修复」。 */
+function pickTitle(f: Row) {
+  if (isUnfinishedFinding(f)) return '「这一章没审完」的标记，不是正文问题：先重新审校'
+  if (!isProseFixable(f)) return '整单元结论，没有对应章节：改正文修不了，需回规划/状态层处理'
+  return '勾选后按这条问题做一次定向修订'
 }
 
 function canRevise(g: { unitId: string }) {
@@ -348,10 +372,10 @@ function archivedAt(c: Candidate) {
               @click="emit('accept', g.revise)">确认落盘</button>
           </div>
         </header>
-        <p class="revise-note">下面是相对现有正文的改动。确认无误再落盘：本次针对的问题会从清单摘掉，未勾选的仍留着可继续修。不认可这次改动就拒绝，正文不变。</p>
+        <p class="revise-note">下面是相对现有正文的改动。确认无误再落盘：正文更新后这份清单归档到历史（未勾选的也不再生效），需要时按新正文重新审校。不认可这次改动就拒绝，正文不变。</p>
         <ChapterDiff :base="g.revise.baseChapters" :revised="g.revise.chapters || []" />
         <details v-if="g.addressedRows.length" class="revise-issues">
-          <summary>本次针对的 {{ g.addressedRows.length }} 条问题（落盘后从清单摘掉）</summary>
+          <summary>本次针对的 {{ g.addressedRows.length }} 条问题</summary>
           <ul>
             <li v-for="f in g.addressedRows" :key="f.id">
               <span class="sev">{{ f.severity === 'blocking' ? '阻断' : '建议' }}</span>
@@ -375,6 +399,7 @@ function archivedAt(c: Candidate) {
           </button>
           <span class="muted">可修 {{ selectableRows(g).length }} 条 · 已选 {{ issueIdsOf(g).length }}</span>
           <span v-if="g.unfinished" class="muted">· {{ g.unfinished }} 条审校不完整，不参与勾选</span>
+          <span v-if="g.unitLevel" class="muted">· {{ g.unitLevel }} 条不属于正文，需回规划/状态层处理</span>
         </div>
         <!-- 没有结论 ≠ 没有问题：截断/分章失败的清单必须先补审，不能当成"审完了"。 -->
         <div v-if="g.verdict === 'unfinished'" class="unfinished-note">
@@ -391,12 +416,16 @@ function archivedAt(c: Candidate) {
         </div>
         <article v-for="f in visibleRows(g)" :key="keyOf(f)" class="finding" :class="f.severity === 'blocking' ? 'blocking' : 'advisory'">
           <div class="finding-head">
-            <label class="pick"><input type="checkbox" :checked="isPicked(f, g.unitId)" @change="toggle(f, g.unitId)" /><span>选中</span></label>
+            <label class="pick" :title="pickTitle(f)">
+              <input type="checkbox" :disabled="!canPick(f)"
+                :checked="isPicked(f, g.unitId)" @change="toggle(f, g.unitId)" /><span>{{ canPick(f) ? '选中' : '不勾选' }}</span>
+            </label>
             <button class="copy-btn" title="复制引用" @click="copyFinding(f)">复制</button>
           </div>
           <div class="finding-meta">
             <span>{{ f.source === 'local_gate' ? '本地硬门' : 'AI 审校' }}</span>
             <span v-if="f.chapter">第 {{ f.chapter }} 章</span>
+            <span v-else>整单元</span>
             <span v-if="f.lens">{{ f.lens }}</span>
             <!-- 多轮并集：命中次数越高越可能是可复现的硬伤，单轮命中的更可能是注意力偏好。 -->
             <span v-if="(f.roundsHit || 0) > 1" class="hits" :title="`多轮审校中有 ${f.roundsHit} 轮独立检出同一处，可复现性高`">×{{ f.roundsHit }}</span>
@@ -407,6 +436,10 @@ function archivedAt(c: Candidate) {
           <h4>{{ f.title }}</h4>
           <p v-if="f.evidence">{{ f.evidence }}</p>
           <p v-if="f.suggestion" class="suggestion">建议：{{ f.suggestion }}</p>
+          <!-- 没有章号的整单元结论：说清它不走「自动修复」，否则作者会以为漏了按钮。 -->
+          <p v-if="!isProseFixable(f) && !isUnfinishedFinding(f)" class="suggestion">
+            这条不属于任何一章正文，逐章修订改不了它：请按上面的建议回规划/状态层处理（人物状态过期 → 在该单元细纲的 state_deltas 里写显式终值）。
+          </p>
         </article>
       </div>
     </section>

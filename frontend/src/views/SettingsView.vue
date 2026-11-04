@@ -170,6 +170,7 @@ const roles = [
   { id: 'outline', label: '细纲', hint: '单元合同的欲望/阻碍/选择与场面节拍，需要结构化输出与因果链。建议 effort medium。', effort: 'medium' },
   { id: 'write', label: '写作', hint: '正文 prose，文风与节奏优先；过长推理会稀释文气。建议文风好的模型，effort low–medium。', effort: 'low' },
   { id: 'review', label: '审校', hint: '找 OOC、连续性、写穿与 AI 味，需要严格比对与挑错能力。建议 effort medium–high。', effort: 'medium' },
+  { id: 'finalize', label: '定稿', hint: '只把已定稿的正文读成结构化账本（摘要、状态迁移、伏笔核对），不创作也不评判。建议便宜模型 + effort low；留空则沿用「审校」那套。', effort: 'low' },
   { id: 'local_edit', label: '局部编辑', hint: '选区润色/改写，改动小、要求贴原文。轻量模型即可，effort low。', effort: 'low' },
 ]
 // Reasoning effort labels. Keep in sync with the backend effort vocabulary

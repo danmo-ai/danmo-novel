@@ -72,8 +72,18 @@ func (s *Service) resolveModel(spec domain.TaskSpec) string {
 		role = domain.StageReview
 	case domain.TaskOutline:
 		role = domain.StageOutline
-	case domain.TaskReview, domain.TaskRevise, domain.TaskFinalize:
+	case domain.TaskReview, domain.TaskRevise:
 		role = domain.StageReview
+	case domain.TaskFinalize:
+		// 定稿是"照抄式提取"：把已经写好的正文读成一张结构化账本，不创作、
+		// 不评判文笔。它跟审校共用一套推理强度是浪费——实测 6 章定稿只产出
+		// 几十行 JSON，completion 却有 3–9k/章，绝大部分是思维链。
+		// 所以给它独立角色；没单独配置时退回审校，老配置的行为不变。
+		if s.Settings.ModelFor(domain.StageFinalize) != "" {
+			role = domain.StageFinalize
+		} else {
+			role = domain.StageReview
+		}
 	case domain.TaskLocalEdit, domain.TaskContinue, domain.TaskExpand, domain.TaskPolish, domain.TaskRewriteSel:
 		role = domain.StageLocalEdit
 	case domain.TaskRewriteEntity:
@@ -127,16 +137,12 @@ func (s *Service) startLocked(ctx context.Context, spec domain.TaskSpec) (domain
 			return domain.Run{}, fmt.Errorf("归档旧审校清单失败: %w", cerr)
 		}
 	}
-	if active, ok, _ := s.Store.FindActiveRun(ctx, spec.BookID, "", spec.UnitID); ok {
-		// 自愈：waiting_accept 的 run 只有靠候选择才能收尾。若候选早已终结
-		// （过期/已拒绝/已接受）而 run 还占着，单元就永久卡死——作者看不到那条
-		// 候选，也就没有任何按钮能解开。这里补一次收尾再重新判断占用。
-		if s.reapIfCandidateClosed(ctx, active) {
-			active, ok, _ = s.Store.FindActiveRun(ctx, spec.BookID, spec.Kind, spec.UnitID)
-		}
-		if ok {
-			return active, activeRunConflict(active, spec)
-		}
+	active, blocked, err := s.blockingRun(ctx, spec)
+	if err != nil {
+		return domain.Run{}, err
+	}
+	if blocked {
+		return active, activeRunConflict(active, spec)
 	}
 	modelID := s.resolveModel(spec)
 
@@ -454,7 +460,17 @@ func (s *Service) PreviewPacket(_ context.Context, spec domain.TaskSpec) (domain
 		if !unit.HasProse {
 			return domain.ContextPacket{}, fmt.Errorf("单元尚无正文，无法定稿")
 		}
-		return contextsvc.BuildFinalizePacket(snap, unit), nil
+		// 预览必须是"真正会发出去的那一份"：定稿先走整单元一次核对，所以这里
+		// 也展示整单元包，而不是旧的单元级概要包。逐章兜底是失败后的退路，预览
+		// 不展示它（它不是默认路径）。
+		chapters := gates.ParseProseChapters(unit.ProseRaw)
+		if len(chapters) == 0 {
+			return domain.ContextPacket{}, fmt.Errorf("单元正文为空，无法定稿")
+		}
+		baseline := contextsvc.BuildReviewBaseline(snap, unit, nil, s.loadReviewChecklist())
+		packet := contextsvc.BuildFinalizeUnitPacket(snap, unit, chapters, baseline)
+		packet.UserPrompt = contextsvc.MergeKnowledgeIntoUserPayload(packet.UserPrompt, s.loadKnowledge(spec.KnowledgeIDs))
+		return packet, nil
 	case domain.TaskStructureReview:
 		return s.Pipeline.PreviewStructuredTask(snap, spec)
 	case domain.TaskRewriteEntity:
@@ -955,11 +971,11 @@ func (s *Service) archiveUnitReviews(ctx context.Context, bookID, unitID string)
 
 // Review findings expire when their source prose is replaced.
 //
-// 修订候选本身不记录"修了哪几条"，但它的 run.Spec.IssueIDs 就是作者勾选的那批，
-// 这是唯一可信的来源——不能靠比对 findings 的 title 或 anchor 去猜。
+// 正文一改，旧清单里的定位（anchor / 引文）就全部失效：按旧正文修，补的是
+// 已经不存在的句子。所以落盘一次就整份归档，勾没勾都一样——"哪些还没修"
+// 不能靠 IssueIDs 之外的猜测保留下来（IssueIDs 只能说明勾了哪些，不能说明
+// 改没改成）。保留下来的 findings 只供历史回看，作者要新的待办就重新审校。
 //
-// 摘完还剩条目的清单保持 open（那些问题没修，作者要继续可操作）；摘空的清单
-// 直接归档成已通过，否则它会永远挂在那里，既不能修也不能通过。
 // 任何一步失败都只跳过：正文已经落盘，不能让清单整理把这次接受退回去。
 func (s *Service) archiveReviewsForProseChange(ctx context.Context, bookID, unitID string) {
 	open, err := s.Store.ListOpenCandidates(ctx, bookID)
@@ -999,6 +1015,35 @@ func (s *Service) Reject(ctx context.Context, candidateID, reason string) error 
 		_ = s.Store.SaveRun(ctx, run)
 	}
 	return nil
+}
+
+// blockingRun returns the active run that must be resolved before spec can
+// start, if any. 同一单元同时只保留一条活跃调用，否则两份候选会互相覆盖。
+//
+// 定向修订是唯一的例外：它的输入就是该单元待接受的审校清单（审校页的
+// 「自动修复」）。那条 waiting_accept 的审校 run 在界面上没有「接受」这个
+// 出口，如果把它当成占用，自动修复对任何有结论的单元都永远起不来。
+// 审校还在跑/排队时没有结论可修，仍然算冲突；其他任务类型互不干扰的规则不变。
+//
+// 顺带自愈：waiting_accept 的 run 只有靠候选择才能收尾。若候选早已终结
+// （过期/已拒绝/已接受）而 run 还占着，单元就永久卡死——作者看不到那条
+// 候选，也就没有任何按钮能解开。这里补一次收尾再继续判断。
+func (s *Service) blockingRun(ctx context.Context, spec domain.TaskSpec) (domain.Run, bool, error) {
+	runs, err := s.Store.ListActiveRuns(ctx, spec.BookID, spec.UnitID)
+	if err != nil {
+		return domain.Run{}, false, err
+	}
+	for _, active := range runs {
+		if s.reapIfCandidateClosed(ctx, active) {
+			continue
+		}
+		// 修订的输入正是这份清单：它不算占用。
+		if spec.Kind == domain.TaskRevise && active.Kind == domain.TaskReview && active.Status == domain.RunWaiting {
+			continue
+		}
+		return active, true, nil
+	}
+	return domain.Run{}, false, nil
 }
 
 // reapIfCandidateClosed closes a waiting_accept run whose candidate is no longer

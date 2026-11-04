@@ -14,6 +14,18 @@ export function isUnfinishedFinding(f: ReviewFinding) {
 }
 
 /**
+ * 能否靠正文补丁修掉：必须落在具体某一章上。
+ *
+ * 角色状态账本（stale-*）、身份规划、审校覆盖标记都是整单元结论，没有章号。
+ * 它们改正文修不了（stale-* 要在细纲 state_deltas 里写终值），送去「自动
+ * 修复」只会在服务端被整批拒绝——一条这样的意见就能让另外几十条白选。
+ * 所以它们不参与勾选，服务端 RunRevise 用的是同一条判据（chapter > 0）。
+ */
+export function isProseFixable(f: ReviewFinding) {
+  return Number(f.chapter) > 0
+}
+
+/**
  * 一条 finding 是否算「阻断」。单一判据，供标题计数与 verdict 共用。
  *
  * 与后端 domain.ReviewVerdict 逐条对应：单轮检出的 blocking 不算（同一章两次

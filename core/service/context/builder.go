@@ -832,38 +832,12 @@ func BuildPlanPacketWithMode(snap domain.BookSnapshot, volume int, mode, instruc
 	}
 }
 
-// BuildFinalizePacket describes the local finalize check (no LLM call).
 func BuildOutlineReviewPacket(snap domain.BookSnapshot, unit domain.UnitInfo) domain.ContextPacket {
 	base := BuildOutlinePacket(snap, unit.Volume, []string{unit.UnitID}, "")
 	blocks := append([]domain.ContextBlock(nil), base.Blocks...)
 	blocks = append(blocks, domain.ContextBlock{ID: "outline-target", Label: "待确认完整细纲", Source: unit.OutlinePath, Content: unit.OutlineRaw, Bytes: len(unit.OutlineRaw)})
 	user := BuildUserPrompt("outline_review", "", map[string]any{"id": snap.Summary.ID, "unitId": unit.UnitID}, "检查这份细纲能否直接执行正文；只输出问题，不改写。", blocks, nil)
 	return domain.ContextPacket{ContractVersion: ContractVersion, TaskKind: domain.TaskOutlineReview, BookID: snap.Summary.ID, UnitID: unit.UnitID, VolumeID: base.VolumeID, Blocks: blocks, Policy: DefaultPolicy(domain.TaskOutlineReview, 1), SystemPrompt: novel.OutlineReviewSystemPrompt(), UserPrompt: user, EstPromptTokens: len([]rune(user)) / 2}
-}
-
-func BuildFinalizePacket(snap domain.BookSnapshot, unit domain.UnitInfo) domain.ContextPacket {
-	policy := DefaultPolicy(domain.TaskFinalize, unit.ChapterTo-unit.ChapterFrom+1)
-	policy.MaxCalls = (unit.ChapterTo - unit.ChapterFrom + 1) * 2
-	policy.AllowOneRepair = true
-	blocks := []domain.ContextBlock{
-		{ID: "outline", Label: "单元合同", Source: unit.OutlinePath, Content: unit.OutlineRaw, Bytes: len(unit.OutlineRaw)},
-		{ID: "prose", Label: "待定稿正文", Source: unit.ProsePath, Content: unit.ProseRaw, Bytes: len(unit.ProseRaw)},
-	}
-	note := "定稿先跑本地硬门，再逐章核对实际摘要、状态与伏笔；接受候选才会统一回写 continuity 账本并将单元标为 finalized。"
-	blocks = append(blocks, domain.ContextBlock{ID: "finalize-note", Label: "定稿说明", Source: "local://finalize", Content: note, Bytes: len(note)})
-	hashes := map[string]string{}
-	for _, b := range blocks {
-		hashes[b.ID+"|"+b.Source] = shortHash(b.Content)
-	}
-	system := "定稿检查：先跑本地硬门，再逐章核对实际账本；候选接受前不写盘。"
-	user := BuildUserPrompt("finalize", "", map[string]any{
-		"id": snap.Summary.ID, "unitId": unit.UnitID, "status": string(unit.Status),
-	}, "对当前单元正文做本地定稿检查。", blocks, nil)
-	return domain.ContextPacket{
-		ContractVersion: ContractVersion, TaskKind: domain.TaskFinalize, BookID: snap.Summary.ID, UnitID: unit.UnitID,
-		InputHashes: hashes, Blocks: blocks, KnowledgeVersion: novel.KnowledgeVersion,
-		EstPromptTokens: 0, Policy: policy, SystemPrompt: system, UserPrompt: user,
-	}
 }
 
 // BuildRewriteEntityPacket builds a single-entity rewrite packet.

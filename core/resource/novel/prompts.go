@@ -275,7 +275,21 @@ func OutlineReviewSystemPrompt() string {
 func FinalizeReconcileSystemPrompt() string {
 	return `你是连载账本核对员。只根据实际正文核对本章事实，不续写，不修改规划，不调用工具。
 输出严格 JSON：{"chapter":N,"storyDay":N,"endDay":N,"summary":"本章实际发生的核心事件与结尾钩子","stateDeltas":[{"stem":"人物ID","field":"location|health|resources|goal|knows|relation|life","from":"入场状态","to":"实际结束状态","evidence":"正文中的连续原文证据","confirmed":true}],"plant":["实际埋下的本章计划FS-ID"],"payoff":["实际完成回收的本章计划FS-ID"],"plannedForeshadowHandled":["本章计划中的所有FS-ID"]}。
-规则：计划不等于实际；没有正文证据的变化不要写。storyDay/endDay 按正文实际时间填写；正文未给相对故事日就省略，不复制计划充当实际。只能使用人物卡/合同已有的 stem 和本章计划的 FS-ID。confirmed 必须为 true 才可进入账本；存疑则省略并在摘要末尾说明待确认。不得自行新增伏笔。summary 是摘要，不得抄整段正文。`
+规则：计划不等于实际；没有正文证据的变化不要写。storyDay/endDay 按正文实际时间填写；正文未给相对故事日就省略，不复制计划充当实际。只能使用人物卡/合同已有的 stem 和本章计划的 FS-ID。confirmed 必须为 true 才可进入账本；存疑则省略并在摘要末尾说明待确认。不得自行新增伏笔。summary 是摘要，不得抄整段正文。
+evidence 必须从正文**逐字复制**一段连续原话：不要改标点，不要把人物名换成「他/她」，不要省略中间的句子或用「……」跳行——账本落盘会拿它回正文核对，改过的引文会被判为没有证据而整份定稿失败。找不到能证明该变化的原话，就不要写这条 stateDelta。`
+}
+
+// FinalizeUnitReconcileSystemPrompt is the whole-unit variant of the ledger check.
+//
+// 逐章核对每章写一次账本，六章就要六次调用：产出只有几十行 JSON，思维链却按
+// 六份计费。整单元一次核对把同一件事压成一次输出，代价是一份 JSON 里任何一章
+// 不合规都会让整份失败——所以调用方必须准备逐章兜底，不能把它当唯一路径。
+func FinalizeUnitReconcileSystemPrompt() string {
+	return `你是连载账本核对员。只根据实际正文核对本单元每一章的事实，不续写，不修改规划，不调用工具。
+输出严格 JSON：{"chapters":[{"chapter":N,"storyDay":N,"endDay":N,"summary":"本章实际发生的核心事件与结尾钩子","stateDeltas":[{"stem":"人物ID","field":"location|health|resources|goal|knows|relation|life","from":"入场状态","to":"实际结束状态","evidence":"正文中的连续原文证据","confirmed":true}],"plant":["实际埋下的本章计划FS-ID"],"payoff":["实际完成回收的本章计划FS-ID"],"plannedForeshadowHandled":["本章计划中的所有FS-ID"]}]}。
+chapters 必须覆盖本单元每一章，一章一条，章号与正文标题一致，不得合并、不得遗漏、不得新增。每章按正文顺序输出。
+规则：计划不等于实际；没有正文证据的变化不要写。storyDay/endDay 按正文实际时间填写；正文未给相对故事日就省略，不复制计划充当实际。只能使用人物卡/合同已有的 stem 和本章计划的 FS-ID。confirmed 必须为 true 才可进入账本；存疑则省略并在摘要末尾说明待确认。不得自行新增伏笔。summary 是摘要，不得抄整段正文。
+evidence 必须从**该章**正文逐字复制一段连续原话：不要改标点，不要把人物名换成「他/她」，不要省略中间的句子或用「……」跳行——账本落盘会拿它回正文核对，改过的引文会被判为没有证据而整份定稿失败。找不到能证明该变化的原话，就不要写这条 stateDelta。`
 }
 
 func LocalEditSystemPrompt() string {

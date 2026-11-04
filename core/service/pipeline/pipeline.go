@@ -242,7 +242,12 @@ func (r *Runner) RunRewriteEntity(ctx context.Context, snap domain.BookSnapshot,
 	})
 }
 
-// RunFinalize performs local gates plus bounded per-chapter actual-ledger reconciliation.
+// RunFinalize performs local gates plus bounded actual-ledger reconciliation.
+//
+// 默认先用一次调用核对整单元账本，失败再退回逐章：前者的产出只有一张表，
+// 后者会把同一份单元基线重复携带 N 遍并按 N 份计费思维链。两条路径的判据
+// 完全一致（回证必须逐字出自该章正文、每章都必须有一条），所以退回逐章
+// 不会放行任何整单元路径拒绝过的内容。
 func (r *Runner) RunFinalize(ctx context.Context, snap domain.BookSnapshot, unit domain.UnitInfo, reviewFindings []domain.ReviewFinding, modelID string) (Result, error) {
 	chapters := gates.ParseProseChapters(unit.ProseRaw)
 	if err := validateChapters("定稿正文", chapters, unit.ChapterFrom, unit.ChapterTo); err != nil {
@@ -262,15 +267,29 @@ func (r *Runner) RunFinalize(ctx context.Context, snap domain.BookSnapshot, unit
 		Chapters: chapters, Findings: local.Findings, CreatedAt: time.Now().UTC(),
 	}
 	var calls []domain.CallRecord
+	// 每章共用的单元级基线：与审校/修订同一套块，逐章调用时前缀才可复用。
+	baseline := contextsvc.BuildReviewBaseline(snap, unit, nil, "")
+	// 整单元一次核对比逐章便宜得多（正文只有一万多字，产出一张表；逐章会把
+	// 同一份基线重复携带 N 遍，思维链也按 N 份计费）。代价是一份 JSON 承载
+	// 全单元：任何一章不合规就整份作废。所以这里先走便宜的路径，失败就退到
+	// 逐章——逐章路径的失败面只有一章，是兜底而不是主路径。
+	actuals, unitCalls, unitErr := r.reconcileUnit(ctx, snap, unit, chapters, baseline, modelID)
+	calls = append(calls, unitCalls...)
+	if unitErr == nil {
+		cand.ActualChapters = actuals
+		// 预算按实际走过的路径申报：整单元成功就只花了 2 次额度，报 2+N*2 会让
+		// 界面显示"调用 1/14 次"，作者无从判断这条路径到底贵不贵。
+		return Result{Candidate: cand, Calls: calls, LocalGate: local, Packet: domain.ContextPacket{TaskKind: domain.TaskFinalize, BookID: snap.Summary.ID, UnitID: unit.UnitID, Policy: domain.CallPolicy{MaxCalls: 2, AllowOneRepair: true, TimeoutSec: 600}}}, nil
+	}
 	for _, ch := range chapters {
-		actual, recs, err := r.reconcileChapter(ctx, snap, unit, ch, modelID)
+		actual, recs, err := r.reconcileChapter(ctx, snap, unit, ch, baseline, modelID)
 		calls = append(calls, recs...)
 		if err != nil {
-			return Result{Candidate: cand, Calls: calls}, err
+			return Result{Candidate: cand, Calls: calls}, fmt.Errorf("整单元核对未通过（%v），逐章重试又失败：%w", unitErr, err)
 		}
 		cand.ActualChapters = append(cand.ActualChapters, actual)
 	}
-	return Result{Candidate: cand, Calls: calls, LocalGate: local, Packet: domain.ContextPacket{TaskKind: domain.TaskFinalize, BookID: snap.Summary.ID, UnitID: unit.UnitID, Policy: domain.CallPolicy{MaxCalls: len(chapters) * 2, AllowOneRepair: true, TimeoutSec: 600}}}, nil
+	return Result{Candidate: cand, Calls: calls, LocalGate: local, Packet: domain.ContextPacket{TaskKind: domain.TaskFinalize, BookID: snap.Summary.ID, UnitID: unit.UnitID, Policy: domain.CallPolicy{MaxCalls: 2 + len(chapters)*2, AllowOneRepair: true, TimeoutSec: 600}}}, nil
 }
 
 // generateChapter produces one chapter, returning the parsed draft.

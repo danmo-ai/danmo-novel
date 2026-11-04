@@ -302,6 +302,35 @@ func (s *Store) FindActiveRun(ctx context.Context, bookID string, kind domain.Ta
 	return domain.Run{}, false, nil
 }
 
+// ListActiveRuns returns every pending/running/waiting_accept run of one unit.
+//
+// 一个单元可能同时挂着两条活跃 run（例如待接受的审校清单 + 正在跑的定向修订：
+// 修订的输入就是那份清单，两者并不互斥）。只看第一条会漏判，所以要全部返回。
+func (s *Store) ListActiveRuns(ctx context.Context, bookID, unitID string) ([]domain.Run, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT payload FROM runs WHERE book_id = ? AND status IN ('pending','running','waiting_accept')`,
+		bookID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]domain.Run, 0, 1)
+	for rows.Next() {
+		var payload string
+		if err := rows.Scan(&payload); err != nil {
+			return nil, err
+		}
+		var run domain.Run
+		if err := json.Unmarshal([]byte(payload), &run); err != nil {
+			continue
+		}
+		if run.Spec.UnitID == unitID {
+			out = append(out, run)
+		}
+	}
+	return out, rows.Err()
+}
+
 // CompleteAcceptance persists candidate and run terminal states atomically.
 func (s *Store) CompleteAcceptance(ctx context.Context, c domain.Candidate, run domain.Run) error {
 	s.mu.Lock()

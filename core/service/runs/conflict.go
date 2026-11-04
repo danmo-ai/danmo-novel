@@ -45,7 +45,11 @@ func taskKindLabel(kind domain.TaskKind) string {
 // 会互相覆盖。但旧实现只回一句 `active run already exists: <uuid>`——作者既
 // 不知道是谁占着，也不知道该等还是该去点哪里，于是看起来"莫名其妙失败"。
 func activeRunConflict(active domain.Run, spec domain.TaskSpec) error {
-	label := taskKindLabel(spec.Kind)
+	// label 说的是「谁占着单元」，只能取活跃 run 自己的类型。用请求的类型
+	// 会把待接受的审校清单说成「待处理的修订结果」，作者就会去界面找一条
+	// 根本不存在的修订候选——提示比不提示更糟。
+	label := taskKindLabel(active.Kind)
+	wanted := taskKindLabel(spec.Kind)
 	unit := strings.TrimSpace(spec.UnitID)
 	target := unit
 	if target == "" {
@@ -64,7 +68,7 @@ func activeRunConflict(active domain.Run, spec domain.TaskSpec) error {
 		// waiting_accept 才是真正会一直挡住的那个：候选不处理就永远占着。
 		// 审校清单在界面上只有「自动修复」和「拒绝」两个出口，所以提示必须
 		// 说这两个真实存在的动作，否则作者被告知"去通过"却找不到按钮。
-		if spec.Kind == domain.TaskReview {
+		if active.Kind == domain.TaskReview {
 			return fmt.Errorf(
 				"单元 %s 已有一份待处理的审校清单（候选 %s）：在审校页勾选后点「自动修复」，"+
 					"或点「拒绝」丢弃；重新审校会先归档旧清单再重审",
@@ -72,15 +76,15 @@ func activeRunConflict(active domain.Run, spec domain.TaskSpec) error {
 		}
 		return fmt.Errorf(
 			"单元 %s 已有一份待处理的%s结果（%s，候选 %s），接受或拒绝它之后才能再发起%s",
-			target, label, diffStatus(active.Status), shortID(active.CandidateID), label)
+			target, label, diffStatus(active.Status), shortID(active.CandidateID), wanted)
 	case domain.RunRunning, domain.RunPending:
 		return fmt.Errorf(
 			"单元 %s 的%s调用还在进行中（%s%s），等它结束或取消后再发起%s",
-			target, label, diffStatus(active.Status), elapsed, label)
+			target, label, diffStatus(active.Status), elapsed, wanted)
 	}
 	return fmt.Errorf(
 		"单元 %s 已有一个%s调用（%s）占用，处理完才能发起新的%s",
-		target, label, diffStatus(active.Status), label)
+		target, label, diffStatus(active.Status), wanted)
 }
 
 // diffStatus maps a run status to a phrase that reads naturally in 中文.

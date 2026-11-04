@@ -826,6 +826,79 @@ func TestSupersedeReviewArchivesOpenListAndStarts(t *testing.T) {
 	}
 }
 
+// 「自动修复」读取的正是该单元待接受的审校清单：那条 waiting_accept 的
+// 审校 run 是修订的输入，不是占用。按「一单元只能有一条活跃 run」判，
+// 任何有结论的单元都点不动「自动修复」，作者只会收到一句指向不存在的
+// 修订候选的冲突提示。
+func TestBlockingRunAllowsReviseOverOpenReviewList(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("NOVEL_HOME", home)
+	settings, err := config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	db, err := sqlite.Open(filepath.Join(home, "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+	const bookID, unitID = "book", "v01-U1"
+	reviewRun := domain.Run{
+		ID: "run-review", BookID: bookID, Kind: domain.TaskReview, Status: domain.RunWaiting,
+		Spec:        domain.TaskSpec{Kind: domain.TaskReview, BookID: bookID, UnitID: unitID},
+		CandidateID: "review-cand", CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	}
+	if err := db.SaveRun(ctx, reviewRun); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SaveCandidate(ctx, domain.Candidate{
+		ID: "review-cand", RunID: reviewRun.ID, BookID: bookID, Kind: domain.TaskReview,
+		Status: domain.CandidateOpen, UnitID: unitID,
+		Findings: []domain.ReviewFinding{{ID: "f1", Severity: "blocking", Chapter: 1, Title: "节奏太平"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	svc := New(db, settings, llm.NewMock())
+	revise := domain.TaskSpec{Kind: domain.TaskRevise, BookID: bookID, UnitID: unitID, IssueIDs: []string{"f1"}}
+	if active, blocked, err := svc.blockingRun(ctx, revise); err != nil {
+		t.Fatal(err)
+	} else if blocked {
+		t.Fatalf("修订的输入就是这份清单，不该被它挡住：%s", active.Kind)
+	}
+
+	// 审校还在跑时没有结论可修：仍然算占用。
+	reviewRun.Status = domain.RunRunning
+	if err := db.SaveRun(ctx, reviewRun); err != nil {
+		t.Fatal(err)
+	}
+	if _, blocked, err := svc.blockingRun(ctx, revise); err != nil {
+		t.Fatal(err)
+	} else if !blocked {
+		t.Fatal("review still running must block revise")
+	}
+
+	// 已有一条待落盘的修订时，再点「自动修复」必须被挡住。
+	reviewRun.Status = domain.RunWaiting
+	if err := db.SaveRun(ctx, reviewRun); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SaveRun(ctx, domain.Run{
+		ID: "run-revise", BookID: bookID, Kind: domain.TaskRevise, Status: domain.RunWaiting,
+		Spec:      domain.TaskSpec{Kind: domain.TaskRevise, BookID: bookID, UnitID: unitID},
+		CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, blocked, err := svc.blockingRun(ctx, revise); err != nil {
+		t.Fatal(err)
+	} else if !blocked {
+		t.Fatal("an open revise candidate must block another revise")
+	}
+}
+
 // 作者文档即使被显式指定，也不能进提示词。picker 已隐藏它们，
 // 这里是执行侧的第二道闸——防止旧前端、MCP 或手写 spec 把它带进来。
 func TestLoadKnowledgeSkipsAuthorDocs(t *testing.T) {

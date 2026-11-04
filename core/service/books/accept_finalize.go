@@ -36,8 +36,9 @@ func ApplyFinalizationLedger(root string, unit domain.UnitInfo, chapters []domai
 			}
 		}
 		for _, d := range actual[i].StateDeltas {
-			if d.Confirmed && !strings.Contains(ch.Body, d.Evidence) {
-				return fmt.Errorf("第 %d 章状态迁移 %s.%s 没有逐字正文证据", ch.Chapter, d.Stem, d.Field)
+			if d.Confirmed && !containsVerbatim(ch.Body, d.Evidence, d.Stem) {
+				return fmt.Errorf("第 %d 章状态迁移 %s.%s 没有逐字正文证据：%s（候选中的引文在本章正文里找不到；可按正文重新生成一次定稿）",
+					ch.Chapter, d.Stem, d.Field, clipRunes(strings.TrimSpace(d.Evidence), 60))
 			}
 			if domain.CanonicalStateField(d.Field) == "" || domain.CanonicalStateField(d.Field) == "role_title" {
 				return fmt.Errorf("第 %d 章实际账本字段 %s 不合法", ch.Chapter, d.Field)
@@ -159,4 +160,93 @@ func clipRunes(s string, max int) string {
 		return s
 	}
 	return string(r[:max]) + "…"
+}
+
+// ContainsVerbatim reports whether evidence really quotes the body.
+// Exported so the generation path can pre-check a whole-unit ledger before the
+// author ever clicks accept: the accept path is the authority, but a ledger that
+// cannot pass it should never reach the author as a candidate.
+func ContainsVerbatim(body, evidence, stem string) bool {
+	return containsVerbatim(body, evidence, stem)
+}
+
+// containsVerbatim reports whether evidence really quotes the body.
+//
+// 「逐字」是语义要求，不是排版要求。模型抄回证时常跨段落，而正文在段间有空行、
+// 行首缩进和行尾空白；按字节比较会把"只差一个换行"判成没有证据，整份定稿因此
+// 失败，作者在预览里看不出任何内容差异，只能重跑一遍再赌一次。
+//
+// 所以先按原文比，再按忽略空白比：字符本身仍必须逐字一致、顺序不变，不做模糊
+// 匹配——回证必须是正文里真实存在的一句话，只是允许版式不同。
+func containsVerbatim(body, evidence, stem string) bool {
+	if strings.TrimSpace(evidence) == "" {
+		return false
+	}
+	if strings.Contains(body, evidence) {
+		return true
+	}
+	squeezedBody := squeezeSpace(body)
+	if strings.Contains(squeezedBody, squeezeSpace(evidence)) {
+		return true
+	}
+	return leadingSubjectPronounMatches(squeezedBody, evidence, stem)
+}
+
+// leadingSubjectPronounMatches 处理"引文把人物名换成了代词"这一类差异。
+//
+// 好看的正文常常写「温念慈把信封接过来」，模型抄回证时写成「她把信封接过来」——
+// 它确实在引用原文，只是把主语换成了代词。按逐字比较会把这种正常的引文判成
+// 伪造：整份定稿失败，而候选里其余几十条迁移都是对的，作者只能重跑一遍。
+//
+// 只容忍**句首主语**这一处差异：把引文开头的主语（人物名或代词）摘掉后，剩余
+// 部分必须逐字出现在正文里，且至少 12 字——太短的片段（"他走了"）可以到处撞上，
+// 不能当作证据。正文其余部分一个字都不许变（不做模糊匹配），所以把句子改写过的
+// 引文仍然过不了。
+//
+// 这条检查证明的是"这段文字确实在正文里"，不负责判断它是不是在说这个人；
+// 逐字命中的那一路本来也不判归属。
+func leadingSubjectPronounMatches(squeezedBody, evidence, stem string) bool {
+	rest, ok := stripLeadingSubject(evidence, stem)
+	if !ok {
+		return false
+	}
+	rest = squeezeSpace(rest)
+	if utf8.RuneCountInString(rest) < 12 {
+		return false
+	}
+	return strings.Contains(squeezedBody, rest)
+}
+
+// stripLeadingSubject removes a leading subject token (the stem name or a
+// pronoun) so the rest of the quote can be matched against the body.
+func stripLeadingSubject(evidence, stem string) (string, bool) {
+	s := strings.TrimLeft(evidence, " \t\n\r\u3000")
+	if stem != "" && strings.HasPrefix(s, stem) {
+		return strings.TrimLeft(s[len(stem):], " \t\n\r\u3000"), true
+	}
+	for _, p := range subjectPronouns {
+		if strings.HasPrefix(s, p) {
+			return strings.TrimLeft(s[len(p):], " \t\n\r\u3000"), true
+		}
+	}
+	return "", false
+}
+
+// subjectPronouns are the tokens a model substitutes for a character name at the
+// head of a quoted sentence.
+var subjectPronouns = []string{"他们", "她们", "它们", "我们", "你们", "她", "他", "它", "我", "你"}
+
+// squeezeSpace drops layout whitespace (including the full-width space) so two
+// renderings of the same sentence compare equal.
+func squeezeSpace(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		switch r {
+		case ' ', '\t', '\n', '\r', '\u3000', '\u00a0':
+			continue
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
 }

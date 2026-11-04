@@ -60,6 +60,114 @@ func TestFinalizationSummaryUsesActualRowsAndDoesNotDuplicate(t *testing.T) {
 	}
 }
 
+// 回证跨段落时，模型抄的引文往往把正文的段间空行省掉。按字节比较会把
+// 「只差一个换行」判成没有证据，整份定稿失败，而预览里看不出任何内容差异。
+// 逐字要求的是字符一致，不是版式一致。
+func TestFinalizationAcceptsEvidenceThatIgnoresParagraphBreaks(t *testing.T) {
+	root, unit := setupFinalizeBook(t)
+	chapters := []domain.ChapterDraft{
+		{Chapter: 1, Title: "点名", Body: "林尘握住刀柄。\n\n他被点名上场。"},
+		{Chapter: 2, Title: "爆发", Body: "名额只剩一个。\n\n他燃烧代价换来一次爆发。"},
+	}
+	actual := []domain.ChapterActual{
+		{Chapter: 1, Summary: "林尘被点名上场"},
+		{Chapter: 2, Summary: "林尘付代价完成试炼", StateDeltas: []domain.ChapterActualDelta{{
+			Stem: "linchen", Field: "location", From: "外门", To: "山门",
+			Evidence: "名额只剩一个。他燃烧代价换来一次爆发。", Confirmed: true,
+		}}},
+	}
+	if err := ApplyFinalizationLedger(root, unit, chapters, actual, nil); err != nil {
+		t.Fatalf("blank line between paragraphs must not fail the evidence check: %v", err)
+	}
+}
+
+// 真的没有引文就仍然必须拒绝：容错只针对空白，不针对内容。
+func TestFinalizationStillRejectsFabricatedEvidence(t *testing.T) {
+	root, unit := setupFinalizeBook(t)
+	chapters := []domain.ChapterDraft{
+		{Chapter: 1, Title: "点名", Body: "林尘握住刀柄。\n\n他被点名上场。"},
+		{Chapter: 2, Title: "爆发", Body: "名额只剩一个。"},
+	}
+	actual := []domain.ChapterActual{
+		{Chapter: 1, Summary: "林尘被点名上场"},
+		{Chapter: 2, Summary: "林尘付代价完成试炼", StateDeltas: []domain.ChapterActualDelta{{
+			Stem: "linchen", Field: "location", From: "外门", To: "山门",
+			Evidence: "他走进山门大殿。", Confirmed: true,
+		}}},
+	}
+	err := ApplyFinalizationLedger(root, unit, chapters, actual, nil)
+	if err == nil {
+		t.Fatal("fabricated evidence must still be rejected")
+	}
+	if !strings.Contains(err.Error(), "没有逐字正文证据") || !strings.Contains(err.Error(), "走进山门大殿") {
+		t.Fatalf("error should name the evidence it could not find: %v", err)
+	}
+}
+
+// 引文把人物名换成代词（「温念慈把信封接过来」→「她把信封接过来」）仍然是
+// 同一句话的引用。按逐字比较会把它判成伪造，整份定稿失败，而候选里其余几十条
+// 迁移都是对的——作者只能重跑一次 LLM 定稿。
+func TestFinalizationAcceptsPronounForSubjectName(t *testing.T) {
+	root, unit := setupFinalizeBook(t)
+	chapters := []domain.ChapterDraft{
+		{Chapter: 1, Title: "点名", Body: "林尘握住刀柄。"},
+		{Chapter: 2, Title: "爆发", Body: "林尘把信封接过来，胳膊上的纱布扯了一下，她换成左手托着。"},
+	}
+	actual := []domain.ChapterActual{
+		{Chapter: 1, Summary: "林尘被点名上场"},
+		{Chapter: 2, Summary: "林尘拿到信封", StateDeltas: []domain.ChapterActualDelta{{
+			Stem: "linchen", Field: "resources", From: "未持信封", To: "持有信封",
+			Evidence: "她把信封接过来，胳膊上的纱布扯了一下，她换成左手托着。", Confirmed: true,
+		}}},
+	}
+	if err := ApplyFinalizationLedger(root, unit, chapters, actual, nil); err != nil {
+		t.Fatalf("pronoun substitution for the subject must not fail the evidence check: %v", err)
+	}
+}
+
+// 但代词换主语不能变成"只要句子像就行"：摘掉主语后的片段必须逐字出现在正文里。
+func TestFinalizationRejectsPronounEvidenceThatDoesNotExist(t *testing.T) {
+	root, unit := setupFinalizeBook(t)
+	chapters := []domain.ChapterDraft{
+		{Chapter: 1, Title: "点名", Body: "林尘握住刀柄。"},
+		{Chapter: 2, Title: "爆发", Body: "林尘把信封接过来，胳膊上的纱布扯了一下，她换成左手托着。"},
+	}
+	actual := []domain.ChapterActual{
+		{Chapter: 1, Summary: "林尘被点名上场"},
+		{Chapter: 2, Summary: "林尘拿到信封", StateDeltas: []domain.ChapterActualDelta{{
+			Stem: "linchen", Field: "resources", From: "未持信封", To: "持有信封",
+			Evidence: "她把信封塞进怀里，胳膊上的纱布渗了血，她咬牙忍着。", Confirmed: true,
+		}}},
+	}
+	err := ApplyFinalizationLedger(root, unit, chapters, actual, nil)
+	if err == nil {
+		t.Fatal("a rewritten quote must still be rejected")
+	}
+	if !strings.Contains(err.Error(), "没有逐字正文证据") {
+		t.Fatalf("error=%v", err)
+	}
+}
+
+// 摘掉主语后的剩余部分太短（碎片到处撞上）时不算证据：拦的是"编一个短句刚好
+// 撞上正文某处"，这是代词容错唯一可能被滥用的口子。
+func TestFinalizationRejectsTooShortPronounEvidence(t *testing.T) {
+	root, unit := setupFinalizeBook(t)
+	chapters := []domain.ChapterDraft{
+		{Chapter: 1, Title: "点名", Body: "林尘握住刀柄。"},
+		{Chapter: 2, Title: "爆发", Body: "林尘把信封接过来。"},
+	}
+	actual := []domain.ChapterActual{
+		{Chapter: 1, Summary: "林尘被点名上场"},
+		{Chapter: 2, Summary: "林尘拿到信封", StateDeltas: []domain.ChapterActualDelta{{
+			Stem: "linchen", Field: "resources", From: "未持信封", To: "持有信封",
+			Evidence: "她把信封接过来。", Confirmed: true,
+		}}},
+	}
+	if err := ApplyFinalizationLedger(root, unit, chapters, actual, nil); err == nil {
+		t.Fatal("a 6-rune fragment must not count as verbatim evidence")
+	}
+}
+
 func TestVolumeSummaryProjectionPrefersActualAndKeepsLegacyEvents(t *testing.T) {
 	root := t.TempDir()
 	writeOutline(t, root, "v01-U1", "unit_id: v01-U1\n")

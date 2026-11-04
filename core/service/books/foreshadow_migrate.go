@@ -261,6 +261,18 @@ func RenderForeshadowAssignments(root string, assignments []domain.ForeshadowAss
 		if !ok {
 			return nil, fmt.Errorf("伏笔 %s 不存在", a.ID)
 		}
+		// 本次调用可能同时给出单元与章号，而 registry 是写入前的快照。章级校验
+		// 必须看"这次写下去之后的归属"，否则第一次给某条伏笔补章号（登记表里
+		// plant_unit 还空着，全是注释里写明的常态）会被判成"尚未分配埋入单元"，
+		// 整份细纲在最后一步失败，而前一步刚把单元写进 out。
+		plantUnit := a.PlantUnit
+		if plantUnit == "" {
+			plantUnit = f.PlantUnit
+		}
+		payoffUnit := a.PayoffUnit
+		if payoffUnit == "" {
+			payoffUnit = f.PayoffUnit
+		}
 		if a.PlantUnit != "" {
 			if !unitInVolume(a.PlantUnit, f.PlantVolume) {
 				return nil, fmt.Errorf("伏笔 %s 的埋入单元不在父级卷内", a.ID)
@@ -274,14 +286,14 @@ func RenderForeshadowAssignments(root string, assignments []domain.ForeshadowAss
 			out, _ = setForeshadowField(out, a.ID, "payoff_unit", a.PayoffUnit)
 		}
 		if a.PlantChapter > 0 {
-			if f.PlantUnit == "" {
-				return nil, fmt.Errorf("伏笔 %s 尚未分配埋入单元", a.ID)
+			if plantUnit == "" {
+				return nil, fmt.Errorf("伏笔 %s 尚未分配埋入单元，无法只给章号（需要同时给出埋入单元）", a.ID)
 			}
 			out, _ = setForeshadowField(out, a.ID, "plant_chapter", strconv.Itoa(a.PlantChapter))
 		}
 		if a.PayoffChapter > 0 {
-			if f.PayoffUnit == "" {
-				return nil, fmt.Errorf("伏笔 %s 尚未分配回收单元", a.ID)
+			if payoffUnit == "" {
+				return nil, fmt.Errorf("伏笔 %s 尚未分配回收单元，无法只给章号（需要同时给出回收单元）", a.ID)
 			}
 			out, _ = setForeshadowField(out, a.ID, "payoff_chapter", strconv.Itoa(a.PayoffChapter))
 		}
@@ -407,7 +419,14 @@ func setForeshadowField(raw, id, field, value string) (string, bool) {
 		}
 	}
 	insert := []string{"- " + field + ": " + value}
-	lines = append(lines[:end], append(insert, lines[end:]...)...)
+	// 追加到块内最后一个字段之后，而不是下一个标题之前：实体块末尾通常有空行，
+	// 直接插在 end 会把新字段落到空行下面，读起来像另一段，回写后这份 canon
+	// 文件就永久带一处"孤立的字段"。校验能过，但没人愿意读。
+	at := end
+	for at > start+1 && strings.TrimSpace(lines[at-1]) == "" {
+		at--
+	}
+	lines = append(lines[:at], append(insert, lines[at:]...)...)
 	return strings.Join(lines, "\n"), true
 }
 

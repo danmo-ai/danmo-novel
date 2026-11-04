@@ -52,6 +52,7 @@ func Load() (*Manager, error) {
 			{Role: domain.StageOutline, ModelID: ""},
 			{Role: domain.StageWrite, ModelID: ""},
 			{Role: domain.StageReview, ModelID: ""},
+			{Role: domain.StageFinalize, ModelID: ""},
 			{Role: domain.StageLocalEdit, ModelID: ""},
 		},
 		LLMHTTPTimeoutSec: 600,

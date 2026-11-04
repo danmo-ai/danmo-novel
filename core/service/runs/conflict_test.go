@@ -67,3 +67,22 @@ func TestActiveRunConflictHandlesWholeBookTarget(t *testing.T) {
 		t.Fatalf("dangling unit placeholder: %s", msg)
 	}
 }
+
+// 提示里的类型必须指认「谁占着单元」，不能照抄作者想发起的任务。
+// 旧实现把待接受的审校清单说成"待处理的修订结果"，作者于是去找一条
+// 根本不存在的修订候选，越找越乱。
+func TestActiveRunConflictNamesTheBlockingKind(t *testing.T) {
+	active := domain.Run{
+		Kind: domain.TaskWrite, Status: domain.RunWaiting,
+		CandidateID: "12345678-0000-0000-0000-000000000000",
+	}
+	msg := activeRunConflict(active, domain.TaskSpec{Kind: domain.TaskReview, UnitID: "v01-U2"}).Error()
+	for _, want := range []string{"待处理的正文结果", "再发起审校", "12345678"} {
+		if !strings.Contains(msg, want) {
+			t.Fatalf("message missing %q:\n%s", want, msg)
+		}
+	}
+	if strings.Contains(msg, "待处理的审校结果") {
+		t.Fatalf("message must name the blocking run, not the requested one:\n%s", msg)
+	}
+}
