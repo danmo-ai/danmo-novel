@@ -606,6 +606,9 @@ func (r *Runner) chat(ctx context.Context, modelID, system, user string, policy 
 	}
 	resp, err := r.LLM.Chat(ctx, req)
 	rec.DurationMs = time.Since(start).Milliseconds()
+	// 每次调用后都报一次进度（即使失败）：这是上层唯一能区分「在干活」和
+	// 「goroutine 已死」的信号。
+	r.reportProgress()
 	// 停止原因先记下来：截断判定只看这个字段，不看我们发出去的额度。
 	rec.FinishReason = resp.FinishReason
 	if resp.Usage != nil {

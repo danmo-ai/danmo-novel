@@ -456,7 +456,7 @@ func (s *Service) PreviewPacket(_ context.Context, spec domain.TaskSpec) (domain
 			rounds = 1
 		}
 		packet.Policy.MaxCalls = len(chapters) * rounds * 2
-		packet.UserPrompt = contextsvc.MergeKnowledgeIntoUserPayload(packet.UserPrompt, s.loadKnowledge(spec.KnowledgeIDs))
+		// 参考知识统一在 PreviewPacket 外层追加，避免两处各加一遍变成重复引用。
 		return packet, nil
 	case domain.TaskFinalize:
 		unit, ok := findUnit(snap, spec.UnitID)
@@ -475,7 +475,6 @@ func (s *Service) PreviewPacket(_ context.Context, spec domain.TaskSpec) (domain
 		}
 		baseline := contextsvc.BuildReviewBaseline(snap, unit, nil, s.loadReviewChecklist())
 		packet := contextsvc.BuildFinalizeUnitPacket(snap, unit, chapters, baseline)
-		packet.UserPrompt = contextsvc.MergeKnowledgeIntoUserPayload(packet.UserPrompt, s.loadKnowledge(spec.KnowledgeIDs))
 		return packet, nil
 	case domain.TaskStructureReview:
 		return s.Pipeline.PreviewStructuredTask(snap, spec)
@@ -540,6 +539,62 @@ func (s *Service) RecoverInterrupted(ctx context.Context) (int, error) {
 	return n, nil
 }
 
+// touchRun 记录一次进度心跳（调用数 + 更新时间）。
+//
+// 只写这两个字段，不覆盖别的：run 的其余字段此刻还只在内存里（execute 结束时
+// 才一起写回），所以这里必须重新读一次再改，避免把已经开始执行的事实冲掉。
+func (s *Service) touchRun(ctx context.Context, run domain.Run, callsUsed int) {
+	cur, err := s.Store.GetRun(ctx, run.ID)
+	if err != nil {
+		return
+	}
+	if cur.Status != domain.RunRunning && cur.Status != domain.RunPending {
+		// 已经被取消/回收：不要再把状态改回 running。
+		return
+	}
+	cur.CallsUsed = callsUsed
+	cur.UpdatedAt = time.Now().UTC()
+	_ = s.Store.SaveRun(ctx, cur)
+}
+
+// ReapOrphans 回收「状态还写着运行中、但本进程里已经没有任何 goroutine 在推进」
+// 的 run。
+//
+// 判据只有一条：`s.cancels` 里有没有它。execute 在结束时必然执行 defer 删除该
+// 条目，所以不在表里的 running 必然是孤儿（进程内没有任何东西会再改它）。它留着
+// 的后果是 blockingRun 会让同一单元的所有新任务都被拒，只能靠重启进程解开——
+// 这条路径以前就真实发生过几次。
+//
+// 注意不能按 updatedAt 的年龄判：心跳之前的实现里 updatedAt 全程不变，一个合法
+// 的长任务（6 章正文 ≈ 40 分钟）和死任务看起来一模一样。用内存里的活体表才准。
+func (s *Service) ReapOrphans(ctx context.Context) (int, error) {
+	list, err := s.Store.ListUnfinishedRuns(ctx)
+	if err != nil {
+		return 0, err
+	}
+	n := 0
+	for _, run := range list {
+		// 给启动留一点余量：startLocked 登记 cancels 与这里读表可能同拍。
+		if time.Since(run.CreatedAt) < 30*time.Second {
+			continue
+		}
+		s.mu.Lock()
+		_, live := s.cancels[run.ID]
+		s.mu.Unlock()
+		if live {
+			continue
+		}
+		run.Status = domain.RunFailed
+		run.Error = "任务在执行中途失去推进（进程内已无对应执行体），已自动回收；请重新发起"
+		run.UpdatedAt = time.Now().UTC()
+		if err := s.Store.SaveRun(ctx, run); err != nil {
+			return n, err
+		}
+		n++
+	}
+	return n, nil
+}
+
 func (s *Service) Accept(ctx context.Context, cmd domain.AcceptCommand) (domain.Candidate, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -593,9 +648,14 @@ func (s *Service) acceptLocked(ctx context.Context, cmd domain.AcceptCommand) (d
 		if empty == len(cand.Chapters) {
 			return domain.Candidate{}, fmt.Errorf("cannot accept all-empty chapters")
 		}
-		if err := books.WriteUnitProse(root, cand.UnitID, cand.Chapters); err != nil {
-			return domain.Candidate{}, err
-		}
+		// 这里曾经先调一次 books.WriteUnitProse 把正文写盘，再做后面的校验。
+		// 于是「被拒绝的接受」照样改了磁盘：一次带阻断门禁的候选会先覆盖正文，
+		// 然后返回错误、状态不推进、候选留在 open。后果有两层：
+		//   1. 单元变成「有正文但状态还是 accepted」，下一次运行看到 hasProse 就
+		//      跳过写作，而那条 open 候选又挡住了审校——流水线永久卡死。
+		//   2. 修订候选被拒时，已定稿的正文其实已经被换掉了，属于静默数据损坏。
+		// 校验全部前置；落盘只走下面的 RenderProseAndStatus + AtomicWriteFiles，
+		// 那里本来就把正文与状态一起原子写入，不需要任何提前落盘。
 		unit, ok := findUnit(snap, cand.UnitID)
 		validWrite := ok && (unit.Status == domain.UnitAccepted || unit.Status == domain.UnitDrafted || unit.Status == domain.UnitReviewed || unit.Status == domain.UnitFinalized)
 		validRevise := ok && (unit.Status == domain.UnitDrafted || unit.Status == domain.UnitReviewed || unit.Status == domain.UnitFinalized)

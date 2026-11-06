@@ -118,6 +118,20 @@ func validateUnitLedger(got []domain.ChapterActual, want []int, bodies map[int]s
 // 见 validateUnitLedger 的说明。
 func validateChapterActual(chapter int, a domain.ChapterActual, body string) ([]domain.ReviewFinding, error) {
 	var findings []domain.ReviewFinding
+	// 自洽检查：账本自己声明了 plant/payoff 的伏笔，必须同时出现在
+	// plannedForeshadowHandled 里。
+	//
+	// 这条以前只在**接受**时为真（books.StateFromActual 会拦），生成阶段不查，
+	// 于是模型可以产出一份自相矛盾的账本：ch134 写着 plant: [FS-12]，却没把
+	// FS-12 列进 plannedForeshadowHandled。结果是整单元调用"成功"、候选永久
+	// 接受不了——一次约 1.3 万 output token 白花，而修复轮本该能在生成时就改掉
+	// （定稿包有 2 次预算）。
+	for _, id := range append(append([]string{}, a.Plant...), a.Payoff...) {
+		if !containsString(a.PlannedForeshadowHandled, id) {
+			return nil, fmt.Errorf("第 %d 章账本声明了伏笔 %s，但 plannedForeshadowHandled 里没有它（两者必须一致）",
+				chapter, id)
+		}
+	}
 	for _, d := range a.StateDeltas {
 		// 身份归时间线所有，实际账本不能替它记账：判据复用统一入口，不认字面量。
 		if domain.CanonicalStateField(d.Field) == "" || domain.OwnedByIdentityTimeline(d.Field) {

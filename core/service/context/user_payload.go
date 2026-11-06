@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/danmo-ai/danmo-novel/core/domain"
+	"github.com/danmo-ai/danmo-novel/core/service/books"
 	"github.com/danmo-ai/danmo-novel/core/service/gates"
 )
 
@@ -187,6 +188,76 @@ func BuildUserPrompt(task, mode string, book map[string]any, instruction string,
 // 把它留在 documents 里，公共前缀就只能停在 documents 开头——实测单章命中
 // 率 5%，等于每章把整份上下文按全价重算一遍。
 const ChapterBeatsKey = "chapterBeats"
+
+// WriteChapterExtra 拼装「只对这一章成立」的 payload 尾部字段。
+//
+// 抽出来是为了让真实调用与预览走同一份代码：这些字段按章变化，一旦中途分叉，
+// documents 之后的全部内容（人物卡、连续性、风格、整份参考知识）都无法命中
+// 前缀缓存；而两处各拼一份时，还会出现「预览漏了上一章尾部」这种看起来像
+// 数据缺失的假象——实测就是这么被误判的。
+//
+// generated 是本次已经写出的章节（按序）。第 N 章取它里面的第 N-1 章；
+// 取不到时回退到本单元正文、再回退到上一单元正文。
+func WriteChapterExtra(
+	snap domain.BookSnapshot, unit domain.UnitInfo, ch, target, floor, ceil int,
+	beats string, generated []domain.ChapterDraft,
+) map[string]any {
+	extra := map[string]any{
+		"chapter": ch,
+		"chapterRule": fmt.Sprintf(
+			"本次只写第 %d 章，chapters 数组只放这一章。本章为 %d 字（允许 %d–%d 字）：先按场面分配字数，写完收在目标附近，不要靠追加场景或复述把篇幅写长。",
+			ch, target, floor, ceil),
+	}
+	if beats != "" {
+		extra[ChapterBeatsKey] = beats
+	}
+	// 本章伏笔：只给本章要埋/要收的条目与已埋未收清单。
+	if foreshadow := ForeshadowForChapter(snap, unit, ch); foreshadow != "" {
+		extra[ChapterForeshadowsKey] = foreshadow
+	}
+	if tail, source := PreviousChapterTail(snap, unit, generated, ch); tail != "" {
+		extra["previousChapterTail"] = map[string]any{
+			"chapter": ch - 1, "body": tail, "source": source,
+			"note": "仅供语感与承接，不要复述上一章剧情",
+		}
+	}
+	// 上一章「已接受事实账本」的桥接：只在单元边界上存在。本单元内部上一章
+	// 刚由本次 run 写出、尚未定稿，不构成账本，此时正文尾部就是唯一合法承接。
+	// 见 chapter_ledger.go 的分工说明。
+	if ledger := PreviousChapterLedger(snap, unit, ch); ledger != "" {
+		extra["previousChapterLedger"] = ledger
+	}
+	return extra
+}
+
+// WritePreviewPacket 返回「写正文真正会发出去的第一章包」。
+//
+// 以前预览直接返回 BuildWritePacket，与真实请求差了三项按章字段：chapter、
+// chapterRule、previousChapterTail。文档与界面都写着「预览就是模型会收到的
+// 那一份」，于是作者用预览核对衔接时会得出"上一章尾部根本没带上"的结论——
+// 实际上带上了，只是预览没显示。预览的价值全在可信，所以补齐。
+//
+// 只展示第一章：run 是逐章串行推进的，第一章的包是唯一在「参数相同即可复现」
+// 意义上确定的那一份；后续章的 previousChapterTail 取决于模型刚写出来的内容。
+func WritePreviewPacket(snap domain.BookSnapshot, unit domain.UnitInfo) domain.ContextPacket {
+	return WritePreviewPacketFor(snap, unit, "", "")
+}
+
+// WritePreviewPacketFor 是 WritePreviewPacket 的完整签名版本（带作者指令与重写模式）。
+func WritePreviewPacketFor(snap domain.BookSnapshot, unit domain.UnitInfo, instruction, mode string) domain.ContextPacket {
+	packet := BuildWritePacketFor(snap, unit, instruction, mode)
+	from := unit.ChapterFrom
+	if from <= 0 {
+		from = 1
+	}
+	chapterPacket, beats := NarrowBeats(packet, unit, from)
+	target := books.ChapterTarget(unit)
+	floor, ceil := domain.ChapterBand(target)
+	extra := WriteChapterExtra(snap, unit, from, target, floor, ceil, beats, nil)
+	chapterPacket.UserPrompt = MergeExtraIntoUserPayload(chapterPacket.UserPrompt, extra)
+	chapterPacket.EstPromptTokens = (len([]rune(chapterPacket.SystemPrompt)) + len([]rune(chapterPacket.UserPrompt))) / 2
+	return chapterPacket
+}
 
 // PreviousChapterTail 返回本章前一章的文末，用于语言级衔接。
 //
