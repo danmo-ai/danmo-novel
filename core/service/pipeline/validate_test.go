@@ -139,13 +139,13 @@ func TestValidateOutlineScenesRejectsOutOfRangeAndGap(t *testing.T) {
 			{"chapter": 5, "goal": "越界"},
 		},
 	}}
-	err := validateOutlineScenes(units)
+	err := ValidateOutlineScenes(units)
 	if err == nil {
 		t.Fatal("want error, got nil")
 	}
 	msg := err.Error()
 	// 越界的 scene 会让「本章场面节拍」过滤失效，那一章写作时无节拍可用。
-	for _, want := range []string{"units[0].scenes[1].chapter", "缺第 2、3 章的 scene"} {
+	for _, want := range []string{"units[0].scenes[1].chapter"} {
 		if !strings.Contains(msg, want) {
 			t.Fatalf("error missing %q:\n%s", want, msg)
 		}

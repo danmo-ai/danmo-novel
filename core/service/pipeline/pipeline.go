@@ -34,6 +34,23 @@ type Runner struct {
 	// AutoStructureReview enables the bounded editor pass after a structured
 	// plan. Manual structure review is always available without this switch.
 	AutoStructureReview bool
+	// OnCall is invoked after every LLM call so the host can record a heartbeat.
+	//
+	// 它解决的是一个观测盲区：run 记录只在 execute() 结束时写一次，于是「一个
+	// 跑了 90 分钟的任务」和「goroutine 已经死掉的任务」在库里完全相同——
+	// updatedAt 停在创建时刻、callsUsed 一直是 0。作者看不出它是在干活还是卡死，
+	// 而回收机制也没有任何存活信号可用。有了心跳，两者都能判。
+	//
+	// 这里刻意只留一个无参回调，不把计数器放进 Runner：Runner 是按值拷贝的
+	// （每个 run 一份，避免设置互相覆盖），带锁字段会让拷贝变成 vet 报错。
+	OnCall func()
+}
+
+// reportProgress 通知上层「又完成了一次调用」（若有）。
+func (r *Runner) reportProgress() {
+	if r != nil && r.OnCall != nil {
+		r.OnCall()
+	}
 }
 
 // proseRules returns the effective local-gate rule set.
@@ -113,26 +130,11 @@ func (r *Runner) RunWriteWithMode(ctx context.Context, snap domain.BookSnapshot,
 		// 而不是留在 documents：documents 排在 references 之前，一旦中途分叉，
 		// 后面的基线块与整份参考知识都无法命中前缀缓存。
 		chapterPacket, beats := contextsvc.NarrowBeats(packet, unit, ch)
-		extra := map[string]any{
-			"chapter": ch,
-			"chapterRule": fmt.Sprintf(
-				"本次只写第 %d 章，chapters 数组只放这一章。本章为 %d 字（允许 %d–%d 字）：先按场面分配字数，写完收在目标附近，不要靠追加场景或复述把篇幅写长。",
-				ch, target, floor, ceil),
-		}
-		if beats != "" {
-			extra[contextsvc.ChapterBeatsKey] = beats
-		}
-		// 本章伏笔：只给本章要埋/要收的条目与已埋未收清单。
-		// 按章变化，所以必须走 extra（payload 尾部），不能留在 documents。
-		if foreshadow := contextsvc.ForeshadowForChapter(snap, unit, ch); foreshadow != "" {
-			extra[contextsvc.ChapterForeshadowsKey] = foreshadow
-		}
-		if tail, source := contextsvc.PreviousChapterTail(snap, unit, cand.Chapters, ch); tail != "" {
-			extra["previousChapterTail"] = map[string]any{
-				"chapter": ch - 1, "body": tail, "source": source,
-				"note": "仅供语感与承接，不要复述上一章剧情",
-			}
-		}
+		// 按章变化的四项（章号/字数规则/场面节拍/伏笔/上一章尾部）由
+		// contextsvc 统一拼装：预览也要用同一份，才能保证「作者看到的」和
+		// 「模型收到的」逐字一致。各拼一份的后果已经发生过一次——预览里
+		// 完全没有 previousChapterTail，看起来就像衔接数据漏了。
+		extra := contextsvc.WriteChapterExtra(snap, unit, ch, target, floor, ceil, beats, cand.Chapters)
 		originalExtras[ch] = extra
 		user := contextsvc.MergeExtraIntoUserPayload(r.withKnowledge(chapterPacket.UserPrompt), extra)
 		draft, rec, err := r.generateChapter(ctx, modelID, chapterPacket, user, ch, &calls)
@@ -182,6 +184,11 @@ func (r *Runner) RunOutline(ctx context.Context, snap domain.BookSnapshot, volum
 			return err
 		}
 		if err := ValidateOutlineInheritance(snap, volume, units); err != nil {
+			return err
+		}
+		// 场面归属与章覆盖是结构底线，生成时就要拦下：缺场/越界的细纲会让写作
+		// 阶段整章盲写，等正文出来再发现等于整单元返工。
+		if err := ValidateOutlineScenes(units); err != nil {
 			return err
 		}
 		cand.UnitOutlines = units

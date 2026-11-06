@@ -47,16 +47,29 @@ func outlineAcceptFixture(t *testing.T, cand domain.Candidate) (*Service, string
 	return New(db, settings, llm.NewMock()), root, func() { db.Close() }
 }
 
+// outlineAcceptUnit 返回一个满足当前细纲合同的单元（每章 1–3 场面）。
+func outlineAcceptUnit() domain.UnitOutlineDraft {
+	scene := func(ch int, goal, conflict, turn, outcome string) domain.ScenePlan {
+		return domain.ScenePlan{Chapter: ch, Goal: goal, Conflict: conflict, Turn: turn, Outcome: outcome}
+	}
+	return domain.UnitOutlineDraft{
+		UnitID: "v01-U1", ChapterFrom: 1, ChapterTo: 3, Title: "起步", Function: "取得位置", Desire: "取得位置", Obstacle: "质疑", Choice: "复核", Payoff: "许可", Forbidden: "不揭底", InfoControl: "只给线索", OnStage: []string{"lin"}, POV: "lin", StoryDay: "1", EndDay: 3, NextHook: map[string]any{"type": "危机", "out": "继续查"},
+		Chapters: []domain.ChapterPlan{
+			{Chapter: 1, Goal: "查", Change: "得线索", CutHook: "钩", Scenes: []domain.ScenePlan{scene(1, "查入口", "权限不足", "改走程序", "获得查询机会")}},
+			{Chapter: 2, Goal: "核", Change: "得许可", CutHook: "钩", Scenes: []domain.ScenePlan{scene(2, "核材料", "材料不全", "补交证据", "获得许可")}},
+			{Chapter: 3, Goal: "定", Change: "承担", CutHook: "钩", Scenes: []domain.ScenePlan{scene(3, "定责任", "责任风险", "主动承担", "确定承担")}},
+		},
+		StateDeltas: []any{map[string]any{"stem": "lin", "field": "goal", "from": "a", "to": "b"}},
+	}
+}
+
 // 生成期硬门的阻断结论必须拦住接受：带 blocking 的细纲不能靠点「接受」落盘。
 func TestAcceptOutlineRefusesBlockingFindings(t *testing.T) {
 	svc, _, done := outlineAcceptFixture(t, domain.Candidate{
 		ID: "outline-blocked", Kind: domain.TaskOutline, Status: domain.CandidateOpen,
-		VolumeID: "v01",
-		Findings: []domain.ReviewFinding{{ID: "outline-pov-stage", Severity: "blocking", Source: "local_gate", Title: "pov 必须属于 on_stage"}},
-		UnitOutlines: []domain.UnitOutlineDraft{{
-			UnitID: "v01-U1", ChapterFrom: 1, ChapterTo: 3, Title: "起步", Function: "取得位置", Desire: "取得位置", Obstacle: "质疑", Choice: "复核", Payoff: "许可", Forbidden: "不揭底", InfoControl: "只给线索", OnStage: []string{"lin"}, POV: "lin", StoryDay: "1", EndDay: 3, NextHook: map[string]any{"type": "危机", "out": "继续查"}, Chapters: []domain.ChapterPlan{{Chapter: 1, Goal: "查", Change: "得线索", CutHook: "钩"}, {Chapter: 2, Goal: "核", Change: "得许可", CutHook: "钩"}, {Chapter: 3, Goal: "定", Change: "承担", CutHook: "钩"}},
-			StateDeltas: []any{map[string]any{"stem": "lin", "field": "goal", "from": "a", "to": "b"}},
-		}},
+		VolumeID:     "v01",
+		Findings:     []domain.ReviewFinding{{ID: "outline-pov-stage", Severity: "blocking", Source: "local_gate", Title: "pov 必须属于 on_stage"}},
+		UnitOutlines: []domain.UnitOutlineDraft{outlineAcceptUnit()},
 	})
 	defer done()
 
@@ -70,10 +83,7 @@ func TestAcceptOutlineRefusesBlockingFindings(t *testing.T) {
 func TestAcceptOutlineRequiresVolumeID(t *testing.T) {
 	svc, _, done := outlineAcceptFixture(t, domain.Candidate{
 		ID: "outline-no-vol", Kind: domain.TaskOutline, Status: domain.CandidateOpen,
-		UnitOutlines: []domain.UnitOutlineDraft{{
-			UnitID: "v01-U1", ChapterFrom: 1, ChapterTo: 3, Title: "起步", Function: "取得位置", Desire: "取得位置", Obstacle: "质疑", Choice: "复核", Payoff: "许可", Forbidden: "不揭底", InfoControl: "只给线索", OnStage: []string{"lin"}, POV: "lin", StoryDay: "1", EndDay: 3, NextHook: map[string]any{"type": "危机", "out": "继续查"}, Chapters: []domain.ChapterPlan{{Chapter: 1, Goal: "查", Change: "得线索", CutHook: "钩"}, {Chapter: 2, Goal: "核", Change: "得许可", CutHook: "钩"}, {Chapter: 3, Goal: "定", Change: "承担", CutHook: "钩"}},
-			StateDeltas: []any{map[string]any{"stem": "lin", "field": "goal", "from": "a", "to": "b"}},
-		}},
+		UnitOutlines: []domain.UnitOutlineDraft{outlineAcceptUnit()},
 	})
 	defer done()
 

@@ -218,7 +218,7 @@ user   = {
         "chapter": 51,
         "goal": "用可核验疑点争取复查",
         "conflict": "只有口供疑点，尚不足以翻案",
-        "turn": "申请现场重勘",
+        "turn": "主动申请现场重勘，承担复查责任",
         "outcome": "获得三天许可",
         "mustLand": ["明确三天期限"]
       }]
@@ -236,8 +236,7 @@ user   = {
 
 **约束**
 
-- 每章必须有 `ChapterPlan`；`scenes` 只是复杂章可选辅助，不是必填的第三级大纲。
-- 核心场面只需 `goal/conflict/turn/outcome`；`mustLand` 最多两项。不得预写台词、动作清单或情绪曲线。
+- 每章必须有 `ChapterPlan` 和 1–3 个场面（必填 `goal/conflict/turn/outcome`，场间因果、末场支撑章 `change`）；不得预写台词、动作清单或情绪曲线。
 - 章范围、目标、尝试、缺口、选择、代价、结果、时钟必须继承卷纲。
 - `function` 是细纲自己的功能定位：可以比卷纲 `objective` 更具体，但不能为空。
 - 卷纲种子的 `state_changes` 同时含两类内容：词表内的状态迁移，以及「证据/关系/

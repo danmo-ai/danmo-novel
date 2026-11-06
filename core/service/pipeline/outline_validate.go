@@ -61,6 +61,14 @@ func ValidateOutlineContract(units []domain.UnitOutlineDraft, requested []string
 			if ch.DayOffset < 0 {
 				vs = append(vs, Violation{Path: path + ".dayOffset", Want: "非负整数", Got: fmt.Sprint(ch.DayOffset)})
 			}
+			// 场面是故事脉络合同：每章 1–3 场，缺一章就退回重写——细纲没给节拍，
+			// 写作就只能按 2–4 个主线场面自己切，章内因果和章间承接全靠模型临场发挥。
+			if len(ch.Scenes) == 0 {
+				vs = append(vs, Violation{Path: path + ".scenes", Want: "每章 1–3 个场面（故事脉络合同）", Got: "缺第 " + fmt.Sprint(ch.Chapter) + " 章的场面"})
+			}
+			if len(ch.Scenes) > 3 {
+				vs = append(vs, Violation{Path: path + ".scenes", Want: "每章最多 3 个场面", Got: fmt.Sprint(len(ch.Scenes))})
+			}
 			for k, scene := range ch.Scenes {
 				if scene.Chapter != ch.Chapter {
 					vs = append(vs, Violation{Path: fmt.Sprintf("%s.scenes[%d].chapter", path, k), Want: fmt.Sprint(ch.Chapter), Got: fmt.Sprint(scene.Chapter)})

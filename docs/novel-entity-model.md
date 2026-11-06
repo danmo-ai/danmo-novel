@@ -25,7 +25,7 @@ Markdown 是总纲、卷纲和设定的事实源；解析对象只在内存/API 
 | 单元种子 | 卷纲 `## 单元` | `objective/obstacle/attempt/setback/choice/cost/outcome/state_changes/clock_*` | 随卷纲 Accept |
 | 单元细纲 | `outline/units/vNN-UN.yaml` | 继承种子、POV、在场人物、章合同、状态迁移、揭示与下一钩 | 细纲 Accept |
 | 章合同 | 细纲 `chapters[]` | `chapter/goal/change/cut_hook/day_offset/plant/payoff`；`plant`/`payoff` 只填伏笔 FS ID | 细纲 Accept；正文/审校的基本输入 |
-| 可选场面 | 章合同 `scenes[]` | `goal/conflict/turn/outcome`，可选 `must_land/evidence_in/evidence_out` | 细纲 Accept；只组织复杂行动 |
+| 场面脉络 | 章合同 `chapters[].scenes[]` | 必填 `goal/conflict/turn/outcome`；可选 `who/where/reveal/withhold/must_land/evidence_in/evidence_out`，每章 1–3 场 | 细纲 Accept；故事脉络合同，场间有因果、末场支撑章 change |
 | 正文 | `units/vNN-UN.md` | 章号、标题、纯散文正文 | 正文/修订候选 Accept |
 | 人物卡 | `canon/cast/<stem>.md` | 稳定人格、三锚点、知识边界、声音、关系 | 立项/人物晋升/候选 Accept |
 | 身份时间线 | `canon/identity-timeline.yaml` | `stem/role_title/org/from_unit/to_unit/note` | 规划或人工 Accept；单元边界生效 |
@@ -129,7 +129,7 @@ Markdown 是总纲、卷纲和设定的事实源；解析对象只在内存/API 
 - 标题只写核心动作/意象，不罗列全部事件。
 - 公开职务身份在单元内部恒定，变更只在边界登记。
 
-每章不必形成完整闭环，但必须有可验证的状态、信息、关系或行动变化。普通连续行动无需拆场面；复杂章可有 1–3 个必要行动段，核心只有 `goal/conflict/turn/outcome`，关键 `must_land` 最多两项。
+每章不必形成完整闭环，但必须有可验证的状态、信息、关系或行动变化。每章必须有 1–3 个场面，核心字段 `goal/conflict/turn/outcome` 必填：后一场由前一场的结果驱动（因果链），最后一个场面的 outcome 支撑章级 change。`who/where/reveal/withhold` 只在偏离默认或有信息控制需求时填；关键 `must_land` 最多两项。不预写台词、动作清单、情绪曲线——正文保留措辞、镜头、感官与细节的自由度。
 
 ## 5. 人物、身份与状态的区别
 

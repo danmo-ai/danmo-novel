@@ -49,7 +49,7 @@ func OutlineSystemPrompt() string {
 chapterChars 是**单章**目标字数，正整数，只能落在 %d–%d；作者没特别要求就写 %d，不要自行调高。只要 chapterChars 这一个数字；不要输出 wordTarget。
 chapters 是逐章轻量合同，每章必须有 {chapter,goal,change,cutHook,dayOffset}；change 必须是可验证的状态/信息/关系/行动变化，不得只写情绪。章范围全部覆盖，day_offset 不超出单元结束日。
 chapters 每条另有 plant / payoff 两个可选字符串数组：本章要埋的伏笔 ID、本章要回收的伏笔 ID。只填 ID（如 "FS-03"），不写内容——内容在「伏笔登记表」里。只能引用本单元负责埋或负责收的条目：埋入单元为 null 或本单元、回收单元为 null 或本单元。回收必须严格晚于埋入。
-scenes 仅复杂章的可选子项，不要求每章都有；一旦写了 scenes，就必须覆盖每一章（每章 1–3 个场面即可，不要为凑数给简单章硬拆）。每个 scene 仅含 {chapter,goal,conflict,turn,outcome}，可选 id/mustLand/evidenceIn/evidenceOut/dayOffset。禁止预写台词、动作清单和情绪曲线；mustLand 最多 2 个可见事实。
+scenes 是每章的故事脉络合同，每章 1–3 个场面，一章也不给就退回重写；简单章可以只有 1 场，不为凑数硬拆。每个 scene 必填 {chapter,goal,conflict,turn,outcome}：goal 写这场要什么（具体行动目标，不写情绪标签），conflict 写遇到什么具体阻力（人/规则/资源/时间，一碰就倒的阻力等于没写），turn 写用什么行动或选择改变局面（方法改变或关键决定，不是「突然」「没想到」），outcome 写这场实际得到/失去了什么（可验证的事实变化，与 goal 对应）。可选 id/who/where/reveal/withhold/mustLand/evidenceIn/evidenceOut/dayOffset：who/where 只在本场偏离单元 on_stage 或默认舞台时填，reveal 写本场允许揭示的信息、withhold 写必须保留的信息（信息控制需求只在有需要时填，每场硬凑会稀释注意力）。后一场的 goal/conflict 必须由前一场的 outcome 触发——场间是因果链，不是三张并列事件卡；本章最后一个场面的 outcome 必须能推出章级 change，cutHook 从章内结果自然生长，不另造无关悬念。禁止预写台词、动作清单和情绪曲线；mustLand 最多 2 个可见事实。
 存在「不可改写的单元种子」时：sourceSeedId 必须等于单元 ID；chapterFrom/chapterTo、desire/obstacle/choice/payoff 必须逐字继承种子 chapter_range/objective/obstacle/choice/outcome，不得改故事；attempt/setback/cost 也继承种子；storyDay/endDay/gapDays 必须继承 clock_start_day/clock_end_day/clock_gap_days。
 function 与 desire 是同一个种子值（objective）的两处落盘：必须逐字照抄，不要用自己的话改写；nextHook.type 必须等于种子 next_hook 竖线前的类型（如「信息缺口」），out 才写具体事件。
 storyDay / gapFromPrev / infoControl / forbidden / desire / sourceSeedId / attempt / setback / cost 等叙述字段必须是字符串标量（如 "3" 或 "入职第三天"），不要用对象；chapterFrom/chapterTo/endDay/gapDays 必须是 JSON 数字，不要加引号（继承种子 clock_end_day/clock_gap_days 时也转成数字）；onStage 为字符串数组。
@@ -269,6 +269,7 @@ func StripFrontMatter(raw string) string {
 func OutlineReviewSystemPrompt() string {
 	return `你是单元细纲的结构编辑。只检查，不改写，不调用工具。
 核对父级种子兑现、章间因果、每章可验证变化、POV/在场人物、时间、伏笔归属、状态迁移与能力可执行性。
+另核对场面脉络可执行性：goal 空泛（情绪标签冒充行动目标）、conflict 一碰就倒、turn 缺方法改变（「突然」「没想到」）、场间无承接（后一场 goal/conflict 不由前一场 outcome 触发）、末场 outcome 不支撑本章 change、cutHook 在章内无因、场面数量不在 1–3。
 输出严格 JSON {"verdict":"pass|revise","findings":[{"id":"outline-<lens>-N","severity":"blocking|advisory","lens":"inheritance|causality|payoff|state|continuity|reveal|agency","title":"<=20字","evidence":"具体字段或章号证据","suggestion":"最小修复方向","entityPath":"chapters[N] 或 state_deltas"}]}。
 提示词不能证明语义成立。结构性父级冲突标 blocking，并明确该回改细纲还是回改卷纲；不得在细纲里换故事。没有明确问题就输出空 findings。`
 }

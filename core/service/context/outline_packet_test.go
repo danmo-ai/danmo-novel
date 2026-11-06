@@ -189,3 +189,32 @@ func TestOutlinePacketCarriesIdentityChangeOfRequestedUnit(t *testing.T) {
 		t.Fatal("identity change must not be mixed into unit seeds")
 	}
 }
+
+// 细纲指令必须点名校验会查的每一个"逐字继承"字段。
+//
+// 「细纲·可编辑子级字段」块为了不把同一份内容注入两遍，会有意摘掉
+// attempt/setback/cost/source_seed_id 这些归种子所有的字段。于是这些字段在
+// 上下文里只剩种子块那一份，而模型把它们当成"不用输出"——除非指令明确点名。
+// 实测两本书 59 次细纲运行失败 19 次，其中 9 次正是这几个字段留空
+// （attempt/setback/cost 7 次、sourceSeedId 2 次），修复轮重发同一句指令也救不回来。
+//
+// 这条测试把「指令里的清单」和 ValidateUnitSeedInheritance 的实际判据钉在一起：
+// 以后再加校验项却忘了写进指令，这里会直接失败，而不是让作者在 accept 时才发现。
+func TestOutlineInstructionNamesEveryInheritedField(t *testing.T) {
+	p := BuildOutlinePacket(outlineSnapshot(), 1, []string{"v01-U2"}, "")
+	instr := p.UserPrompt
+
+	// 这些字段只在种子块里出现（head 块被 dropTopLevelKeys 摘掉了），
+	// 指令不点名就会被模型跳过。
+	for _, field := range []string{"sourceSeedId", "attempt", "setback", "cost"} {
+		if !strings.Contains(instr, field) {
+			t.Fatalf("细纲指令没有点名 %q；该字段只存在于种子块，模型会当成不需要输出", field)
+		}
+	}
+	// 逐字继承的映射必须写清，否则模型会用同义改写撞校验。
+	for _, mapping := range []string{"desire=objective", "payoff=outcome", "逐字照抄"} {
+		if !strings.Contains(instr, mapping) {
+			t.Fatalf("细纲指令缺少继承映射 %q", mapping)
+		}
+	}
+}

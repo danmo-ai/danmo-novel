@@ -236,16 +236,20 @@ func validateRevisedChapter(ch domain.ChapterDraft, want int) error {
 //
 // 越界的 scene 会让「本章场面节拍」的按章过滤失效：那一章拿不到任何节拍，
 // 写作时等于盲写。缺章的 scene 更隐蔽——细纲看起来完整，写作却无米下锅。
-func validateOutlineScenes(units []domain.UnitOutlineDraft) error {
+// ValidateOutlineScenes checks that any top-level scenes list stays inside its
+// own unit's chapter range. Per-chapter scene presence (每章 1–3 场) is enforced
+// separately on chapters[].scenes in ValidateOutlineContract — that is the
+// authoritative contract; this only guards the legacy/alternate top-level list
+// so an out-of-range entry cannot slip past the per-chapter filter.
+func ValidateOutlineScenes(units []domain.UnitOutlineDraft) error {
 	var vs []Violation
 	for i, u := range units {
 		if u.ChapterFrom <= 0 || u.ChapterTo < u.ChapterFrom {
 			continue // 章范围本身非法，由 CheckUnitOutline 报
 		}
 		if len(u.Scenes) == 0 {
-			continue // 缺 scenes 由 CheckUnitOutline 报
+			continue // 每章场面必填由 ValidateOutlineContract 报
 		}
-		covered := map[int]bool{}
 		for j, sc := range u.Scenes {
 			n := sceneChapter(sc)
 			if n == 0 {
@@ -262,16 +266,7 @@ func validateOutlineScenes(units []domain.UnitOutlineDraft) error {
 					Want: fmt.Sprintf("落在本单元第 %d–%d 章内", u.ChapterFrom, u.ChapterTo),
 					Got:  fmt.Sprintf("第 %d 章", n),
 				})
-				continue
 			}
-			covered[n] = true
-		}
-		if missing := rangeMissing(covered, u.ChapterFrom, u.ChapterTo); len(missing) > 0 {
-			vs = append(vs, Violation{
-				Path: fmt.Sprintf("units[%d].scenes", i),
-				Want: "每章至少一个 scene",
-				Got:  "缺第 " + joinInts(missing) + " 章的 scene",
-			})
 		}
 	}
 	return contractFail("细纲", vs)

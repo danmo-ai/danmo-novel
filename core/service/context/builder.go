@@ -626,7 +626,31 @@ func BuildOutlinePacket(snap domain.BookSnapshot, volume int, unitIDs []string, 
 		hashes[b.ID+"|"+b.Source] = shortHash(b.Content)
 	}
 	system := novel.OutlineSystemPrompt()
-	instr := withUserInstruction("为 unitIds 列出的单元生成/重写细纲合同，输出 {\"units\":[...]}（即使只有 1 个单元也必须用数组）。不得改卷纲已定的 next_hook.type；function 可更具体但不得为空；scenes / nextHook / storyDay / gapFromPrev / infoControl 必须给出。已有细纲头时在其基础上补全或优化，不要返回空 units。", instruction)
+	// 这一句是细纲任务唯一被模型当成"硬清单"的指令，必须与 ValidateUnitSeedInheritance
+	// 逐条对齐。以前它只点了 5 个"必须给出"的字段（function / scenes / nextHook /
+	// storyDay / gapFromPrev / infoControl），而校验实际要求 20 多个字段——两者之间
+	// 那段空白（attempt / setback / cost / sourceSeedId）既不写在指令里、又被
+	// 「细纲·可编辑子级字段」块有意摘掉（它们归种子所有），于是模型把它们当成
+	// 不需要输出的字段，每次都留空，每次都撞同一条父子合同校验。
+	//
+	// 实测两本书 59 次细纲运行里，失败 19 次，其中 7 次是这三个字段留空、
+	// 2 次是 sourceSeedId 留空——全是这一个成因。修复轮也只能重发同一句指令，
+	// 所以重试同样失败（MaxCalls=2 已用完）。
+	instr := withUserInstruction(
+		"为 unitIds 列出的单元生成/重写细纲合同，输出 {\"units\":[...]}（即使只有 1 个单元也必须用数组）。"+
+			"每个单元必须给全下列字段，缺任何一个都会被拒收："+
+			"unitId, sourceSeedId, title, function, attempt, setback, cost, desire, obstacle, choice, payoff, "+
+			"pleasure, forbidden, chapterChars, onStage, pov, chapterFrom, chapterTo, chapters, scenes, "+
+			"stateDeltas, nextHook, storyDay, endDay, gapDays, timelineId, gapFromPrev, infoControl。"+
+			"其中这些必须从「不可改写的单元种子」逐字照抄，不得改写、不得留空："+
+			"sourceSeedId=单元ID；desire=objective；obstacle=obstacle；choice=choice；payoff=outcome；"+
+			"attempt=attempt；setback=setback；cost=cost。"+
+			"chapterFrom/chapterTo 照抄 chapter_range，storyDay=clock_start_day，endDay=clock_end_day，"+
+			"gapDays=clock_gap_days，且这四个必须是 JSON 数字（种子里的引号要去掉）。"+
+			"不得改卷纲已定的 next_hook.type；function 可更具体但不得为空；"+
+			"scenes 必须给出：每章 1–3 场，场间有因果承接，最后一个场面的 outcome 支撑本章 change；"+
+			"nextHook / gapFromPrev / infoControl 必须给出。"+
+			"已有细纲头时在其基础上补全或优化，不要返回空 units。", instruction)
 	user := BuildUserPrompt("outline", "", map[string]any{
 		"id": snap.Summary.ID, "volumeId": volTag, "unitIds": unitIDs,
 	}, instr, blocks, nil)

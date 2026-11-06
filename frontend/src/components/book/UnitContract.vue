@@ -107,7 +107,7 @@ const onStageIdentities = computed(() =>
 )
 
 type ChapterView = { chapter: string; goal: string; change: string; cutHook: string; dayOffset: string; scenes: Scene[] }
-type Scene = { id: string; chapter: string; beat: string; who: string; where: string }
+type Scene = { id: string; chapter: string; beat: string; who: string; where: string; goal: string; conflict: string; turn: string; outcome: string; info: string }
 
 function parseChapters(text: string): ChapterView[] {
   const body = text.trim()
@@ -134,11 +134,23 @@ function parseChapters(text: string): ChapterView[] {
       continue
     }
     if (nested) {
-      currentScene = { id: '', chapter: nested[1], beat: '', who: '', where: '' }
+      currentScene = { id: '', chapter: nested[1], beat: '', who: '', where: '', goal: '', conflict: '', turn: '', outcome: '', info: '' }
       current.scenes.push(currentScene)
       continue
     }
-    if (/^\s+goal:/.test(line) && currentScene) currentScene.beat = line.replace(/^\s+goal:\s*/, '')
+    if (/^\s+goal:/.test(line) && currentScene) {
+      const v = line.replace(/^\s+goal:\s*/, '').trim()
+      currentScene.goal = v
+      if (!currentScene.beat) currentScene.beat = v
+      continue
+    }
+    if (/^\s+conflict:/.test(line) && currentScene) { currentScene.conflict = line.replace(/^\s+conflict:\s*/, '').trim(); continue }
+    if (/^\s+turn:/.test(line) && currentScene) { currentScene.turn = line.replace(/^\s+turn:\s*/, '').trim(); continue }
+    if (/^\s+outcome:/.test(line) && currentScene) { currentScene.outcome = line.replace(/^\s+outcome:\s*/, '').trim(); continue }
+    if (/^\s+(must_land|reveal|withhold):/.test(line) && currentScene) {
+      currentScene.info = (currentScene.info ? currentScene.info + ' · ' : '') + line.trim()
+      continue
+    }
   }
   return chapters
 }
@@ -186,12 +198,27 @@ function parseScenes(text: string): Scene[] {
     const val = (k: string) => s.match(new RegExp(`^\\s*${k}\\s*:\\s*(.*)$`, 'im'))?.[1]?.trim().replace(/^['"]|['"]$/g, '') || ''
     const whoLines = g.filter(isWhoStem).map((l) => l.replace(/^\s+-\s+/, '').trim())
     const whoInline = val('who')
+    // must_land/reveal/withhold 是多行数组或单行列表，单行 val() 只能抓到 "["，
+    // 交给章合同解析（parseChapters）展示，这里不重复。
+    const raw = g.join('\n')
+    const info = ['must_land', 'reveal', 'withhold']
+      .map((k) => {
+        const m = raw.match(new RegExp(`^\\s+${k}:\\s*\\[(.*)\\]`, 'm'))
+        return m ? `${k}: [${m[1]}]` : ''
+      })
+      .filter(Boolean)
+      .join(' · ')
     return {
       id: val('id') || val('scene'),
       chapter: val('chapter'),
       beat: val('beat') || val('purpose'),
       who: whoLines.length ? whoLines.join('、') : whoInline,
       where: val('where') || val('when'),
+      goal: val('goal'),
+      conflict: val('conflict'),
+      turn: val('turn'),
+      outcome: val('outcome'),
+      info,
     }
   }).filter((s) => s.chapter || s.beat || s.id)
 }
@@ -239,7 +266,15 @@ const hasContent = computed(() => fields.value.length > 0 || chapterPlans.value.
           <p><strong>目标</strong>{{ chapter.goal }}</p>
           <p><strong>变化</strong>{{ chapter.change }}</p>
           <p><strong>断章</strong>{{ chapter.cutHook }}</p>
-          <div v-if="chapter.scenes.length" class="chapter-scenes"><small>必要行动辅助</small><p v-for="scene in chapter.scenes" :key="scene.chapter + scene.beat">{{ scene.beat }}</p></div>
+          <div v-if="chapter.scenes.length" class="chapter-scenes"><small>场面脉络 · {{ chapter.scenes.length }} 场</small>
+            <div v-for="(s, i) in chapter.scenes" :key="i" class="scene-beat">
+              <p v-if="s.goal"><strong>目标</strong>{{ s.goal }}</p>
+              <p v-if="s.conflict"><strong>阻力</strong>{{ s.conflict }}</p>
+              <p v-if="s.turn"><strong>转折</strong>{{ s.turn }}</p>
+              <p v-if="s.outcome"><strong>结果</strong>{{ s.outcome }}</p>
+              <p v-if="s.info" class="scene-info">{{ s.info }}</p>
+            </div>
+          </div>
         </article>
       </div>
       <details v-if="!chapterPlans.length && sceneGroups.length" class="contract-scenes legacy-scenes">
@@ -283,6 +318,6 @@ const hasContent = computed(() => fields.value.length > 0 || chapterPlans.value.
 .scene-beat strong { color: var(--ink); margin-right: 4px; }
 .scene-where { color: var(--ink-soft); font-size: 11px; flex-shrink: 0; }
 .legacy-scenes summary { display: flex; align-items: baseline; gap: 10px; cursor: pointer; color: var(--accent); font-size: 12px; }.legacy-scenes summary small { color: var(--warn); font-size: 10px; }.legacy-note { color: var(--ink-soft); font-size: 11px; line-height: 1.65; max-width: 80ch; }.legacy-scene-group { margin-top: 12px; padding-top: 8px; border-top: 1px solid var(--line); }.legacy-scene-group h5 { color: var(--accent); font-size: 11px; margin: 0 0 6px; }
-.chapter-plans { display: grid; gap: 10px; }.chapter-plan { border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; }.chapter-plan header { display: flex; justify-content: space-between; color: var(--accent); font-size: 12px; margin-bottom: 8px; }.chapter-plan header small { color: var(--ink-soft); }.chapter-plan p { color: var(--ink-soft); font-size: 12px; line-height: 1.65; margin: 6px 0; }.chapter-plan p strong { color: var(--ink); margin-right: 8px; font-weight: 600; }.chapter-scenes { margin-top: 10px; border-top: 1px solid var(--line); padding-top: 8px; }.chapter-scenes small { color: var(--accent); }
+.chapter-plans { display: grid; gap: 10px; }.chapter-plan { border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; }.chapter-plan header { display: flex; justify-content: space-between; color: var(--accent); font-size: 12px; margin-bottom: 8px; }.chapter-plan header small { color: var(--ink-soft); }.chapter-plan p { color: var(--ink-soft); font-size: 12px; line-height: 1.65; margin: 6px 0; }.chapter-plan p strong { color: var(--ink); margin-right: 8px; font-weight: 600; }.chapter-scenes { margin-top: 10px; border-top: 1px solid var(--line); padding-top: 8px; }.chapter-scenes small { color: var(--accent); }.scene-beat { padding: 6px 0; border-bottom: 1px dashed var(--line); }.scene-beat:last-child { border-bottom: none; }.scene-beat p { margin: 3px 0; font-size: 12px; line-height: 1.6; }.scene-beat p strong { color: var(--accent); font-weight: 600; margin-right: 8px; font-size: 11px; }.scene-beat .scene-info { color: var(--ink-soft); font-size: 11px; }
 @media (max-width: 720px) { .contract-fields { grid-template-columns: 1fr; } .scene-where { display: none; } }
 </style>

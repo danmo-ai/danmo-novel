@@ -235,13 +235,17 @@ chapters:
     change: {{章末相对章首的可验证状态/信息/关系/行动变化}}
     cut_hook: {{章末具体未决事件，中间章不提前兑现单元主结果}}
     day_offset: {{相对本单元开场的非负整数日偏移}}
-    scenes:                              # 可选：只有复杂章需要
+    scenes:                              # 必填：每章 1–3 场的故事脉络合同
       - id: S{{序号}}
         chapter: {{所属章号}}
-        goal: {{这场行动要达成什么}}
-        conflict: {{行动遇到什么阻力}}
-        turn: {{不可替代的转折或方法改变}}
-        outcome: {{这场结束时的实际变化}}
+        goal: {{这场行动要达成什么——具体行动目标，不写情绪标签}}
+        conflict: {{行动遇到什么具体阻力——人/规则/资源/时间，一碰就倒等于没写}}
+        turn: {{用什么行动或选择改变局面——方法改变或关键决定，不是「突然」「没想到」}}
+        outcome: {{这场实际得到/失去了什么——可验证的事实变化，与 goal 对应}}
+        who: [{{可选：本场人物，偏离单元 on_stage 时填}}]
+        where: {{可选：本场地点，偏离默认舞台时填}}
+        reveal: [{{可选：本场允许揭示的信息}}]
+        withhold: [{{可选：本场必须保留的信息}}]
         must_land:
           - {{最多 1–2 个不可遗漏的可见事实}}
         evidence_in:
@@ -259,7 +263,7 @@ next_hook:
   out: {{具体未决事件}}
 ```
 
-**章与场面的职责：** 每章必须有 `goal/change/cut_hook`，不强制 scenes。场面只组织复杂行动与关键材料，核心字段仅 `goal/conflict/turn/outcome`；不预写台词、动作表、情绪曲线。`who/where/pov` 只有偏离单元默认时才补充。
+**章与场面的职责：** 每章必须有 `goal/change/cut_hook` 和 1–3 个场面。场面是故事脉络合同：后一场的 `goal/conflict` 由前一场的 `outcome` 触发（因果链，不是并列事件卡），最后一个场面的 `outcome` 必须支撑章级 `change`，`cut_hook` 从章内结果生长。不预写台词、动作表、情绪曲线；对白、镜头、感官与细节选择留给正文。`who/where/reveal/withhold` 只在有偏离或信息控制需求时填写。
 
 ### `units/v{{NN}}-U{{N}}.md`
 
@@ -545,3 +549,57 @@ units:
 ```
 
 这些运行/账本文件记录已接受结果，不用来替代作者规划或人物身份。旧书中的自由场景长表、散文时钟、人物职务备注应映射到上述实体，而不是原样叠加成重复设定。
+
+## 9. 常见错误与修复（Agent 修复指南）
+
+这一节不是「字段说明」，而是「遇到这个错误时，改哪个文件、改哪个字段、用什么语法」。
+Agent 不需要记住全部模板：只要能把错误文本对上表，就能自己修。
+
+### 9.1 身份时间线冲突
+
+| 错误文本 | 归口 | 修法 |
+|---|---|---|
+| `xxx 缺少生效的职务身份段` | `canon/identity-timeline.yaml` | 补一段：`- stem: xxx` + `role_title: 职务名` + `from_unit: vNN-Um` + `to_unit: vNN-Um` |
+| `与本单元生效段 XXX 不一致` | `outline/volumes/vNN.md` 的 `## 单元 · vNN-Um` 的 `state_changes` | 把 `role_title` 迁移挪到真正生效的单元：从本单元删掉，加到目标单元 |
+| `state_deltas 与身份时间线冲突` | 同上 | 同上：身份转换只能写在转换生效的那个单元 |
+
+**规则**：单元内部身份恒定，转换只在单元边界。所以「某人从试用变正式」只能写在**正式生效的那个单元**，不能写在还在试用的单元里。
+
+### 9.2 人物卡缺失
+
+| 错误文本 | 归口 | 修法 |
+|---|---|---|
+| `人物卡中没有 stem=xxx` | `canon/cast/xxx.md` | 补人物卡：`# 姓名` + `status: canon` + `role: protagonist|volume_antagonist|recurring` + 三锚点 + 知识边界 |
+| `xxx 缺少生效的职务身份段` 且人物卡也没有 | 先补人物卡，再补身份段 | 同上 |
+
+**注意**：`canon/cast/xxx.md` 里的 `stem` 必须与身份时间线里的 `stem` 完全一致，否则身份校验会判「人物卡不存在」。
+
+### 9.3 卷纲字段错误
+
+| 错误文本 | 归口 | 修法 |
+|---|---|---|
+| `state_changes` 引用了不存在的人物 | `outline/volumes/vNN.md` 的 `state_changes` | 把 `stem` 改成真实存在的人物 ID |
+| `state_changes` 的字段名不在词表 | 同上 | 字段只认 `role_title/location/health/resources/goal/knows/relation/life`，写错就改回来 |
+| `chapter_range` 不连续/重叠 | `outline/volumes/vNN.md` 的 `## 单元 · vNN-Um` 的 `chapter_range` | 改成与上一单元衔接的章范围 |
+
+### 9.4 细纲字段错误
+
+| 错误文本 | 归口 | 修法 |
+|---|---|---|
+| `state_deltas` 引用了不存在的人物 | `outline/units/vNN-Um.yaml` 的 `state_deltas` | 把 `stem` 改成真实存在的人物 ID |
+| `on_stage` 包含了尚未登场的人物 | 同上 | 从 `on_stage` 里删掉该人物 |
+| `chapter_chars` 超出 2000–3500 | 同上 | 改成 2500（默认）或 2000–3500 之间的值 |
+
+### 9.5 连续性状态错误
+
+| 错误文本 | 归口 | 修法 |
+|---|---|---|
+| `第 N 章的伏笔 FS-XX 未明确核对` | `continuity/actual/vNN-Um.yaml` 的 `chapters[N].plannedForeshadowHandled` | 把 FS-XX 加进 `plannedForeshadowHandled`（它必须包含本章声明的所有 plant/payoff） |
+| `第 N 章缺少已核对的实际摘要` | 同上 | 补 `summary` 字段：本章实际发生的核心事件 |
+
+### 9.6 通用规则
+
+- **字段级编辑优先**：能用 `edit_field` 就不要重写整个文件。
+- **改之前先读**：用 `read_book_file` 确认当前内容，避免覆盖别人的修改。
+- **改完要校验**：`edit_field` 会跑服务端校验，写错了会直接报错。
+- **修不了就问人**：涉及「这个人该不该登场」「这个职务该不该存在」的创作决定，不要猜，停下来问作者。

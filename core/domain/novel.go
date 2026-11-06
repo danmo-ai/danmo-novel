@@ -229,12 +229,20 @@ type ChapterPlan struct {
 }
 
 type ScenePlan struct {
-	ID          string   `json:"id,omitempty"`
-	Chapter     int      `json:"chapter"`
-	Goal        string   `json:"goal"`
-	Conflict    string   `json:"conflict"`
-	Turn        string   `json:"turn"`
-	Outcome     string   `json:"outcome"`
+	ID       string `json:"id,omitempty"`
+	Chapter  int    `json:"chapter"`
+	Goal     string `json:"goal"`
+	Conflict string `json:"conflict"`
+	Turn     string `json:"turn"`
+	Outcome  string `json:"outcome"`
+	// Who/Where 是可选定位：只在本场人物或地点偏离单元 on_stage/默认舞台时填写。
+	Who   []string `json:"who,omitempty"`
+	Where string   `json:"where,omitempty"`
+	// Reveal/Withhold 是可选信息边界：只在本场有「可揭示什么 / 必须保留什么」
+	// 的需求时填写。它们是知识库 06-emotion-scene 的 subtext 信息控制维度落进
+	// 结构化合同的最小形态，不强制每场都写。
+	Reveal      []string `json:"reveal,omitempty"`
+	Withhold    []string `json:"withhold,omitempty"`
 	MustLand    []string `json:"mustLand,omitempty"`
 	EvidenceIn  []string `json:"evidenceIn,omitempty"`
 	EvidenceOut []string `json:"evidenceOut,omitempty"`

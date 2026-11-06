@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/danmo-ai/danmo-novel/core/config"
@@ -180,6 +181,11 @@ func (s *Service) execute(ctx context.Context, run domain.Run, snap domain.BookS
 	// 互相覆盖（-race 已复现），严重时另一个 run 会在中途丢掉审校清单/去AI味规则。
 	// 其余字段（LLM / ModelMaxOut）只读，值拷贝是安全的。
 	runner := *s.Pipeline
+	// 心跳：每次 LLM 调用后把 callsUsed 与 updatedAt 写进库里。一次写盘几十微秒，
+	// 换来的是「这个任务还活着吗」有确切答案——否则长任务与死任务在库里完全一样。
+	// 计数留在本地：Runner 是按值拷贝的，带锁字段会被 vet 判为非法拷贝。
+	var callCount atomic.Int64
+	runner.OnCall = func() { s.touchRun(ctx, run, int(callCount.Add(1))) }
 	// 作者勾选的参考知识文章（独立于 unit 的 ExtraContextIDs 语义）。
 	runner.KnowledgeDocs = s.loadKnowledge(run.Spec.KnowledgeIDs)
 	// 审校清单按作者在知识库里的编辑生效；未编辑时回退内置文章。
@@ -374,7 +380,30 @@ func (s *Service) execute(ctx context.Context, run domain.Run, snap domain.BookS
 
 // PreviewPacket builds (without calling the LLM) the context packet a task
 // would send. Used by the confirm dialog to show exactly what goes to the model.
-func (s *Service) PreviewPacket(_ context.Context, spec domain.TaskSpec) (domain.ContextPacket, error) {
+// PreviewPacket builds the packet the model would actually receive.
+//
+// 知识文章在这之前是漏的：真实调用每个生成路径都会把作者勾选的参考知识
+// 追加进 references（write/outline/plan/idea/revise/outline_review 全走
+// Runner.withKnowledge），但预览只给 review 和 finalize 补了这一手。结果是
+// 作者在"预览"里看到的 prompt 偏小、estPromptTokens 偏低，正好在作者拿预览
+// 判断成本的时候给出一个错的数字。唯一不追加的是结构审校（它另走一条
+// 不经过 withKnowledge 的路径），所以这里也按同一判据排除。
+func (s *Service) PreviewPacket(ctx context.Context, spec domain.TaskSpec) (domain.ContextPacket, error) {
+	packet, err := s.previewPacket(ctx, spec)
+	if err != nil {
+		return packet, err
+	}
+	if spec.Kind == domain.TaskStructureReview {
+		return packet, nil
+	}
+	if docs := s.loadKnowledge(spec.KnowledgeIDs); len(docs) > 0 {
+		packet.UserPrompt = contextsvc.MergeKnowledgeIntoUserPayload(packet.UserPrompt, docs)
+		packet.EstPromptTokens = (len([]rune(packet.SystemPrompt)) + len([]rune(packet.UserPrompt))) / 2
+	}
+	return packet, nil
+}
+
+func (s *Service) previewPacket(_ context.Context, spec domain.TaskSpec) (domain.ContextPacket, error) {
 	root, readOnly, err := s.Store.GetBookRoot(context.Background(), spec.BookID)
 	if err != nil {
 		return domain.ContextPacket{}, err
@@ -389,7 +418,9 @@ func (s *Service) PreviewPacket(_ context.Context, spec domain.TaskSpec) (domain
 		if !ok {
 			return domain.ContextPacket{}, fmt.Errorf("unit not found: %s", spec.UnitID)
 		}
-		return contextsvc.BuildWritePacket(snap, unit, spec.Instruction), nil
+		// 用真实首章包，而不是基础包：预览要能让作者核对"上一章尾部带没带"。
+		// 基础包只含 documents + 通用 instruction，按章变化的那几项全在 extra 里。
+		return contextsvc.WritePreviewPacketFor(snap, unit, spec.Instruction, spec.RewriteMode), nil
 	case domain.TaskOutlineReview:
 		unit, ok := findUnit(snap, spec.UnitID)
 		if !ok {
@@ -731,6 +762,11 @@ func (s *Service) acceptLocked(ctx context.Context, cmd domain.AcceptCommand) (d
 			return domain.Candidate{}, fmt.Errorf("无法确定细纲所属卷（volumeId=%q），拒绝接受以免绕过父子合同；请重新生成本单元细纲", cand.VolumeID)
 		}
 		if err := pipeline.ValidateOutlineInheritance(snap, vol, cand.UnitOutlines); err != nil {
+			return domain.Candidate{}, err
+		}
+		// Accept 复验场面归属与章覆盖：生成时拦过，但候选可能绕过（旧缓存、
+		// 并发 Accept），结构底线必须在写盘前再确认一遍。
+		if err := pipeline.ValidateOutlineScenes(cand.UnitOutlines); err != nil {
 			return domain.Candidate{}, err
 		}
 		for _, f := range books.ValidateClockContinuity(clockUnitsWithCandidate(snap, vol, cand.UnitOutlines), vol) {
@@ -1427,10 +1463,17 @@ func writeSceneYAML(b *strings.Builder, scene domain.ScenePlan) {
 	fmt.Fprintf(b, "        conflict: %q\n", scene.Conflict)
 	fmt.Fprintf(b, "        turn: %q\n", scene.Turn)
 	fmt.Fprintf(b, "        outcome: %q\n", scene.Outcome)
+	// 可选定位与信息边界：只在填写时落盘，不输出空字段制造「已确认事实」的假象。
+	if len(scene.Who) > 0 {
+		fmt.Fprintf(b, "        who: [%s]\n", strings.Join(quoteAll(scene.Who), ", "))
+	}
+	if scene.Where != "" {
+		fmt.Fprintf(b, "        where: %q\n", scene.Where)
+	}
 	for _, pair := range []struct {
 		key   string
 		items []string
-	}{{"must_land", scene.MustLand}, {"evidence_in", scene.EvidenceIn}, {"evidence_out", scene.EvidenceOut}} {
+	}{{"reveal", scene.Reveal}, {"withhold", scene.Withhold}, {"must_land", scene.MustLand}, {"evidence_in", scene.EvidenceIn}, {"evidence_out", scene.EvidenceOut}} {
 		if len(pair.items) > 0 {
 			fmt.Fprintf(b, "        %s: [%s]\n", pair.key, strings.Join(quoteAll(pair.items), ", "))
 		}
