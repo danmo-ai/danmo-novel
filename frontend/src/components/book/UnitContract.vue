@@ -107,125 +107,198 @@ const onStageIdentities = computed(() =>
 )
 
 type ChapterView = { chapter: string; goal: string; change: string; cutHook: string; dayOffset: string; scenes: Scene[] }
-type Scene = { id: string; chapter: string; beat: string; who: string; where: string; goal: string; conflict: string; turn: string; outcome: string; info: string }
+type Scene = { id: string; chapter: string; goal: string; conflict: string; turn: string; outcome: string; who: string; where: string; info: string }
 
+const indentOf = (line: string) => (line.match(/^\s*/)?.[0] || '').length
+const unquote = (v: string) => v.trim().replace(/^['"]|['"]$/g, '')
+
+/**
+ * 读一个场面块里的字段。
+ *
+ * `scalar` 与 `list` 分开，是因为 must_land/reveal/withhold 既可以写成
+ * `[a, b]` 也可以写成缩进列表；只取「冒号后那一段」会把 `[` 当成值显示。
+ * 列表只收比键更深一层的 `- ` 行，避免把下一个键的列表项算进来。
+ */
+function parseSceneFields(lines: string[], fallbackChapter = ''): Scene {
+  const scalar = (key: string): string => {
+    for (const line of lines) {
+      const m = line.match(new RegExp(`^\\s*${key}\\s*:\\s*(.*)$`))
+      if (m) return unquote(m[1])
+    }
+    return ''
+  }
+  const list = (key: string): string[] => {
+    const out: string[] = []
+    let active = false
+    let base = 0
+    for (const line of lines) {
+      const m = line.match(new RegExp(`^(\\s*)${key}\\s*:\\s*(.*)$`))
+      if (m) {
+        active = true
+        base = m[1].length
+        const inline = m[2].trim()
+        if (inline && inline !== '[]') {
+          out.push(...inline.replace(/^\[/, '').replace(/\]$/, '').split(',').map(unquote).filter(Boolean))
+        }
+        continue
+      }
+      if (!active) continue
+      if (!line.trim()) continue
+      const li = line.match(/^(\s*)-\s+(.*)$/)
+      if (li && li[1].length > base) {
+        out.push(unquote(li[2]))
+        continue
+      }
+      active = false
+    }
+    return out
+  }
+  const whoList = list('who')
+  const info = [
+    ['must_land', list('must_land')],
+    ['reveal', list('reveal')],
+    ['withhold', list('withhold')],
+  ]
+    .filter(([, items]) => (items as string[]).length)
+    .map(([key, items]) => `${key as string}: ${(items as string[]).join('、')}`)
+    .join(' · ')
+  return {
+    id: scalar('id') || scalar('scene'),
+    chapter: scalar('chapter') || fallbackChapter,
+    goal: scalar('goal'),
+    conflict: scalar('conflict'),
+    turn: scalar('turn'),
+    outcome: scalar('outcome'),
+    who: whoList.length ? whoList.join('、') : scalar('who'),
+    where: scalar('where') || scalar('when'),
+    info,
+  }
+}
+
+const hasSceneBody = (s: Scene) => Boolean(s.goal || s.conflict || s.turn || s.outcome)
+
+/**
+ * 解析章合同。
+ *
+ * 必须按缩进判定「这一条是不是章」：嵌套的 `      - chapter: 51` 也是
+ * `- chapter:` 开头，用不锚定缩进的正则会把每个场面都当成新章，于是章
+ * 重复出现、场面永远为空，场面里的 `goal:` 还会覆盖掉章自己的目标。
+ * 章条目的缩进以第一个匹配为准，比它深一层的就是场面。
+ */
 function parseChapters(text: string): ChapterView[] {
-  const body = text.trim()
-  if (!body || body === '[]') return []
+  // 不能 trim() 左侧：块内第一行的缩进是判定「章 / 场面」的基准，裁掉它会让
+  // 第一章缩进变成 0、其余章（同为 2 空格）全部落进场面分支。
+  const body = text.replace(/\r/g, '').replace(/\s+$/, '')
+  if (!body.trim() || body.trim() === '[]') return []
+  const lines = body.split('\n')
+  const chapterItemRe = /^(\s*)-\s+chapter\s*:\s*(\d+)\s*$/
+  let chapterIndent = -1
+  for (const line of lines) {
+    const m = line.match(chapterItemRe)
+    if (m) { chapterIndent = m[1].length; break }
+  }
+  if (chapterIndent < 0) return []
+
   const chapters: ChapterView[] = []
+  const byNumber = new Map<string, ChapterView>()
   let current: ChapterView | null = null
-  let currentScene: Scene | null = null
-  for (const line of body.split('\n')) {
-    const top = line.match(/^\s*-\s+chapter:\s*(\d+)/)
-    const nested = line.match(/^\s+chapter:\s*(\d+)/)
-    const field = line.match(/^\s+(goal|change|cut_hook|day_offset):\s*(.*)$/)
-    if (top) {
-      current = { chapter: top[1], goal: '', change: '', cutHook: '', dayOffset: '0', scenes: [] }
+  let sceneLines: string[] = []
+  const flushScene = () => {
+    if (current && sceneLines.length) {
+      const scene = parseSceneFields(sceneLines, current.chapter)
+      if (hasSceneBody(scene)) current.scenes.push(scene)
+    }
+    sceneLines = []
+  }
+
+  for (const line of lines) {
+    if (!line.trim()) continue
+    const indent = indentOf(line)
+    const item = line.match(chapterItemRe)
+    if (item && indent === chapterIndent) {
+      flushScene()
+      const existing = byNumber.get(item[2])
+      if (existing) { current = existing; continue } // 同章号重复时合并，不再多显示一章
+      current = { chapter: item[2], goal: '', change: '', cutHook: '', dayOffset: '0', scenes: [] }
+      byNumber.set(item[2], current)
       chapters.push(current)
-      currentScene = null
       continue
     }
     if (!current) continue
-    if (field) {
-      if (field[1] === 'goal') current.goal = field[2]
-      if (field[1] === 'change') current.change = field[2]
-      if (field[1] === 'cut_hook') current.cutHook = field[2]
-      if (field[1] === 'day_offset') current.dayOffset = field[2]
+    if (indent > chapterIndent + 2) {
+      // 场面区域：`- chapter:` 或 `- id:` 开启下一场，其余行归当前场。
+      if (item || /^\s*-\s+(id|scene)\s*:/.test(line)) {
+        flushScene()
+        sceneLines = [line]
+      } else if (sceneLines.length) {
+        sceneLines.push(line)
+      }
       continue
     }
-    if (nested) {
-      currentScene = { id: '', chapter: nested[1], beat: '', who: '', where: '', goal: '', conflict: '', turn: '', outcome: '', info: '' }
-      current.scenes.push(currentScene)
-      continue
-    }
-    if (/^\s+goal:/.test(line) && currentScene) {
-      const v = line.replace(/^\s+goal:\s*/, '').trim()
-      currentScene.goal = v
-      if (!currentScene.beat) currentScene.beat = v
-      continue
-    }
-    if (/^\s+conflict:/.test(line) && currentScene) { currentScene.conflict = line.replace(/^\s+conflict:\s*/, '').trim(); continue }
-    if (/^\s+turn:/.test(line) && currentScene) { currentScene.turn = line.replace(/^\s+turn:\s*/, '').trim(); continue }
-    if (/^\s+outcome:/.test(line) && currentScene) { currentScene.outcome = line.replace(/^\s+outcome:\s*/, '').trim(); continue }
-    if (/^\s+(must_land|reveal|withhold):/.test(line) && currentScene) {
-      currentScene.info = (currentScene.info ? currentScene.info + ' · ' : '') + line.trim()
-      continue
-    }
+    const field = line.match(/^\s*(goal|change|cut_hook|day_offset)\s*:\s*(.*)$/)
+    if (!field) continue
+    if (field[1] === 'goal') current.goal = unquote(field[2])
+    if (field[1] === 'change') current.change = unquote(field[2])
+    if (field[1] === 'cut_hook') current.cutHook = unquote(field[2])
+    if (field[1] === 'day_offset') current.dayOffset = unquote(field[2])
   }
+  flushScene()
   return chapters
 }
 
-const chapterPlans = computed(() => parseChapters(section(raw.value, 'chapters')))
-/** 解析 scenes：支持 `- id:/chapter:` 列表，也支持扁平重复的 chapter/beat/who 块。 */
-function parseScenes(text: string): Scene[] {
-  const body = text.trim()
-  if (!body || body === '[]') return []
-  const groups: string[][] = []
+/**
+ * 解析单元级 `scenes:`。
+ *
+ * 旧书把场面平铺在单元上（同一个 mapping 里重复写 chapter/goal/conflict…），
+ * 新版把场面嵌在 chapters[].scenes 下。两种都要能显示：只要出现下一个
+ * `chapter:` 键就切块，块内字段用 parseSceneFields 读。
+ */
+function parseUnitScenes(text: string): Scene[] {
+  const body = text.replace(/\r/g, '').replace(/\s+$/, '')
+  if (!body.trim() || body.trim() === '[]') return []
+  const blocks: string[][] = []
   let cur: string[] = []
-  const flush = () => { if (cur.length) { groups.push(cur); cur = [] } }
-  // who 下的人物 stem（无冒号），不是场面条目。
-  const isWhoStem = (line: string) => /^\s+-\s+[a-z][a-z0-9-]*\s*$/i.test(line)
-  // 场面顶层键（行首，可带 list dash）；勿用全局 /chapter/ 以免误伤 beat 正文。
-  const topKey = (line: string) => line.match(/^\s*(?:-\s+)?(id|scene|chapter|beat|purpose)\s*:/i)?.[1]?.toLowerCase() || ''
-  const hasTopKey = (lines: string[], key: string) => lines.some((l) => topKey(l) === key)
-
+  let hasChapter = false
   for (const line of body.split('\n')) {
     if (!line.trim()) continue
-    if (isWhoStem(line)) {
-      if (cur.length) cur.push(line)
-      continue
+    const chapterKey = /^\s*chapter\s*:/.test(line)
+    const itemStart = /^\s*-\s+(id|scene|chapter)\s*:/.test(line)
+    if ((chapterKey && hasChapter) || (itemStart && cur.length)) {
+      blocks.push(cur)
+      cur = []
+      hasChapter = false
     }
-    const key = topKey(line)
-    // 同一场面不应重复 chapter/id/beat；再出现则开启下一场面（扁平格式）。
-    if (key && hasTopKey(cur, key)) {
-      flush()
-      cur = [line]
-      continue
-    }
-    // 列表项 `- id:` / `- chapter:` 也开启新场面。
-    if (key && /^\s+-\s+/.test(line) && cur.length) {
-      flush()
-      cur = [line]
-      continue
-    }
-    if (cur.length) cur.push(line)
-    else if (key || /^\s+(?:when|where|who|pov)\s*:/i.test(line)) cur = [line]
+    cur.push(line)
+    if (chapterKey) hasChapter = true
   }
-  flush()
-
-  return groups.map((g) => {
-    const s = g.map((l) => l.replace(/^\s+-\s+/, '  ')).join('\n')
-    const val = (k: string) => s.match(new RegExp(`^\\s*${k}\\s*:\\s*(.*)$`, 'im'))?.[1]?.trim().replace(/^['"]|['"]$/g, '') || ''
-    const whoLines = g.filter(isWhoStem).map((l) => l.replace(/^\s+-\s+/, '').trim())
-    const whoInline = val('who')
-    // must_land/reveal/withhold 是多行数组或单行列表，单行 val() 只能抓到 "["，
-    // 交给章合同解析（parseChapters）展示，这里不重复。
-    const raw = g.join('\n')
-    const info = ['must_land', 'reveal', 'withhold']
-      .map((k) => {
-        const m = raw.match(new RegExp(`^\\s+${k}:\\s*\\[(.*)\\]`, 'm'))
-        return m ? `${k}: [${m[1]}]` : ''
-      })
-      .filter(Boolean)
-      .join(' · ')
-    return {
-      id: val('id') || val('scene'),
-      chapter: val('chapter'),
-      beat: val('beat') || val('purpose'),
-      who: whoLines.length ? whoLines.join('、') : whoInline,
-      where: val('where') || val('when'),
-      goal: val('goal'),
-      conflict: val('conflict'),
-      turn: val('turn'),
-      outcome: val('outcome'),
-      info,
-    }
-  }).filter((s) => s.chapter || s.beat || s.id)
+  if (cur.length) blocks.push(cur)
+  return blocks
+    .map((block) => parseSceneFields(block))
+    .filter((s) => s.chapter && hasSceneBody(s))
 }
-const scenes = computed<Scene[]>(() => parseScenes(section(raw.value, 'scenes')))
-const sceneGroups = computed(() => {
+
+/** 单元级场面（旧书格式在这里；新版嵌在 chapters[].scenes 下）。 */
+const unitScenes = computed<Scene[]>(() => parseUnitScenes(section(raw.value, 'scenes')))
+/** 章合同 + 单元级场面归并：老书的四元组也要挂到对应章上显示。 */
+const chapterPlans = computed(() => {
+  const chapters = parseChapters(section(raw.value, 'chapters'))
+  if (!chapters.length) return chapters
+  const byNumber = new Map(chapters.map((c) => [c.chapter, c]))
+  // 以「章」为单位决定用哪一份：章下有嵌套场面就整章用嵌套的，否则整章用
+  // 单元级的那几条。以前按「章内有没有场面」逐条判断，结果每章只挂上第一场。
+  const nestedChapters = new Set(chapters.filter((c) => c.scenes.length > 0).map((c) => c.chapter))
+  for (const scene of unitScenes.value) {
+    if (nestedChapters.has(scene.chapter)) continue
+    const target = byNumber.get(scene.chapter)
+    if (target) target.scenes.push(scene)
+  }
+  return chapters
+})
+const orphanSceneGroups = computed(() => {
+  const known = new Set(chapterPlans.value.map((c) => c.chapter))
   const groups: { chapter: string; scenes: Scene[] }[] = []
-  for (const scene of scenes.value) {
+  for (const scene of unitScenes.value) {
+    if (known.has(scene.chapter)) continue
     let group = groups.find((g) => g.chapter === scene.chapter)
     if (!group) {
       group = { chapter: scene.chapter, scenes: [] }
@@ -235,7 +308,7 @@ const sceneGroups = computed(() => {
   }
   return groups
 })
-const hasContent = computed(() => fields.value.length > 0 || chapterPlans.value.length > 0 || scenes.value.length > 0)
+const hasContent = computed(() => fields.value.length > 0 || chapterPlans.value.length > 0 || unitScenes.value.length > 0)
 </script>
 
 <template>
@@ -268,6 +341,7 @@ const hasContent = computed(() => fields.value.length > 0 || chapterPlans.value.
           <p><strong>断章</strong>{{ chapter.cutHook }}</p>
           <div v-if="chapter.scenes.length" class="chapter-scenes"><small>场面脉络 · {{ chapter.scenes.length }} 场</small>
             <div v-for="(s, i) in chapter.scenes" :key="i" class="scene-beat">
+              <p class="scene-head"><strong>{{ s.id || `S${i + 1}` }}</strong><span v-if="s.who">{{ s.who }}</span><span v-if="s.where">{{ s.where }}</span></p>
               <p v-if="s.goal"><strong>目标</strong>{{ s.goal }}</p>
               <p v-if="s.conflict"><strong>阻力</strong>{{ s.conflict }}</p>
               <p v-if="s.turn"><strong>转折</strong>{{ s.turn }}</p>
@@ -275,16 +349,19 @@ const hasContent = computed(() => fields.value.length > 0 || chapterPlans.value.
               <p v-if="s.info" class="scene-info">{{ s.info }}</p>
             </div>
           </div>
+          <p v-else class="chapter-scenes-missing">本章没有场面脉络：写正文时只能临场决定路径。</p>
         </article>
       </div>
-      <details v-if="!chapterPlans.length && sceneGroups.length" class="contract-scenes legacy-scenes">
-        <summary><span>行动参考 · {{ scenes.length }} 个场面</span><small>旧格式，非章合同</small></summary>
-        <p class="legacy-note">当前单元仍是旧场面表。章合同需在后续 Agent 迁移中生成；以下仅作为行动参考，不代表每章的目标、变化与断章钩。</p>
-        <div v-for="group in sceneGroups" :key="group.chapter" class="legacy-scene-group">
+      <details v-if="orphanSceneGroups.length" class="contract-scenes legacy-scenes">
+        <summary><span>未归章场面 · {{ orphanSceneGroups.reduce((n, g) => n + g.scenes.length, 0) }} 个</span><small>章号越界或章合同缺失</small></summary>
+        <p class="legacy-note">这些场面的章号在本单元的章合同里找不到，因此没有显示在上面的逐章推进中。请检查细纲的 chapter_range 与 scenes[].chapter 是否一致。</p>
+        <div v-for="group in orphanSceneGroups" :key="group.chapter" class="legacy-scene-group">
           <h5>第 {{ group.chapter || '?' }} 章</h5>
-          <div v-for="(s, i) in group.scenes" :key="i" class="scene-row">
-            <span class="scene-beat"><strong v-if="s.id">{{ s.id }}</strong>{{ s.beat || '（无行动说明）' }}</span>
-            <span v-if="s.where" class="scene-where">{{ s.where }}</span>
+          <div v-for="(s, i) in group.scenes" :key="i" class="legacy-scene-row">
+            <p v-if="s.goal"><strong>目标</strong>{{ s.goal }}</p>
+            <p v-if="s.conflict"><strong>阻力</strong>{{ s.conflict }}</p>
+            <p v-if="s.turn"><strong>转折</strong>{{ s.turn }}</p>
+            <p v-if="s.outcome"><strong>结果</strong>{{ s.outcome }}</p>
           </div>
         </div>
       </details>
@@ -311,13 +388,11 @@ const hasContent = computed(() => fields.value.length > 0 || chapterPlans.value.
 .identity-row { display: flex; flex-wrap: wrap; gap: 6px; }
 .identity-chip { font-size: 11px; padding: 4px 10px; border-radius: 8px; background: rgba(196,92,38,.1); color: var(--accent-2); font-weight: 600; }
 .scenes-label { color: var(--ink-soft); font-size: 11px; font-weight: 600; display: block; margin-bottom: 8px; }
-.scene-row { display: flex; align-items: baseline; gap: 12px; padding: 8px 0; border-bottom: 1px dashed var(--line); font-size: 13px; }
-.scene-row:last-of-type { border-bottom: none; }
 .scene-ch { color: var(--accent); font-size: 11px; white-space: nowrap; flex-shrink: 0; width: 52px; }
 .scene-beat { color: var(--ink-soft); line-height: 1.6; flex: 1; }
 .scene-beat strong { color: var(--ink); margin-right: 4px; }
-.scene-where { color: var(--ink-soft); font-size: 11px; flex-shrink: 0; }
+
 .legacy-scenes summary { display: flex; align-items: baseline; gap: 10px; cursor: pointer; color: var(--accent); font-size: 12px; }.legacy-scenes summary small { color: var(--warn); font-size: 10px; }.legacy-note { color: var(--ink-soft); font-size: 11px; line-height: 1.65; max-width: 80ch; }.legacy-scene-group { margin-top: 12px; padding-top: 8px; border-top: 1px solid var(--line); }.legacy-scene-group h5 { color: var(--accent); font-size: 11px; margin: 0 0 6px; }
-.chapter-plans { display: grid; gap: 10px; }.chapter-plan { border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; }.chapter-plan header { display: flex; justify-content: space-between; color: var(--accent); font-size: 12px; margin-bottom: 8px; }.chapter-plan header small { color: var(--ink-soft); }.chapter-plan p { color: var(--ink-soft); font-size: 12px; line-height: 1.65; margin: 6px 0; }.chapter-plan p strong { color: var(--ink); margin-right: 8px; font-weight: 600; }.chapter-scenes { margin-top: 10px; border-top: 1px solid var(--line); padding-top: 8px; }.chapter-scenes small { color: var(--accent); }.scene-beat { padding: 6px 0; border-bottom: 1px dashed var(--line); }.scene-beat:last-child { border-bottom: none; }.scene-beat p { margin: 3px 0; font-size: 12px; line-height: 1.6; }.scene-beat p strong { color: var(--accent); font-weight: 600; margin-right: 8px; font-size: 11px; }.scene-beat .scene-info { color: var(--ink-soft); font-size: 11px; }
-@media (max-width: 720px) { .contract-fields { grid-template-columns: 1fr; } .scene-where { display: none; } }
+.chapter-plans { display: grid; gap: 10px; }.chapter-plan { border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; }.chapter-plan header { display: flex; justify-content: space-between; color: var(--accent); font-size: 12px; margin-bottom: 8px; }.chapter-plan header small { color: var(--ink-soft); }.chapter-plan p { color: var(--ink-soft); font-size: 12px; line-height: 1.65; margin: 6px 0; }.chapter-plan p strong { color: var(--ink); margin-right: 8px; font-weight: 600; }.chapter-scenes { margin-top: 10px; border-top: 1px solid var(--line); padding-top: 8px; }.chapter-scenes small { color: var(--accent); }.scene-beat { padding: 8px 0; border-bottom: 1px dashed var(--line); }.scene-beat:last-child { border-bottom: none; }.scene-beat p { margin: 3px 0; font-size: 12px; line-height: 1.6; }.scene-beat p strong { color: var(--accent); font-weight: 600; margin-right: 8px; font-size: 11px; }.scene-beat .scene-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; color: var(--ink-soft); font-size: 11px; }.scene-beat .scene-head strong { color: var(--accent-2); }.scene-beat .scene-info { color: var(--ink-soft); font-size: 11px; }.chapter-scenes-missing { margin: 8px 0 0; color: var(--warn); font-size: 11px; }.legacy-scene-row { padding: 6px 0; border-bottom: 1px dashed var(--line); }.legacy-scene-row:last-child { border-bottom: none; }.legacy-scene-row p { margin: 2px 0; color: var(--ink-soft); font-size: 12px; line-height: 1.6; }.legacy-scene-row p strong { color: var(--accent); font-weight: 600; margin-right: 8px; font-size: 11px; }
+@media (max-width: 720px) { .contract-fields { grid-template-columns: 1fr; } }
 </style>
