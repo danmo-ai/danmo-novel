@@ -97,7 +97,7 @@ onMounted(load)
       <article v-for="r in filtered" :key="r.id" class="run-record">
         <button class="run-row" @click="expanded = expanded === r.id ? '' : r.id">
           <span class="time-book"><strong>{{ bookTitle(r.bookId) }}</strong><small>{{ date(r.createdAt) }}</small></span>
-          <span class="kind-target"><strong>{{ runKindLabel(r.kind, r.spec?.mode) }}</strong><small>{{ target(r) }}</small></span>
+          <span class="kind-target"><strong>{{ runKindLabel(r.kind, r.spec?.rewriteMode || r.spec?.mode) }}</strong><small>{{ target(r) }}</small></span>
           <span class="model" :title="r.modelId">{{ r.modelId }}</span>
           <span class="tokens">
             <strong>{{ tokens(r, 'promptTokens').toLocaleString() }}</strong><small>/ {{ tokens(r, 'completionTokens').toLocaleString() }}</small>

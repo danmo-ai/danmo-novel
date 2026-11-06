@@ -115,6 +115,11 @@ func (s *Service) startLocked(ctx context.Context, spec domain.TaskSpec) (domain
 		if !ok || (unit.Status != domain.UnitAccepted && unit.Status != domain.UnitDrafted && unit.Status != domain.UnitReviewed && unit.Status != domain.UnitFinalized) {
 			return domain.Run{}, fmt.Errorf("单元 %s 必须先接受完整细纲，才能写正文", spec.UnitID)
 		}
+		// 「在原文上优化」没有原文就无从优化：提前拒绝，而不是让模型收到一份
+		// 写着"基于底稿"却没有底稿的指令。
+		if domain.NormalizeRewriteMode(spec.RewriteMode) == domain.RewriteRefine && !unit.HasProse {
+			return domain.Run{}, fmt.Errorf("单元 %s 还没有正文，不能在原文上优化；请直接用「重新生成」", spec.UnitID)
+		}
 	}
 	if spec.Kind == domain.TaskReview || spec.Kind == domain.TaskRevise || spec.Kind == domain.TaskFinalize {
 		unit, ok := findUnit(snap, spec.UnitID)
@@ -195,7 +200,7 @@ func (s *Service) execute(ctx context.Context, run domain.Run, snap domain.BookS
 		if !ok {
 			err = fmt.Errorf("unit not found: %s", run.Spec.UnitID)
 		} else {
-			res, err = runner.RunWrite(ctx, snap, unit, run.Spec.Instruction, modelID)
+			res, err = runner.RunWriteWithMode(ctx, snap, unit, run.Spec.Instruction, run.Spec.RewriteMode, modelID)
 		}
 	case domain.TaskOutlineReview:
 		unit, ok := findUnit(snap, run.Spec.UnitID)

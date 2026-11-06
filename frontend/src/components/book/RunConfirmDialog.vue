@@ -19,7 +19,7 @@ const props = defineProps<{
   title: string
   modelLabel: string
 }>()
-const emit = defineEmits<{ confirm: [payload: { instruction: string; knowledgeIds: string[]; preservePaths: string[] }]; cancel: [] }>()
+const emit = defineEmits<{ confirm: [payload: { instruction: string; knowledgeIds: string[]; preservePaths: string[]; rewriteMode?: string }]; cancel: [] }>()
 
 const loading = ref(true)
 const loadError = ref('')
@@ -44,6 +44,15 @@ const preserveOpen = ref(true)
 const isReinit = computed(() => props.spec.kind === 'plan' && props.spec.mode === 'reinit')
 const isIdea = computed(() => props.spec.kind === 'idea')
 const isFinalize = computed(() => props.spec.kind === 'finalize')
+/**
+ * 正文重写有两种意图：在旧稿上做细节优化（refine），或不看旧稿重新生成
+ * （fresh）。没有旧稿时只有 fresh 一条路，所以开关只在「单元已有正文」时出现。
+ */
+const isWrite = computed(() => props.spec.kind === 'write')
+const writeUnit = computed(() => (store.currentBook?.units || []).find((u) => u.unitId === props.spec.unitId))
+const canRefine = computed(() => isWrite.value && Boolean(writeUnit.value?.hasProse))
+const rewriteMode = ref<'fresh' | 'refine'>('fresh')
+const previewSpec = computed(() => (isWrite.value ? { ...props.spec, rewriteMode: rewriteMode.value } : props.spec))
 /** 重审：该单元尚未处理的旧审校清单会在启动前被归档，必须提前说明。 */
 const isSupersedeReview = computed(() => props.spec.kind === 'review' && props.spec.supersedeReview === true)
 const openReviewLists = computed(() => {
@@ -73,6 +82,7 @@ const preserveOptions = computed(() => {
 
 const kindLabel = computed(() => {
   if (props.spec.kind === 'rewrite_entity' && props.spec.entityKind === 'cast') return '重写人物卡'
+  if (isWrite.value) return runKindLabel('write', rewriteMode.value)
   return runKindLabel(props.spec.kind, props.spec.mode)
 })
 const confirmLabel = computed(() => (isFinalize.value ? '确认账本核对' : '确认调用'))
@@ -101,6 +111,12 @@ const riskNote = computed(() => {
   }
   if (isDerivedRewrite.value) {
     return '总纲派生设定：已附总纲等依据（只读）。接受仅写当前文件。'
+  }
+  if (isWrite.value && rewriteMode.value === 'refine') {
+    return '优化模式：把本单元现有正文整份发给模型作底稿（逐章只写本章），保留场次与事件骨架，只优化表达/节奏/镜头/对白；输出仍是整章候选，接受后才覆盖原稿。'
+  }
+  if (isWrite.value && canRefine.value) {
+    return '重新生成：不带旧稿，按合同重写整章候选；原稿只在接受后才会被覆盖。若只想保住已满意的地方，改用「在原文上优化」。'
   }
   if (isSupersedeReview.value && openReviewLists.value) {
     return `重审会先归档该单元 ${openReviewLists.value} 份未处理的审校清单（旧结论作废），再按章重新审一遍；正文不受影响。`
@@ -154,14 +170,29 @@ function knowledgeMismatch(d: KnowledgeDoc) {
   return reasons.join(' / ')
 }
 
-onMounted(async () => {
+async function loadPreview() {
+  loading.value = true
+  loadError.value = ''
   try {
-    packet.value = await api.post<ContextPacket>('/api/runs/preview', props.spec)
+    packet.value = await api.post<ContextPacket>('/api/runs/preview', previewSpec.value)
   } catch (e: any) {
+    packet.value = null
     loadError.value = e?.message || '预览上下文失败'
   } finally {
     loading.value = false
   }
+}
+
+function setRewriteMode(mode: 'fresh' | 'refine') {
+  if (rewriteMode.value === mode) return
+  rewriteMode.value = mode
+  void loadPreview()
+}
+
+onMounted(async () => {
+  // 已有正文时默认优化：这是「重写正文」最常见的意图（改这一稿，不是另写一稿）。
+  if (canRefine.value) rewriteMode.value = 'refine'
+  await loadPreview()
   try {
     knowledgeDocs.value = (await api.get<any[]>('/api/knowledge')) || []
   } catch { /* 知识库为空或不可读时忽略 */ }
@@ -238,7 +269,12 @@ function addGoal(goal: string) {
 }
 
 function confirm() {
-  emit('confirm', { instruction: instruction.value.trim(), knowledgeIds: [...selectedKnowledge.value], preservePaths: [...preserve.value] })
+  emit('confirm', {
+    instruction: instruction.value.trim(),
+    knowledgeIds: [...selectedKnowledge.value],
+    preservePaths: [...preserve.value],
+    rewriteMode: isWrite.value ? rewriteMode.value : undefined,
+  })
 }
 </script>
 
@@ -280,6 +316,22 @@ function confirm() {
               </details>
             </div>
           </template>
+        </div>
+
+        <div v-if="canRefine" class="dlg-scope">
+          <span class="scope-label">重写方式（影响上下文与指令，不改变接受语义）</span>
+          <div class="scope-chips">
+            <button class="scope-chip" :class="{ on: rewriteMode === 'refine' }"
+              title="携带本单元现有正文作底稿，保留场次与事件骨架，只优化表达/节奏/镜头/对白"
+              @click="setRewriteMode('refine')">在原文上优化</button>
+            <button class="scope-chip" :class="{ on: rewriteMode === 'fresh' }"
+              title="不带旧稿，按合同重新生成一稿"
+              @click="setRewriteMode('fresh')">重新生成</button>
+          </div>
+          <p class="scope-note">
+            「在原文上优化」会把现有正文整份放进上下文（逐章仍只写本章），适合改表达、压节奏、换镜头；
+            「重新生成」看不到旧稿，适合换写法或推倒重来。改动幅度会在候选里给出提示：几乎没改、或改得像重写，都会提醒你确认模式是否选对。
+          </p>
         </div>
 
         <div v-if="isReinit" class="dlg-scope">

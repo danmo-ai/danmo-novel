@@ -39,7 +39,7 @@ const primaryKind = computed(() => {
       type="button"
       :class="{ primary: emphasize && primaryKind === 'write' }"
       :disabled="busy || readOnly || !canWrite"
-      :title="canWrite ? (unit.hasProse ? '按合同重新生成正文候选' : '按合同生成正文候选') : '先接受细纲后再写正文'"
+      :title="canWrite ? (unit.hasProse ? '重写正文：确认弹窗里可选「在原文上优化」或「重新生成」' : '按合同生成正文候选') : '先接受细纲后再写正文'"
       @click="emit('run', 'write')"
     >{{ writeLabel }}</button>
     <button

@@ -352,13 +352,14 @@ function planCastPreview(c: Candidate) {
   }
 }
 
-async function confirmRun(payload: { instruction: string; knowledgeIds: string[]; preservePaths: string[] }) {
+async function confirmRun(payload: { instruction: string; knowledgeIds: string[]; preservePaths: string[]; rewriteMode?: string }) {
   const spec = confirmSpec.value
   confirmSpec.value = null
   if (!spec || busy.value) return
   if (payload.instruction) spec.instruction = payload.instruction
   if (payload.knowledgeIds?.length) spec.knowledgeIds = payload.knowledgeIds
   if (payload.preservePaths?.length) spec.preservePaths = payload.preservePaths
+  if (payload.rewriteMode) spec.rewriteMode = payload.rewriteMode
   busy.value = true
   try {
     const run = await store.startRun(spec)
@@ -884,7 +885,7 @@ function roleLabel(role?: string) {
       <article v-for="c in listedCandidates" :key="c.id" class="candidate panel">
         <header>
           <div>
-            <strong>{{ c.kind === 'plan' ? planModeLabel(c.mode) : (stageLabels[c.kind] || c.kind) }} · {{ candidateTarget(c) }}</strong>
+            <strong>{{ c.kind === 'plan' ? planModeLabel(c.mode) : (c.kind === 'write' && c.baseChapters?.length ? '正文 · 原文优化' : (stageLabels[c.kind] || c.kind)) }} · {{ candidateTarget(c) }}</strong>
             <span class="muted"> · {{ new Date(c.createdAt).toLocaleString() }}</span>
           </div>
           <div>
@@ -915,6 +916,11 @@ function roleLabel(role?: string) {
               <li v-if="ch.payoff?.length">实际回收：{{ ch.payoff.join('、') }}</li>
             </ul>
           </details>
+        </template>
+        <!-- 优化模式的重写候选同样先看 diff：作者要判断的是"优化了什么"。 -->
+        <template v-else-if="c.kind === 'write' && c.baseChapters?.length">
+          <p class="muted">下面是相对原稿的改动。接受后才会覆盖正文；若几乎没改、或改得像重写，候选里会有提示，可据此换「重新生成」或改走审校后的自动修复。</p>
+          <ChapterDiff :base="c.baseChapters" :revised="c.chapters || []" />
         </template>
         <pre v-else-if="c.chapters" class="candidate-prose">{{ chapterText(c) }}</pre>
         <pre v-else-if="c.unitOutlines" class="candidate-prose">{{ JSON.stringify(c.unitOutlines, null, 2) }}</pre>
@@ -956,7 +962,7 @@ function roleLabel(role?: string) {
     <div v-if="runDrawer" class="run-drawer panel">
       <header><strong>模型日志</strong><button @click="runDrawer = false">×</button></header>
       <div v-if="store.activeRun">
-        <p>{{ runKindLabel(store.activeRun.kind, store.activeRun.spec?.mode) }} · {{ store.activeRun.status }}</p>
+        <p>{{ runKindLabel(store.activeRun.kind, store.activeRun.spec?.rewriteMode || store.activeRun.spec?.mode) }} · {{ store.activeRun.status }}</p>
         <p class="muted">模型 {{ store.activeRun.modelId }} · 调用 {{ store.activeRun.callsUsed }}/{{ store.activeRun.policy?.maxCalls || '计算中' }}</p>
         <p v-if="runCacheOf(store.activeRun).hasData" class="muted">
           缓存命中 {{ runCacheOf(store.activeRun).read.toLocaleString() }} token（{{ hitRateText(runCacheOf(store.activeRun)) }}）

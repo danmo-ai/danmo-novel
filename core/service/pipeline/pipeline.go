@@ -68,10 +68,24 @@ type Result struct {
 }
 
 func (r *Runner) RunWrite(ctx context.Context, snap domain.BookSnapshot, unit domain.UnitInfo, instruction string, modelID string) (Result, error) {
+	return r.RunWriteWithMode(ctx, snap, unit, instruction, domain.RewriteFresh, modelID)
+}
+
+// RunWriteWithMode is RunWrite with an explicit rewrite mode.
+//
+// refine 只是在同一个写作契约上换上下文与指令：输出仍是整章 JSON、预算仍是
+// 逐章，接受语义不变。它和 revise 的区别是"改多少"——refine 允许整章重排
+// 表达，revise 只给补丁。
+func (r *Runner) RunWriteWithMode(ctx context.Context, snap domain.BookSnapshot, unit domain.UnitInfo, instruction, mode, modelID string) (Result, error) {
 	if err := contextsvc.ValidateUnitInput(snap, unit); err != nil {
 		return Result{}, err
 	}
-	packet := contextsvc.BuildWritePacket(snap, unit, instruction)
+	mode = domain.NormalizeRewriteMode(mode)
+	// 没有旧稿就没有"在原文上优化"：退回 fresh，避免指令说"基于底稿"而包里没有底稿。
+	if mode == domain.RewriteRefine && strings.TrimSpace(unit.ProseRaw) == "" {
+		mode = domain.RewriteFresh
+	}
+	packet := contextsvc.BuildWritePacketFor(snap, unit, instruction, mode)
 	// Fixed per-chapter budget. Each call generates exactly one chapter.
 	from, to := unit.ChapterFrom, unit.ChapterTo
 	if from <= 0 || to < from {
@@ -82,6 +96,11 @@ func (r *Runner) RunWrite(ctx context.Context, snap domain.BookSnapshot, unit do
 		Status: domain.CandidateOpen, BaseRevision: snap.Revision,
 		TargetPath: unit.ProsePath, UnitID: unit.UnitID, VolumeID: packet.VolumeID,
 		CreatedAt: time.Now().UTC(),
+	}
+	// 优化模式必须保留旧稿：前端据此做 diff，作者才能判断"到底优化了什么"。
+	// fresh 不填——那是从零生成的稿，没有可比对的基线。
+	if mode == domain.RewriteRefine {
+		cand.BaseChapters = gates.ParseProseChapters(unit.ProseRaw)
 	}
 	var calls []domain.CallRecord
 	originalExtras := map[int]map[string]any{}
@@ -127,6 +146,11 @@ func (r *Runner) RunWrite(ctx context.Context, snap domain.BookSnapshot, unit do
 	cand.Chapters = r.repairFailedChapters(ctx, modelID, packet, unit, cand.Chapters, target, &calls, originalExtras)
 	rep := gates.CheckProseWithRules(cand.Chapters, target, r.proseRules())
 	cand.Findings = append(cand.Findings, rep.Findings...)
+	// 优化模式下"没改"和"改过头"都值得作者看一眼：前者是多花一次钱买了同义词
+	// 替换，后者说明这次其实是重写，该用 fresh。两条都是 advisory，不阻断接受。
+	if mode == domain.RewriteRefine {
+		cand.Findings = append(cand.Findings, gates.RefineSimilarityFindings(cand.BaseChapters, cand.Chapters)...)
+	}
 	return Result{Candidate: cand, Calls: calls, Packet: packet, LocalGate: rep}, nil
 }
 

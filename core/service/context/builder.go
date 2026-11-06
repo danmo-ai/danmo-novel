@@ -75,7 +75,21 @@ func ValidateUnitInput(snap domain.BookSnapshot, unit domain.UnitInfo) error {
 	return nil
 }
 
+// BuildWritePacket builds the fresh-write packet (no old draft). Kept as the
+// default entry point so callers that don't care about rewrite modes stay simple.
 func BuildWritePacket(snap domain.BookSnapshot, unit domain.UnitInfo, instruction string) domain.ContextPacket {
+	return BuildWritePacketFor(snap, unit, instruction, domain.RewriteFresh)
+}
+
+// BuildWritePacketFor assembles the packet for either rewrite mode.
+//
+// refine（在原文上优化）把本单元现有正文作为「优化底稿」块放进共享块：
+// 它在同一次 run 的每一章调用之间逐字相同，所以不会破坏前缀缓存——按章
+// 变化的东西（章号、场面节拍、上一章尾）仍然只走 extra，见 NarrowBeats 的注释。
+// 之所以不做「只携带本章旧稿」：那一块按章变化，放在 documents 里会让它后面的
+// 全部块与整份 references 失去复用；而整单元底稿还顺带保证了跨章的一致。
+func BuildWritePacketFor(snap domain.BookSnapshot, unit domain.UnitInfo, instruction, mode string) domain.ContextPacket {
+	refine := domain.NormalizeRewriteMode(mode) == domain.RewriteRefine && strings.TrimSpace(unit.ProseRaw) != ""
 	policy := DefaultPolicy(domain.TaskWrite, unit.ChapterTo-unit.ChapterFrom+1)
 
 	blocks := []domain.ContextBlock{}
@@ -138,6 +152,13 @@ func BuildWritePacket(snap domain.BookSnapshot, unit domain.UnitInfo, instructio
 	// 此前写作层完全没有这块，能力只能靠 models 自觉不越界。
 	add("ability-limits", "能力上限", "canon/goldfinger.md", ExtractAbilityLimits(snap.Files["canon/world.md"], snap.Files["canon/goldfinger.md"]))
 
+	// 7d. 优化底稿：只在 refine 模式下出现。作者要的是"改这一稿"，模型就必须
+	// 看到这一稿——否则它只能按合同另写一版，那不叫优化。块内容整次 run 恒定，
+	// 不做按章切片（原因见函数注释）。
+	if refine {
+		add("original-prose", "本单元现有正文（优化底稿）", unit.ProsePath, unit.ProseRaw)
+	}
+
 	// 7c. 伏笔由 RunWrite 按章放进 extra。
 
 	genreKB := novel.GenreBullets(snap.Summary.Genre, snap.Summary.Subgenre)
@@ -154,6 +175,11 @@ func BuildWritePacket(snap domain.BookSnapshot, unit domain.UnitInfo, instructio
 
 	system := novel.WriteChapterSystemPromptFor(books.ChapterTarget(unit))
 	baseInstruction := "请按本章合同与场面节拍只写 user 数据包 chapter 指定的那一章。章内不要输出 ---；body 内是纯散文。"
+	if refine {
+		baseInstruction = "请在「本单元现有正文（优化底稿）」的基础上，只重写 user 数据包 chapter 指定的那一章：" +
+			"保留原稿的场次顺序、事件因果、人物行动与信息揭示顺序，不得新增或删除事件，不得把其他章的剧情写进本章；" +
+			"只优化表达、节奏、镜头与对白，章标题沿用原稿。章内不要输出 ---；body 内是纯散文。"
+	}
 	user := BuildUserPrompt("write", "", map[string]any{
 		"id": snap.Summary.ID, "unitId": unit.UnitID, "volumeId": volumeID,
 	}, withUserInstruction(baseInstruction, instruction), blocks, nil)

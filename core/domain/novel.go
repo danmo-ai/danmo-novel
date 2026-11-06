@@ -44,6 +44,30 @@ const (
 	PlanModeVolume = "volume"
 )
 
+// Rewrite modes for TaskWrite.
+//
+// 单元已有正文时，「重写正文」有两种完全不同的意图，必须由作者显式选择：
+//
+//	fresh  = 不带旧稿，按合同重新生成一稿（默认；换方向时用）
+//	refine = 携带本单元现有正文作底稿，保留场次与事件骨架，只优化表达、节奏、
+//	         镜头与对白（细节优化时用）
+//
+// 两者的输出契约相同（整章 JSON），区别只在上下文与指令。「最小改动、只修
+// 指定问题」是第三条路，由 TaskRevise 的补丁模式负责，不要混进这里。
+const (
+	RewriteFresh  = "fresh"
+	RewriteRefine = "refine"
+)
+
+// NormalizeRewriteMode 把未知/空值收敛成 fresh：后端不能因为前端漏传一个
+// 字段就悄悄改变上下文（那是"多付一份提示词"或"少给旧稿"的区别）。
+func NormalizeRewriteMode(mode string) string {
+	if mode == RewriteRefine {
+		return RewriteRefine
+	}
+	return RewriteFresh
+}
+
 type UnitStatus string
 
 const (
@@ -132,6 +156,7 @@ type TaskSpec struct {
 	Selection       *TextSelection `json:"selection,omitempty"`
 	Instruction     string         `json:"instruction,omitempty"`
 	IssueIDs        []string       `json:"issueIds,omitempty"`
+	RewriteMode     string         `json:"rewriteMode,omitempty"`   // write: fresh(默认)|refine
 	TargetPath      string         `json:"targetPath,omitempty"`    // rewrite_entity 目标文件
 	EntityKind      string         `json:"entityKind,omitempty"`    // bible|cast|volume|world|style|rules|facts
 	Mode            string         `json:"mode,omitempty"`          // plan: init|reinit|volume

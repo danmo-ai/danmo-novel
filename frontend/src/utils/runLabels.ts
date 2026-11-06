@@ -41,5 +41,6 @@ export function planModeLabel(mode?: string) {
 
 export function runKindLabel(kind?: string, mode?: string) {
   if (kind === 'plan') return planModeLabel(mode)
+  if (kind === 'write' && mode === 'refine') return '正文 · 原文优化'
   return KIND_LABELS[kind || ''] || kind || '任务'
 }
