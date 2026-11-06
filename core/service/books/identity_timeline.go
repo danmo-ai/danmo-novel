@@ -301,32 +301,40 @@ func ValidateFinalizedIdentity(segments []domain.IdentitySegment, cast []domain.
 // 细纲接受拒绝落盘、审校清单里作为本地硬门显示。三处共用一份判定，措辞才不会分叉。
 func stateDeltaIdentityConflict(segments []domain.IdentitySegment, unit domain.UnitInfo, outlineRaw string) (domain.ReviewFinding, error) {
 	for _, delta := range parseStateDeltas(outlineRaw) {
-		if delta.Field != "role_title" && delta.Field != "identity" && delta.Field != "title" {
+		// 字段归属只问词表，不枚举别名：「identity / title」这类同义写法是
+		// 迁移期的产物，只在 normalize 里处理一次；运行期判断必须只有一条规则。
+		if !domain.OwnedByIdentityTimeline(delta.Field) {
 			continue
 		}
 		identity := IdentityAt(segments, delta.Stem, unit.UnitID)
 		if identity == nil {
 			return identityFinding(unit, delta, "", "缺少本单元生效身份"), fmt.Errorf("%s：%s 缺少本单元生效身份", unit.UnitID, delta.Stem)
 		}
-		// to 必须是本单元生效身份：定稿只确认时间线，不允许它顺手改写身份。
-		if delta.To != identity.RoleTitle {
-			return identityFinding(unit, delta, identity.RoleTitle,
-					fmt.Sprintf("state_deltas 的 to=%s 与本单元生效段 %s 不一致；请先调整规划，不允许落盘自动改身份", delta.To, identity.RoleTitle)),
-				fmt.Errorf("%s：%s 的身份 %s 与本单元生效段 %s 不一致；请先调整规划，不允许定稿自动改身份", unit.UnitID, delta.Stem, delta.To, identity.RoleTitle)
+		// to 必须解析到「本单元这一段」：定稿只确认时间线，不允许它顺手改写身份。
+		// 比较的是段主键而不是文案——作者改措辞、模型写引用都不该让判定翻面。
+		if target := ResolveIdentitySegment(segments, delta.Stem, delta.To, unit.UnitID); target == nil || SegmentKey(*target) != SegmentKey(*identity) {
+			want := SegmentKey(*identity) + "（" + identity.RoleTitle + "）"
+			return identityFinding(unit, delta, want,
+					fmt.Sprintf("state_deltas 的 to=%s 不对应本单元生效段 %s；请先调整规划，不允许落盘自动改身份", delta.To, want)),
+				fmt.Errorf("%s：%s 的身份 %s 不对应本单元生效段 %s；请先调整规划，不允许定稿自动改身份",
+					unit.UnitID, delta.Stem, delta.To, identity.RoleTitle)
 		}
 		// from 是「单元前状态」，可以是本单元身份（单元内不变），也可以是上一段
 		// 身份（边界转换）。两者都不匹配才说明 state_deltas 写错了。
-		if delta.From == "" || delta.From == identity.RoleTitle {
+		if strings.TrimSpace(delta.From) == "" {
 			continue
+		}
+		if src := ResolveIdentitySegment(segments, delta.Stem, delta.From, unit.UnitID); src != nil {
+			prev := identityBefore(segments, delta.Stem, unit.UnitID)
+			if SegmentKey(*src) == SegmentKey(*identity) || (prev != nil && SegmentKey(*src) == SegmentKey(*prev)) {
+				continue
+			}
 		}
 		prev := prevRoleLabel(segments, delta.Stem, unit.UnitID)
-		if prev != "（无）" && prev == delta.From {
-			continue
-		}
-		msg := fmt.Sprintf("state_deltas 的 from=%s 既不等于上一段 %s，也不等于本单元 %s；请修正 state_deltas 或身份时间线",
+		msg := fmt.Sprintf("state_deltas 的 from=%s 既不对应上一段 %s，也不对应本单元 %s；请修正 state_deltas 或身份时间线",
 			delta.From, prev, identity.RoleTitle)
 		return identityFinding(unit, delta, identity.RoleTitle, msg),
-			fmt.Errorf("%s：%s 的单元前身份 %s 既不等于上一段 %s，也不等于本单元 %s；请修正 state_deltas 或身份时间线",
+			fmt.Errorf("%s：%s 的单元前身份 %s 既不对应上一段 %s，也不对应本单元 %s；请修正 state_deltas 或身份时间线",
 				unit.UnitID, delta.Stem, delta.From, prev, identity.RoleTitle)
 	}
 	return domain.ReviewFinding{}, nil
@@ -410,6 +418,206 @@ func prevRoleLabel(segments []domain.IdentitySegment, stem, unitID string) strin
 		return prev.RoleTitle
 	}
 	return "（无）"
+}
+
+// SegmentKey 返回身份段的主键。
+//
+// 显式写了 id 就用 id；否则用「stem@from_unit」派生——它天然唯一（同一个人在同一
+// 单元边界只能有一次身份切换，ApplyIdentityChange 会拒绝重复），所以不需要迁移
+// 现有数据就有一份稳定主键。
+func SegmentKey(seg domain.IdentitySegment) string {
+	if id := strings.TrimSpace(seg.ID); id != "" {
+		return id
+	}
+	if seg.Stem == "" || seg.FromUnit == "" {
+		return ""
+	}
+	return seg.Stem + "@" + seg.FromUnit
+}
+
+// IdentityRef 判断 state_deltas 里的 role_title 值是不是一个引用，而非一段文案。
+//
+// 支持三种写法（新写法优先，旧数据继续可用）：
+//
+//	@v02-U3                 该单元生效的那一段（最常用：只关心"这时候是谁"）
+//	wen-nianci@v02-U3       段主键
+//	重案队刑警              角色文案；解析为"该 stem 名下唯一使用此文案的段"
+//
+// 引用与文案的区别是**判断方式**：引用按主键查找，文案按唯一性反查。
+// 反查命中 0 段或命中多段都报错，绝不猜——猜错比报错更难查。
+type IdentityRef struct {
+	Raw    string
+	Unit   string // `@vNN-Un` 形式
+	Key    string // 完整主键形式
+	IsRef  bool
+	IsByID bool
+}
+
+func ParseIdentityRef(raw string) IdentityRef {
+	v := strings.TrimSpace(raw)
+	if v == "" {
+		return IdentityRef{}
+	}
+	if strings.HasPrefix(v, "@") {
+		unit := strings.TrimSpace(strings.TrimPrefix(v, "@"))
+		return IdentityRef{Raw: v, Unit: unit, IsRef: true, IsByID: true}
+	}
+	if stem, unit, ok := strings.Cut(v, "@"); ok && strings.TrimSpace(stem) != "" && strings.TrimSpace(unit) != "" {
+		return IdentityRef{Raw: v, Key: v, IsRef: true, IsByID: true}
+	}
+	return IdentityRef{Raw: v}
+}
+
+// ResolveIdentitySegment 把一个引用/文案解析成具体身份段。nil 表示解析不到。
+//
+// 这是「外键查找」的唯一入口：所有拿 role_title 做判断的地方都走这里，
+// 而不是各自比字符串。以前三处各写一套比较（细纲接受、定稿校验、审校硬门），
+// 措辞一改就三处结论不一致。
+func ResolveIdentitySegment(segments []domain.IdentitySegment, stem, raw, atUnit string) *domain.IdentitySegment {
+	ref := ParseIdentityRef(raw)
+	switch {
+	case ref.IsRef && ref.Unit != "":
+		// `@单元`：解析成该单元生效的那一段（与传入的 atUnit 无关——这正是
+		// 它有用的地方：种子可以点名"转换发生在哪个单元"）。
+		return IdentityAt(segments, stem, ref.Unit)
+	case ref.IsRef && ref.Key != "":
+		for i := range segments {
+			if segments[i].Stem == stem && SegmentKey(segments[i]) == ref.Key {
+				return &segments[i]
+			}
+		}
+		return nil
+	}
+	if ref.Raw == "" {
+		return nil
+	}
+	// 文案反查：必须唯一命中，否则视为解析失败（由调用方给出可操作的报错）。
+	var hit *domain.IdentitySegment
+	for i := range segments {
+		s := &segments[i]
+		if s.Stem != stem || s.RoleTitle != ref.Raw {
+			continue
+		}
+		if hit != nil {
+			return nil // 有重名，无法判断指的是哪一段
+		}
+		hit = s
+	}
+	if hit == nil && atUnit != "" {
+		// 文案对不上任何段，但恰好等于本单元生效身份时仍按本单元处理：
+		// 旧数据里大量 from/to 写的是"当前身份"，不必强制迁移。
+		if cur := IdentityAt(segments, stem, atUnit); cur != nil && cur.RoleTitle == ref.Raw {
+			return cur
+		}
+	}
+	return hit
+}
+
+// unitStartingRole 返回「从哪个单元开始生效」的单元 ID，用于错误信息指出正确归口。
+func unitStartingRole(segments []domain.IdentitySegment, stem, roleTitle string) string {
+	if seg := ResolveIdentitySegment(segments, stem, roleTitle, ""); seg != nil {
+		return seg.FromUnit
+	}
+	return ""
+}
+
+// ValidateSeedIdentityChanges 校验卷纲单元种子的 state_changes 里身份条目与身份时间线一致。
+//
+// 为什么必须在卷纲阶段查：细纲的身份声明要同时满足两条规则——
+//
+//	A. 必须逐字继承卷纲 state_changes 的父级迁移（ValidateStateDeltaInheritance）
+//	B. 必须等于本单元生效身份（stateDeltaIdentityConflict）
+//
+// 当种子写的是「本单元内并不会发生的身份转换」时，A 和 B 互相排斥：无论模型
+// 怎么写都会被拒。实测 mindvoice-cop 的 v02-U2 种子写着
+// 「重案队试用刑警->重案队刑警」，而时间线里「重案队刑警」从 v02-U3 才生效，
+// 细纲连续 3 次撞死、烧掉 6 次调用，最终整单元被跳过、下一个单元在断链状态开写。
+//
+// 判据是「解析出的身份段是否就是本单元的那一段」——按主键/引用判断，不比文案。
+func ValidateSeedIdentityChanges(segments []domain.IdentitySegment, unitID, stateChanges string) error {
+	for _, row := range stateDeltasFromMarkdown(stateChanges) {
+		if !domain.OwnedByIdentityTimeline(row["field"]) {
+			continue
+		}
+		stem, from, to := row["stem"], row["from"], row["to"]
+		cur := IdentityAt(segments, stem, unitID)
+		if cur == nil {
+			return fmt.Errorf("%s：%s 的 role_title=%s->%s 找不到生效身份段（身份时间线没有覆盖本单元的段）",
+				unitID, stem, from, to)
+		}
+		// to 必须指向「本单元这一段」。用引用解析而不是字面量比较：
+		// 作者改措辞、模型换同义词都不该让规划失效。
+		target := ResolveIdentitySegment(segments, stem, to, unitID)
+		if target == nil || SegmentKey(*target) != SegmentKey(*cur) {
+			hint := ""
+			if at := unitStartingRole(segments, stem, to); at != "" && at != unitID {
+				hint = fmt.Sprintf("；「%s」从 %s 起生效，这条迁移应写在该单元的种子里", targetRoleLabel(target, to), at)
+			}
+			return fmt.Errorf("%s：%s 的 role_title to=%s 不是本单元生效段 %s。本单元内身份恒定，身份转换只能写在转换生效的那个单元%s",
+				unitID, stem, to, SegmentKey(*cur), hint)
+		}
+		// from 是「单元前状态」：等于本单元身份（单元内不变）或上一段身份（边界转换）。
+		if strings.TrimSpace(from) == "" {
+			continue
+		}
+		if src := ResolveIdentitySegment(segments, stem, from, unitID); src != nil {
+			prev := identityBefore(segments, stem, unitID)
+			sameAsCur := SegmentKey(*src) == SegmentKey(*cur)
+			sameAsPrev := prev != nil && SegmentKey(*src) == SegmentKey(*prev)
+			if sameAsCur || sameAsPrev {
+				continue
+			}
+		}
+		return fmt.Errorf("%s：%s 的 role_title from=%s 既不指向上一段 %s，也不指向本单元 %s",
+			unitID, stem, from, prevRoleLabel(segments, stem, unitID), cur.RoleTitle)
+	}
+	return nil
+}
+
+// targetRoleLabel 给错误信息用：引用显示为解析后的文案，文案原样显示。
+func targetRoleLabel(seg *domain.IdentitySegment, raw string) string {
+	if seg != nil {
+		return seg.RoleTitle
+	}
+	return raw
+}
+
+// ApplyVolumeIdentityChanges 应用卷纲文档里声明的全部「### 身份变更」，
+// 返回「本卷落盘后」的身份时间线副本。
+//
+// 抽成函数是因为必须被两处共用：卷纲生成时的合同校验与接受时的落盘校验。
+// 各写一份迟早会分叉——分叉的表现就是「生成通过、接受失败」，而作者已经
+// 为那次生成付过钱了。
+func ApplyVolumeIdentityChanges(segments []domain.IdentitySegment, doc domain.StructuredMarkdown, units []domain.UnitInfo) ([]domain.IdentitySegment, error) {
+	out := append([]domain.IdentitySegment(nil), segments...)
+	for _, e := range doc.EntitiesOf("身份变更") {
+		var err error
+		out, err = ApplyIdentityChange(out, domain.IdentitySegment{
+			Stem:      e.Value("stem"),
+			RoleTitle: e.Value("role_title"),
+			Org:       e.Value("org"),
+			FromUnit:  e.Value("from_unit"),
+			Note:      e.Value("reason"),
+		}, units)
+		if err != nil {
+			return nil, fmt.Errorf("身份变更[%s]：%w", e.ID, err)
+		}
+	}
+	return out, nil
+}
+
+// ValidateVolumeSeedIdentities 对整份卷纲的单元种子做身份一致性校验。
+func ValidateVolumeSeedIdentities(segments []domain.IdentitySegment, doc domain.StructuredMarkdown, units []domain.UnitInfo) error {
+	planned, err := ApplyVolumeIdentityChanges(segments, doc, units)
+	if err != nil {
+		return err
+	}
+	for _, e := range doc.EntitiesOf("单元") {
+		if err := ValidateSeedIdentityChanges(planned, e.ID, e.Value("state_changes")); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func OnStageFromOutline(raw string) []string {

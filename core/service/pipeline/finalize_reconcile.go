@@ -119,7 +119,8 @@ func validateUnitLedger(got []domain.ChapterActual, want []int, bodies map[int]s
 func validateChapterActual(chapter int, a domain.ChapterActual, body string) ([]domain.ReviewFinding, error) {
 	var findings []domain.ReviewFinding
 	for _, d := range a.StateDeltas {
-		if domain.CanonicalStateField(d.Field) == "" || domain.CanonicalStateField(d.Field) == "role_title" {
+		// 身份归时间线所有，实际账本不能替它记账：判据复用统一入口，不认字面量。
+		if domain.CanonicalStateField(d.Field) == "" || domain.OwnedByIdentityTimeline(d.Field) {
 			return nil, fmt.Errorf("第 %d 章实际账本字段 %s 不合法", chapter, d.Field)
 		}
 		if d.Confirmed && !books.ContainsVerbatim(body, d.Evidence, d.Stem) {

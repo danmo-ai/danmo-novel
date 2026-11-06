@@ -221,7 +221,6 @@ func mergeInitialIdentities(existing, initial []domain.IdentitySegment) []domain
 }
 
 func identityChangesFromVolume(snap domain.BookSnapshot, doc domain.StructuredMarkdown, seeds []UnitSeed) ([]domain.IdentitySegment, error) {
-	segments := append([]domain.IdentitySegment(nil), snap.IdentitySegments...)
 	units := append([]domain.UnitInfo(nil), snap.Units...)
 	for _, seed := range seeds {
 		found := false
@@ -235,15 +234,10 @@ func identityChangesFromVolume(snap domain.BookSnapshot, doc domain.StructuredMa
 			units = append(units, domain.UnitInfo{UnitID: seed.UnitID})
 		}
 	}
-	changes := doc.EntitiesOf("身份变更")
-	for _, e := range changes {
-		var err error
-		segments, err = ApplyIdentityChange(segments, domain.IdentitySegment{Stem: e.Value("stem"), RoleTitle: e.Value("role_title"), Org: e.Value("org"), FromUnit: e.Value("from_unit"), Note: e.Value("reason")}, units)
-		if err != nil {
-			return nil, err
-		}
-	}
-	return segments, nil
+	// 与卷纲校验共用同一份实现：校验用的是"应用本卷变更后的时间线"，
+	// 落盘写的也必须是同一份。两处各写一遍，分叉时的表现是
+	// 「校验通过但落盘时间线与校验时不是同一个」——最难查的那类。
+	return ApplyVolumeIdentityChanges(snap.IdentitySegments, doc, units)
 }
 
 func acceptPlanVolume(root string, cand domain.Candidate) error {

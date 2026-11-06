@@ -525,7 +525,14 @@ type BookSnapshot struct {
 }
 
 // IdentitySegment 一段恒定身份区间（与单元边界对齐）。
+//
+// ID 是这张表的**主键**，也是其它实体引用身份的唯一稳定方式。
+// 以前引用靠 role_title 字面量：卷纲写「重案队刑警」、时间线写「重案队试用刑警」，
+// 两处自由文本必须逐字相等才算一致。改一个字、或把转换写在错误的单元，就会让
+// 细纲在两条互相排斥的校验之间死锁。给每段一个主键后，引用变成 `@主键`，
+// 与文案解耦：改措辞不影响引用，"这个身份是哪一段"也只有一个答案。
 type IdentitySegment struct {
+	ID        string `json:"id,omitempty" yaml:"id,omitempty"`
 	Stem      string `json:"stem" yaml:"stem"`
 	RoleTitle string `json:"roleTitle" yaml:"role_title"`
 	Org       string `json:"org,omitempty" yaml:"org,omitempty"`

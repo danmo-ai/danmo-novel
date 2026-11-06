@@ -258,15 +258,26 @@ func stateDeltasFromMarkdown(raw string) []map[string]string {
 			continue
 		}
 		target := strings.SplitN(strings.TrimSpace(parts[0]), ".", 2)
-		transition := strings.SplitN(parts[1], "->", 2)
-		if len(target) != 2 || len(transition) != 2 {
+		if len(target) != 2 {
 			continue
 		}
 		stem, field := strings.TrimSpace(target[0]), strings.TrimSpace(target[1])
 		if stem == "" || field == "" {
 			continue
 		}
-		out = append(out, map[string]string{"stem": stem, "field": field, "from": strings.TrimSpace(transition[0]), "to": strings.TrimSpace(transition[1])})
+		// 两种写法：
+		//   stem.field=前->后   显式迁移（账本字段的常规写法）
+		//   stem.field=后       只写终值；from 留空，由所有者决定"之前是什么"
+		//
+		// 第二种是引用式身份声明必需的：`wen.role_title=@v02-U3` 只表达"本单元
+		// 的身份是这一段"，不需要也不应该由作者抄一遍前一段文案——前一段是
+		// 时间线的事，抄一遍就又变成两份自由文本互相比对。
+		value := strings.TrimSpace(parts[1])
+		from, to := "", value
+		if idx := strings.Index(value, "->"); idx >= 0 {
+			from, to = strings.TrimSpace(value[:idx]), strings.TrimSpace(value[idx+2:])
+		}
+		out = append(out, map[string]string{"stem": stem, "field": field, "from": from, "to": to})
 	}
 	return out
 }
@@ -275,10 +286,27 @@ func stateDeltasFromMarkdown(raw string) []map[string]string {
 //
 // 卷纲 state_changes 里还有「证据/关系/立场」这类叙事性说明，它们不是账本
 // 契约，不能被要求逐项出现在细纲 state_deltas 里；但也不能删（那是作者规划）。
+// ContractStateDeltaKeys 只返回「归卷纲所有」的父级迁移。
+//
+// 两类条目被排除：
+//   - 词表之外的叙述性说明（证据/关系/立场）：不是账本契约。
+//   - role_title：它的唯一真源是 canon/identity-timeline.yaml，不是卷纲种子。
+//
+// 排除 role_title 是结构性的，不是宽容：卷纲写着「本单元内身份由 A 转 B」时，
+// 细纲既要逐字继承这条迁移，又要满足「to 等于本单元生效身份」，而本单元生效身份
+// 是时间线说了算——只有一种写法能同时满足，模型写错一个标点就死锁。实测
+// mindvoice-cop v02-U2 因此连续 3 次被拒、烧掉 6 次调用、整单元被跳过。
+//
+// 改成「按所有者校验」之后：卷纲的身份迁移只作为**规划说明**保留，
+// 不再要求细纲复制；细纲若声明身份，则独立地按时间线（外键目标）校验。
+// 同一事实只有一个所有者，才不可能出现两个所有者互相矛盾。
 func ContractStateDeltaKeys(raw string) []string {
 	var out []string
 	for _, row := range stateDeltasFromMarkdown(raw) {
 		if domain.CanonicalStateField(row["field"]) == "" {
+			continue
+		}
+		if domain.OwnedByIdentityTimeline(row["field"]) {
 			continue
 		}
 		out = append(out, row["stem"]+"."+row["field"]+"="+row["from"]+"->"+row["to"])

@@ -137,6 +137,13 @@ func (r *Runner) runStructuredVolumePlan(ctx context.Context, snap domain.BookSn
 			if err := validateVolumeInheritance(bookDoc, doc, fmt.Sprintf("v%02d", in.Spec.Chapter)); err != nil {
 				return []Violation{{Path: "parent_contract", Want: "继承总纲卷索引", Got: err.Error()}}
 			}
+			// 单元种子的 role_title 迁移必须与身份时间线一致，否则细纲阶段会陷入
+			// 死锁：父级继承要求逐字包含这条迁移，角色校验又要求 to 等于本单元生效
+			// 身份——两边不可能同时满足。放在这里（而不是只放在 Accept）是为了让
+			// 模型能在结构修复轮里自己改对，而不是等作者付完这次生成的钱才失败。
+			if err := books.ValidateVolumeSeedIdentities(snap.IdentitySegments, doc, volumeUnits(snap, doc)); err != nil {
+				return []Violation{{Path: "unit.state_changes", Want: "role_title 与身份时间线一致", Got: err.Error()}}
+			}
 			return nil
 		},
 		Candidate: func(p planVolumePayload, in TaskInput) domain.Candidate {
@@ -161,4 +168,24 @@ func (r *Runner) runStructuredVolumePlan(ctx context.Context, snap domain.BookSn
 func jsonMarshal(v any) (string, error) {
 	b, err := json.Marshal(v)
 	return string(b), err
+}
+
+// volumeUnits 返回「本卷文档里的单元 + 盘上已有的单元」的去重并集。
+//
+// 身份变更的边界计算（previousUnitID / ValidateIdentityTimeline）要靠单元索引
+// 算出「上一段到哪儿结束」。只给盘上的单元会漏掉本卷新增的单元，得到假的断档；
+// 只给文档里的单元则会让跨卷的上一段无处落点。两个来源都要。
+func volumeUnits(snap domain.BookSnapshot, doc domain.StructuredMarkdown) []domain.UnitInfo {
+	out := append([]domain.UnitInfo(nil), snap.Units...)
+	seen := make(map[string]bool, len(out))
+	for _, u := range out {
+		seen[u.UnitID] = true
+	}
+	for _, e := range doc.EntitiesOf("单元") {
+		if !seen[e.ID] {
+			out = append(out, domain.UnitInfo{UnitID: e.ID})
+			seen[e.ID] = true
+		}
+	}
+	return out
 }

@@ -37,7 +37,7 @@ func ValidateStateDeltas(cast []domain.CastCard, unit domain.UnitInfo, raw strin
 
 	for _, d := range deltas {
 		field := domain.CanonicalStateField(d.Field)
-		if field == "role_title" || field == "life" {
+		if domain.OwnedByIdentityTimeline(field) || field == domain.StateFieldLife {
 			if !people[d.Stem] {
 				return fmt.Errorf("%s.state_deltas：%s 使用 %s 字段，但人物卡中没有 stem=%s",
 					unit.UnitID, d.Stem, field, d.Stem)

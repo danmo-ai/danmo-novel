@@ -41,7 +41,7 @@ func ApplyFinalizationLedger(root string, unit domain.UnitInfo, chapters []domai
 			}
 		}
 		for _, d := range actual[i].StateDeltas {
-			if domain.CanonicalStateField(d.Field) == "" || domain.CanonicalStateField(d.Field) == "role_title" {
+			if domain.CanonicalStateField(d.Field) == "" || domain.OwnedByIdentityTimeline(d.Field) {
 				return fmt.Errorf("第 %d 章实际账本字段 %s 不合法", ch.Chapter, d.Field)
 			}
 			if d.Confirmed && !containsVerbatim(ch.Body, d.Evidence, d.Stem) {

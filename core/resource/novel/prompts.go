@@ -55,7 +55,8 @@ function 与 desire 是同一个种子值（objective）的两处落盘：必须
 storyDay / gapFromPrev / infoControl / forbidden / desire / sourceSeedId / attempt / setback / cost 等叙述字段必须是字符串标量（如 "3" 或 "入职第三天"），不要用对象；chapterFrom/chapterTo/endDay/gapDays 必须是 JSON 数字，不要加引号（继承种子 clock_end_day/clock_gap_days 时也转成数字）；onStage 为字符串数组。
 gapDays 是整数（距上一单元的最少天数）；gapFromPrev 是给写作者看的上一单元承接说明，必须是可读的短句（如 "上一案卷宗已归档，隔天清晨她回到派出所"），禁止只写一个数字——天数属于 gapDays，写进 gapFromPrev 会让界面显示「衔接上一单元 1」。
 stateDeltas 必须是结构化数组 [{"stem":"人物或实体 ID","field":"%s","from":"单元前状态","to":"单元后状态"}]；至少一条，不得用自由文本代替。field 只能用上面列出的值，写别的名字会被判为违规并退回重写。
-field 语义：role_title 身份（由身份时间线拥有）、location 位置、health 身体状态、resources 资源、goal 当前目标、knows 知情范围、relation 当前关系状态、life 生命状态（alive/missing/dead，只能单向流转）。
+field 语义：role_title 身份（唯一真源是 canon/identity-timeline.yaml，本任务只声明、不改写）、location 位置、health 身体状态、resources 资源、goal 当前目标、knows 知情范围、relation 当前关系状态、life 生命状态（alive/missing/dead，只能单向流转）。
+role_title 用**引用**而不是文案：to 写「@单元ID」表示该单元生效的那一段（如 @v02-U3），或写「stem@单元ID」指向段主键。不要抄身份段里的职务文字——抄一遍就成了两份自由文本互相比对，改一个措辞就判定失败。本单元内身份恒定，身份转换只能写在该转换生效的那个单元；from 可以省略，省略即取上一段。
 stateDeltas 的任务是**维护状态**，不只是记录变化。上下文里的「连续性状态」是进入本单元时的完整快照，逐人逐字段过一遍，再决定写什么：
 （1）本单元内变了的：from 抄快照里的旧值，to 写单元结束后的新值。
 （2）本单元内结束了的：必须写显式终值——伤好了 to:"已愈"，调离了 to:"已调离临州"，资源用尽 to:"已用尽"。账本每段是全量快照，不写终值这个值会被后续所有单元一直继承，越拖越像事实。

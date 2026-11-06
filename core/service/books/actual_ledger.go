@@ -71,7 +71,7 @@ func StateFromActual(base domain.UnitState, unit domain.UnitInfo, chapters []dom
 				continue
 			}
 			row := domain.CanonicalStateField(d.Field)
-			if row == "" || row == "role_title" {
+			if row == "" || domain.OwnedByIdentityTimeline(row) {
 				return domain.UnitState{}, fmt.Errorf("实际账本 %s 不支持字段 %s", unit.UnitID, d.Field)
 			}
 			entry := st.Cast[d.Stem]

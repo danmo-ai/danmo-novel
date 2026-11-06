@@ -42,7 +42,52 @@ func ValidateStructuredOutlineFile(snap domain.BookSnapshot, path, raw string) e
 		}
 	}
 	plannedIdentities := append([]domain.IdentitySegment(nil), snap.IdentitySegments...)
+	// 第一遍只处理「身份变更」：单元种子的 role_title 一致性必须基于
+	// 「本卷变更已应用」的时间线，而变更实体按约定写在所属单元之后。
+	// 单遍循环会先校验单元、后应用变更——查的是一个本卷落盘前就已经过期的时间线，
+	// 于是「本卷新增的身份」在校验里根本不存在，永远对不上。
 	for _, e := range doc.Entities {
+		if e.Kind != "身份变更" {
+			continue
+		}
+		knownStem := false
+		for _, c := range snap.Cast {
+			if c.Stem == e.Value("stem") {
+				knownStem = true
+				break
+			}
+		}
+		if len(snap.Cast) > 0 && !knownStem {
+			return fmt.Errorf("身份变更[%s]：人物 %s 不存在，请先建立人物卡与初始身份", e.ID, e.Value("stem"))
+		}
+		if e.Value("from_unit") == "" || !strings.HasPrefix(e.ID, e.Value("from_unit")+"-") {
+			return fmt.Errorf("身份变更[%s]：必须绑定所属单元边界", e.ID)
+		}
+		unitExists := false
+		for _, u := range plannedUnits {
+			if u.UnitID == e.Value("from_unit") {
+				unitExists = true
+				break
+			}
+		}
+		if !unitExists {
+			return fmt.Errorf("身份变更[%s]：起始单元不存在 %s", e.ID, e.Value("from_unit"))
+		}
+		var err error
+		plannedIdentities, err = ApplyIdentityChange(plannedIdentities, domain.IdentitySegment{Stem: e.Value("stem"), RoleTitle: e.Value("role_title"), Org: e.Value("org"), FromUnit: e.Value("from_unit"), Note: e.Value("reason")}, plannedUnits)
+		if err != nil {
+			return fmt.Errorf("身份变更[%s]：%w", e.ID, err)
+		}
+		for _, field := range []string{"stem", "role_title", "org", "from_unit", "reason"} {
+			if strings.TrimSpace(e.Value(field)) == "" {
+				return fmt.Errorf("%s.%s：必填字段为空", e.ID, field)
+			}
+		}
+	}
+	for _, e := range doc.Entities {
+		if e.Kind == "身份变更" {
+			continue
+		}
 		var required []string
 		switch e.Kind {
 		case "分卷":
@@ -53,38 +98,13 @@ func ValidateStructuredOutlineFile(snap domain.BookSnapshot, path, raw string) e
 			if from <= 0 || to < from || to-from+1 > 10 {
 				return fmt.Errorf("%s.chapter_range：有效范围且不超过 10 章", e.ID)
 			}
+			// 身份转换写错单元，细纲在数学上不可能通过（父级继承要求逐字包含
+			// 这条迁移，而角色校验要求 to 等于本单元生效身份）。必须在卷纲落盘前拦住。
+			if err := ValidateSeedIdentityChanges(plannedIdentities, e.ID, e.Value("state_changes")); err != nil {
+				return err
+			}
 		case "转折", "节拍":
 			required = []string{"event", "cause", "effect", "chapter_window"}
-		case "身份变更":
-			required = []string{"stem", "role_title", "org", "from_unit", "reason"}
-			knownStem := false
-			for _, c := range snap.Cast {
-				if c.Stem == e.Value("stem") {
-					knownStem = true
-					break
-				}
-			}
-			if len(snap.Cast) > 0 && !knownStem {
-				return fmt.Errorf("身份变更[%s]：人物 %s 不存在，请先建立人物卡与初始身份", e.ID, e.Value("stem"))
-			}
-			if e.Value("from_unit") == "" || !strings.HasPrefix(e.ID, e.Value("from_unit")+"-") {
-				return fmt.Errorf("身份变更[%s]：必须绑定所属单元边界", e.ID)
-			}
-			unitExists := false
-			for _, u := range plannedUnits {
-				if u.UnitID == e.Value("from_unit") {
-					unitExists = true
-					break
-				}
-			}
-			if !unitExists {
-				return fmt.Errorf("身份变更[%s]：起始单元不存在 %s", e.ID, e.Value("from_unit"))
-			}
-			var err error
-			plannedIdentities, err = ApplyIdentityChange(plannedIdentities, domain.IdentitySegment{Stem: e.Value("stem"), RoleTitle: e.Value("role_title"), Org: e.Value("org"), FromUnit: e.Value("from_unit"), Note: e.Value("reason")}, plannedUnits)
-			if err != nil {
-				return fmt.Errorf("身份变更[%s]：%w", e.ID, err)
-			}
 		}
 		for _, field := range required {
 			if strings.TrimSpace(e.Value(field)) == "" {

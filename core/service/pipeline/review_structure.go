@@ -156,6 +156,11 @@ func (r *Runner) RepairStructure(ctx context.Context, snap domain.BookSnapshot, 
 				if err := validateVolumeInheritance(parent, doc, in.Spec.VolumeID); err != nil {
 					return []Violation{{Path: "parent_contract", Want: "继承父级合同", Got: err.Error()}}
 				}
+				// 结构修复最容易写坏的就是身份迁移：它把「某段被审校判为不合格的
+				// 文本」整块改写，而 role_title 的可选值是身份时间线独占的。
+				if err := books.ValidateVolumeSeedIdentities(in.Snapshot.IdentitySegments, doc, volumeUnits(in.Snapshot, doc)); err != nil {
+					return []Violation{{Path: "unit.state_changes", Want: "role_title 与身份时间线一致", Got: err.Error()}}
+				}
 			}
 			return nil
 		}, Candidate: func(body string, in TaskInput) domain.Candidate {

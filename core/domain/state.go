@@ -68,6 +68,29 @@ var StateDeltaFields = []string{
 	"role_title", "location", "health", "resources", "goal", "knows", "relation", "life",
 }
 
+// 字段名常量：下面这些地方要按名字分支（而不是当普通字符串存放）。
+//
+// 之前到处都是裸字符串 "role_title" / "life"，于是「哪些字段归谁所有」这件事
+// 只存在于注释里。写成常量后，"身份由时间线独占"这条规则才有唯一的落点。
+const (
+	StateFieldRoleTitle = "role_title"
+	StateFieldLocation  = "location"
+	StateFieldHealth    = "health"
+	StateFieldResources = "resources"
+	StateFieldGoal      = "goal"
+	StateFieldKnows     = "knows"
+	StateFieldRelation  = "relation"
+	StateFieldLife      = "life"
+)
+
+// OwnedByIdentityTimeline 表示该字段的唯一真源不是账本，而是别的实体表。
+//
+// role_title 的取值由 canon/identity-timeline.yaml 独占，账本只保存"声明"，
+// 因此在连续性快照里不落副本（见 books.StateFromOutline）。
+func OwnedByIdentityTimeline(field string) bool {
+	return CanonicalStateField(field) == StateFieldRoleTitle
+}
+
 // CanonicalStateField 返回规范字段名；不在词表内时返回空串。
 func CanonicalStateField(field string) string {
 	f := strings.ToLower(strings.TrimSpace(field))

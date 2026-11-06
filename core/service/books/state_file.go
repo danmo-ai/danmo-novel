@@ -249,7 +249,7 @@ func StateFromOutlineWithBase(base domain.UnitState, unit domain.UnitInfo, chapt
 			snap.Relation = d.To
 		case "life":
 			snap.Life = domain.CanonicalLife(d.To)
-		case "role_title":
+		case domain.StateFieldRoleTitle:
 			// 身份由 canon/identity-timeline.yaml 独占，账本不再存副本。
 			//
 			// 这条 delta 仍然有意义：它是「本单元在边界上切了身份」的声明，
