@@ -1396,6 +1396,9 @@ func serializeUnitYAML(u domain.UnitOutlineDraft) string {
 			fmt.Fprintf(&b, "    change: %q\n", ch.Change)
 			fmt.Fprintf(&b, "    cut_hook: %q\n", ch.CutHook)
 			fmt.Fprintf(&b, "    day_offset: %d\n", ch.DayOffset)
+			if t := strings.TrimSpace(ch.StartTime); t != "" {
+				fmt.Fprintf(&b, "    start_time: %q\n", t)
+			}
 			if len(ch.Plant) > 0 {
 				fmt.Fprintf(&b, "    plant: [%s]\n", strings.Join(quoteAll(ch.Plant), ", "))
 			}

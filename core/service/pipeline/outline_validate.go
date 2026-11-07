@@ -46,6 +46,13 @@ func ValidateOutlineContract(units []domain.UnitOutlineDraft, requested []string
 			vs = append(vs, Violation{Path: base + ".chapters", Want: "每章一个轻量 ChapterPlan", Got: "空"})
 		}
 		covered := map[int]bool{}
+		// 章号 -> 前一章的计划，用于「同一天内时间不得倒流」的判断。
+		// 按数组顺序建，而不是按章号排序：模型输出乱序时应以它的编排为准，
+		// 排序会让一条顺序错误被静默纠正。
+		prevPlan := map[int]domain.ChapterPlan{}
+		for i := 1; i < len(u.Chapters); i++ {
+			prevPlan[u.Chapters[i].Chapter] = u.Chapters[i-1]
+		}
 		for j, ch := range u.Chapters {
 			path := fmt.Sprintf("%s.chapters[%d]", base, j)
 			if ch.Chapter < u.ChapterFrom || ch.Chapter > u.ChapterTo {
@@ -60,6 +67,23 @@ func ValidateOutlineContract(units []domain.UnitOutlineDraft, requested []string
 			}
 			if ch.DayOffset < 0 {
 				vs = append(vs, Violation{Path: path + ".dayOffset", Want: "非负整数", Got: fmt.Sprint(ch.DayOffset)})
+			}
+			// 时段是章首的规划值：没它，模型每章都自己猜「什么时候切入」，
+			// 而它的默认猜测是清晨（实测 266 章里 47 章以早晨类词开头）。
+			// 只接受封闭词表，否则「一大早 / 天蒙蒙亮」这类写法无法参与
+			// 「是否与上一章同一天、是否回到更早时刻」的判断。
+			if t := strings.TrimSpace(ch.StartTime); t == "" {
+				vs = append(vs, Violation{Path: path + ".startTime", Want: "时段之一：" + strings.Join(domain.ChapterStartTimes, "/"), Got: "缺失"})
+			} else if domain.CanonicalChapterStartTime(t) == "" {
+				vs = append(vs, Violation{Path: path + ".startTime", Want: "时段之一：" + strings.Join(domain.ChapterStartTimes, "/"), Got: t})
+			}
+			// 同一章内时间不得倒流：day_offset 相同的连续章，时段必须不早于上一章。
+			if prev, ok := prevPlan[ch.Chapter]; ok && prev.DayOffset == ch.DayOffset {
+				cur, before := domain.CanonicalChapterStartTime(ch.StartTime), domain.CanonicalChapterStartTime(prev.StartTime)
+				if cur != "" && before != "" && startTimeRank(cur) < startTimeRank(before) {
+					vs = append(vs, Violation{Path: path + ".startTime",
+						Want: fmt.Sprintf("同一天内不得早于上一章（第 %d 章为 %s）", prev.Chapter, before), Got: cur})
+				}
 			}
 			// 场面是故事脉络合同：每章 1–3 场，缺一章就退回重写——细纲没给节拍，
 			// 写作就只能按 2–4 个主线场面自己切，章内因果和章间承接全靠模型临场发挥。
@@ -255,4 +279,14 @@ func containsString(items []string, want string) bool {
 		}
 	}
 	return false
+}
+
+// startTimeRank 返回时段在一天内的次序（越大越晚）。未知时段返回 -1。
+func startTimeRank(t string) int {
+	for i, v := range domain.ChapterStartTimes {
+		if v == t {
+			return i
+		}
+	}
+	return -1
 }

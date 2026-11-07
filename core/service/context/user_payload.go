@@ -9,6 +9,7 @@ import (
 	"github.com/danmo-ai/danmo-novel/core/domain"
 	"github.com/danmo-ai/danmo-novel/core/service/books"
 	"github.com/danmo-ai/danmo-novel/core/service/gates"
+	"gopkg.in/yaml.v3"
 )
 
 // UserDoc is one document attached as data (never mixed into the system template).
@@ -202,11 +203,15 @@ func WriteChapterExtra(
 	snap domain.BookSnapshot, unit domain.UnitInfo, ch, target, floor, ceil int,
 	beats string, generated []domain.ChapterDraft,
 ) map[string]any {
+	rule := fmt.Sprintf(
+		"本次只写第 %d 章，chapters 数组只放这一章。本章为 %d 字（允许 %d–%d 字）：先按场面分配字数，写完收在目标附近，不要靠追加场景或复述把篇幅写长。",
+		ch, target, floor, ceil)
+	if line := chapterTimeEntry(unit, ch); line != "" {
+		rule += "\n" + line
+	}
 	extra := map[string]any{
-		"chapter": ch,
-		"chapterRule": fmt.Sprintf(
-			"本次只写第 %d 章，chapters 数组只放这一章。本章为 %d 字（允许 %d–%d 字）：先按场面分配字数，写完收在目标附近，不要靠追加场景或复述把篇幅写长。",
-			ch, target, floor, ceil),
+		"chapter":     ch,
+		"chapterRule": rule,
 	}
 	if beats != "" {
 		extra[ChapterBeatsKey] = beats
@@ -228,6 +233,68 @@ func WriteChapterExtra(
 		extra["previousChapterLedger"] = ledger
 	}
 	return extra
+}
+
+// chapterTimeEntry 把细纲的 day_offset / start_time 翻译成「这一章从哪里切入」的
+// 可执行指令。
+//
+// 这是「章首时间戳疲劳」的正面修复：以前每章的 chapterRule 只说字数，时间是
+// 单元级的一段通用规则，模型于是每章都自己猜何时切入、且每次都猜早晨。现在按
+// 与上一章的关系分三种情形：
+//
+//	同一天   → 紧接上一章的时刻继续，不得重新起一天（最常见的错误就是这里：
+//	           上一章傍晚还在现场，下一章又「一早」从派出所开始）
+//	隔几天   → 允许用相对时间锚点，并明确间隔天数
+//	单元首章 → 只有它需要承接上一单元的间隔
+//
+// 时段来自细纲 start_time 的封闭词表；缺失时不编造，只给「不得回到更早时刻」。
+func chapterTimeEntry(unit domain.UnitInfo, ch int) string {
+	cur, ok := chapterPlanOf(unit.OutlineRaw, ch)
+	if !ok {
+		return ""
+	}
+	timeLabel := domain.CanonicalChapterStartTime(cur.StartTime)
+	prev, hasPrev := chapterPlanOf(unit.OutlineRaw, ch-1)
+
+	switch {
+	case !hasPrev || ch <= unit.ChapterFrom:
+		// 单元首章：承接上一单元，时间由 time-guidance 的间隔说明负责。
+		if timeLabel != "" {
+			return fmt.Sprintf("本章从当天**%s**切入（细纲 start_time）；这是本单元第一章，可用相对时间锚点交代与上一单元的间隔，只此一次。", timeLabel)
+		}
+		return ""
+	case prev.DayOffset == cur.DayOffset:
+		// 同一天：必须接着上一章的时刻往下走。
+		if timeLabel != "" {
+			return fmt.Sprintf("本章与上一章**同一天**（day_offset 均为 %d），从当天**%s**切入：必须紧接上一章结束时的时刻、地点与人物状态继续，**不得重新从清晨/一早起头，也不得时间倒流**。", cur.DayOffset, timeLabel)
+		}
+		return fmt.Sprintf("本章与上一章**同一天**（day_offset 均为 %d）：必须紧接上一章结束时的时刻继续，**不得重新从清晨/一早起头，也不得时间倒流**。", cur.DayOffset)
+	default:
+		d := cur.DayOffset - prev.DayOffset
+		if timeLabel != "" {
+			return fmt.Sprintf("本章距上一章 %d 天，从当天**%s**切入；开场用一次相对时间锚点（如「第 N 天/三天后/两天后%s」）即可，不要在章内反复报时。", d, timeLabel, timeLabel)
+		}
+		return fmt.Sprintf("本章距上一章 %d 天；开场用一次相对时间锚点交代间隔即可，不要在章内反复报时。", d)
+	}
+}
+
+// chapterPlanOf 从细纲 YAML 里取某一章的 ChapterPlan。
+func chapterPlanOf(raw string, chapter int) (domain.ChapterPlan, bool) {
+	if chapter <= 0 || strings.TrimSpace(raw) == "" {
+		return domain.ChapterPlan{}, false
+	}
+	var doc struct {
+		Chapters []domain.ChapterPlan `yaml:"chapters"`
+	}
+	if err := yaml.Unmarshal([]byte(raw), &doc); err != nil {
+		return domain.ChapterPlan{}, false
+	}
+	for _, ch := range doc.Chapters {
+		if ch.Chapter == chapter {
+			return ch, true
+		}
+	}
+	return domain.ChapterPlan{}, false
 }
 
 // WritePreviewPacket 返回「写正文真正会发出去的第一章包」。

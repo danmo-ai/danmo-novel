@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"regexp"
 	"strconv"
 	"strings"
@@ -734,6 +735,134 @@ func coerceOutlineUnitMap(m map[string]any) {
 	if v, ok := m["nextHook"]; ok {
 		m["nextHook"] = coerceOutlineNextHook(v)
 	}
+	// 嵌套的章与场面也要归一：chapters[] 里的 dayOffset，以及 scenes[] 里的
+	// chapter/dayOffset 数字字段、reveal/withhold/mustLand/evidenceIn/evidenceOut
+	// 这几个字符串数组。模型经常把单个字符串写成 "withhold":"别说出死档"，
+	// 而 ScenePlan 的字段是 []string——严格 decode 直接失败，整份细纲作废，
+	// 连父子合同校验都到不了（实测 4 次调用里因此浪费 1 次）。
+	coerceOutlineChapters(m["chapters"])
+	coerceOutlineScenes(m["scenes"])
+}
+
+// coerceOutlineChapters 归一 chapters[] 的字段，并递归处理每章的 scenes。
+func coerceOutlineChapters(v any) {
+	list, ok := v.([]any)
+	if !ok {
+		return
+	}
+	for _, item := range list {
+		ch, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		coerceByStructTags(ch, reflect.TypeOf(domain.ChapterPlan{}))
+		coerceOutlineScenes(ch["scenes"])
+	}
+}
+
+// coerceOutlineScenes 归一 scenes[] 的字段。
+func coerceOutlineScenes(v any) {
+	list, ok := v.([]any)
+	if !ok {
+		return
+	}
+	for _, item := range list {
+		scene, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		coerceByStructTags(scene, reflect.TypeOf(domain.ScenePlan{}))
+	}
+}
+
+// coerceByStructTags 按结构体的 json tag 把模型输出的松散类型收成目标类型。
+//
+// 为什么用反射而不是逐个字段列举：这份归一表曾经是手写的（only 单元顶层字段），
+// 结果每加一个嵌套字段就漏一次——实测连续两次细纲失败分别是因为 scenes.withhold
+// 和 scenes.who 被写成字符串而不是数组，而两次都让整份细纲作废、白跑一次调用。
+// 结构体是类型的唯一真源，归一规则就该从它派生。
+//
+// 只处理三类目标：string / int（含 *int）/ []string。其余类型原样保留。
+func coerceByStructTags(m map[string]any, typ reflect.Type) {
+	if m == nil || typ == nil {
+		return
+	}
+	for i := 0; i < typ.NumField(); i++ {
+		f := typ.Field(i)
+		name := strings.Split(f.Tag.Get("json"), ",")[0]
+		if name == "" || name == "-" {
+			continue
+		}
+		v, ok := m[name]
+		if !ok {
+			continue
+		}
+		ft := f.Type
+		if ft.Kind() == reflect.Ptr {
+			ft = ft.Elem()
+		}
+		switch {
+		case ft.Kind() == reflect.Slice && ft.Elem().Kind() == reflect.String:
+			m[name] = coerceToOutlineStringList(v)
+		case ft.Kind() == reflect.Int:
+			m[name] = coerceToOutlineInt(v)
+		case ft.Kind() == reflect.String:
+			m[name] = coerceToOutlineString(v)
+		}
+	}
+}
+
+// coerceToOutlineStringList 把「单个字符串」「数组」都归一成 []string。
+//
+// 空串与 nil 都返回 nil：写成 "withhold":"" 的语义就是「本场没有要保留的信息」，
+// 转成 [""] 会让下游多出一条空条目。
+func coerceToOutlineStringList(v any) any {
+	switch t := v.(type) {
+	case nil:
+		return nil
+	case string:
+		s := strings.TrimSpace(t)
+		if s == "" {
+			return nil
+		}
+		// 模型也常把多个值塞进一个字符串里。
+		parts := splitListish(s)
+		if len(parts) == 0 {
+			return nil
+		}
+		return parts
+	case []any:
+		out := make([]any, 0, len(t))
+		for _, x := range t {
+			if s := strings.TrimSpace(coerceToOutlineString(x)); s != "" {
+				out = append(out, s)
+			}
+		}
+		if len(out) == 0 {
+			return nil
+		}
+		return out
+	default:
+		s := strings.TrimSpace(coerceToOutlineString(v))
+		if s == "" {
+			return nil
+		}
+		return []any{s}
+	}
+}
+
+// splitListish 把逗号/顿号/分号分隔的一行拆成多项；只有一项时原样返回。
+func splitListish(s string) []any {
+	parts := strings.FieldsFunc(s, func(r rune) bool {
+		return r == '、' || r == ',' || r == '，' || r == ';' || r == '；'
+	})
+	out := make([]any, 0, len(parts))
+	for _, p := range parts {
+		if v := strings.TrimSpace(p); v != "" {
+			out = append(out, v)
+		}
+	}
+	return out
 }
 
 // coerceOutlineNextHook 把字符串/字符串数组形态的 nextHook 归一成

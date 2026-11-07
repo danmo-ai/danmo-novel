@@ -53,6 +53,16 @@ signals:
     suggest: '中文行文混入英文单词；专名/品牌/缩写（OK/APP）可保留'
     source: '05-style-deslop 既有规则'
 
+  - id: daycount
+    lens: deslop
+    title: 累计日计数（第 N 天）
+    severity: blocking
+    perMille: 0
+    minHits: 1
+    pattern: '第\s*[0-9]{1,4}\s*天'
+    suggest: '「第352天」是生产账本的数字，读者不知道第 1 天是哪天。改成读者能理解的时间：次日／三天后／当晚／隔周，或直接用事件锚定（公示期满那天、发薪日之后）'
+    source: '实测成稿 33 万字里 25 处；根因是 time-guidance 曾把「第 N 天」当成相对锚点的示例'
+
   # ---- advisory：风格信号，作者判断 ----
 
   - id: degree

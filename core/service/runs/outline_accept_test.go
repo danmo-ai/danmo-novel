@@ -55,9 +55,9 @@ func outlineAcceptUnit() domain.UnitOutlineDraft {
 	return domain.UnitOutlineDraft{
 		UnitID: "v01-U1", ChapterFrom: 1, ChapterTo: 3, Title: "起步", Function: "取得位置", Desire: "取得位置", Obstacle: "质疑", Choice: "复核", Payoff: "许可", Forbidden: "不揭底", InfoControl: "只给线索", OnStage: []string{"lin"}, POV: "lin", StoryDay: "1", EndDay: 3, NextHook: map[string]any{"type": "危机", "out": "继续查"},
 		Chapters: []domain.ChapterPlan{
-			{Chapter: 1, Goal: "查", Change: "得线索", CutHook: "钩", Scenes: []domain.ScenePlan{scene(1, "查入口", "权限不足", "改走程序", "获得查询机会")}},
-			{Chapter: 2, Goal: "核", Change: "得许可", CutHook: "钩", Scenes: []domain.ScenePlan{scene(2, "核材料", "材料不全", "补交证据", "获得许可")}},
-			{Chapter: 3, Goal: "定", Change: "承担", CutHook: "钩", Scenes: []domain.ScenePlan{scene(3, "定责任", "责任风险", "主动承担", "确定承担")}},
+			{Chapter: 1, Goal: "查", Change: "得线索", CutHook: "钩", StartTime: "清晨", Scenes: []domain.ScenePlan{scene(1, "查入口", "权限不足", "改走程序", "获得查询机会")}},
+			{Chapter: 2, Goal: "核", Change: "得许可", CutHook: "钩", StartTime: "上午", Scenes: []domain.ScenePlan{scene(2, "核材料", "材料不全", "补交证据", "获得许可")}},
+			{Chapter: 3, Goal: "定", Change: "承担", CutHook: "钩", StartTime: "午后", Scenes: []domain.ScenePlan{scene(3, "定责任", "责任风险", "主动承担", "确定承担")}},
 		},
 		StateDeltas: []any{map[string]any{"stem": "lin", "field": "goal", "from": "a", "to": "b"}},
 	}

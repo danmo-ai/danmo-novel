@@ -1,6 +1,9 @@
 package domain
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
 // TaskKind identifies a controlled novel generation action.
 type TaskKind string
@@ -212,12 +215,23 @@ type ChapterDraft struct {
 // ChapterPlan is the basic production contract. Scenes are optional helpers,
 // not a second mandatory outline layer.
 type ChapterPlan struct {
-	Chapter   int         `json:"chapter"`
-	Goal      string      `json:"goal"`
-	Change    string      `json:"change"`
-	CutHook   string      `json:"cutHook"`
-	DayOffset int         `json:"dayOffset"`
-	Scenes    []ScenePlan `json:"scenes,omitempty"`
+	Chapter int    `json:"chapter" yaml:"chapter"`
+	Goal    string `json:"goal" yaml:"goal"`
+	Change  string `json:"change" yaml:"change"`
+	CutHook string `json:"cutHook" yaml:"cut_hook"`
+	// DayOffset / StartTime 必须带 yaml 标签：细纲以 snake_case 落盘
+	// （day_offset / start_time），不写标签时 yaml.v3 会去找 dayoffset，
+	// 这两个字段就永远读成零值——读不到 day_offset 时「同日承接」的判断
+	// 会把所有章都当成同一天。
+	DayOffset int `json:"dayOffset" yaml:"day_offset"`
+	// StartTime 是本章从一天中的哪个位置切入（清晨/上午/午后/傍晚/夜里/深夜）。
+	//
+	// dayOffset 只说「哪一天」，不说「一天里的什么时候」。缺这一层时模型只能
+	// 自己猜，而它的默认猜测是「一早」：实测 266 章里 47 章以早晨类词开头，
+	// 同一个单元内甚至出现连续两章都用「天刚亮透」起句。时段由细纲指定之后，
+	// 章与章的切入位置才是被规划的，而不是随机的。
+	StartTime string      `json:"startTime,omitempty" yaml:"start_time,omitempty"`
+	Scenes    []ScenePlan `json:"scenes,omitempty" yaml:"scenes,omitempty"`
 	// Plant / Payoff 是本章负责埋下与回收的伏笔 ID。
 	//
 	// 章级此前没有任何「该埋什么」的契约：48 个产出过 chapters 的单元里，含章级
@@ -226,6 +240,24 @@ type ChapterPlan struct {
 	// 这两个字段把「本章该埋/该收」变成可校验的计划，正文只需按它执行。
 	Plant  []string `json:"plant,omitempty" yaml:"plant,omitempty"`
 	Payoff []string `json:"payoff,omitempty" yaml:"payoff,omitempty"`
+}
+
+// ChapterStartTimes 是 start_time 的唯一合法取值，按一天内的先后排列。
+//
+// 封闭词表而不是自由文本：时段要能用来判断「这一章是否与上一章同一天、
+// 是否回到了更早的时间」，自由文本（「早上」「一大早」「天蒙蒙亮」）会让这条
+// 判断失效，而这正是本次要修的「章首时间戳疲劳」。
+var ChapterStartTimes = []string{"清晨", "上午", "午后", "傍晚", "夜里", "深夜"}
+
+// CanonicalChapterStartTime 返回规范时段名；不在词表内时返回空串。
+func CanonicalChapterStartTime(v string) string {
+	s := strings.TrimSpace(v)
+	for _, allowed := range ChapterStartTimes {
+		if s == allowed {
+			return s
+		}
+	}
+	return ""
 }
 
 type ScenePlan struct {
