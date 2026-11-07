@@ -3,6 +3,7 @@ import { onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAppStore } from '@/stores/app'
 import { api } from '@/api/client'
+import { seedSampleBook } from '@/api/demo'
 
 const store = useAppStore()
 const router = useRouter()
@@ -34,6 +35,7 @@ const form = ref({
   pov: '',
 })
 const bookIdTouched = ref(false)
+const seeding = ref(false)
 const GENRES = ['玄幻', '仙侠', '都市', '悬疑', '言情']
 
 onMounted(async () => {
@@ -80,6 +82,24 @@ async function createBook() {
   } catch (e) { store.fail(e) }
 }
 
+/**
+ * 空书架时给一书本就绪的示例书。内容随 Go 二进制发布（总纲/设定/卷纲/细纲/正文），
+ * 不调用模型——这是没有 API Key 的人（和审核员）唯一能看到完整成品的方式。
+ */
+async function openSample() {
+  if (seeding.value) return
+  seeding.value = true
+  try {
+    const { id } = await seedSampleBook()
+    await store.loadBooks()
+    router.push(`/books/${id}`)
+  } catch (e) {
+    store.fail(e)
+  } finally {
+    seeding.value = false
+  }
+}
+
 function primaryLabel(b: any) {
   if (b.openCandidates) return '待审候选'
   return '继续创作'
@@ -111,8 +131,11 @@ function primaryLabel(b: any) {
     </button>
     <div v-if="!store.books.length" class="empty panel">
       <h2>书架还是空的</h2>
-      <p>从一句灵感开始，新建你的第一本书。</p>
-      <button class="primary" @click="openCreate">开始</button>
+      <p>从一句灵感开始新建一本书；或者先打开示例书，看看一本完整的小书长什么样——总纲、设定、卷纲、细纲和正文都已写好，不调用模型。</p>
+      <div class="empty-actions">
+        <button class="primary" @click="openCreate">新建一本书</button>
+        <button :disabled="seeding" @click="openSample">{{ seeding ? '正在写入示例…' : '打开示例书' }}</button>
+      </div>
     </div>
   </section>
 
@@ -186,6 +209,7 @@ h1 { font-family: var(--font-prose); font-size: clamp(32px, 4.5vw, 56px); line-h
 .pill { color: var(--accent); font-weight: 600; }
 .pill.warn { color: var(--warn); }
 .empty { padding: 32px; grid-column: 1 / -1; text-align: center; }
+.empty-actions { display: flex; justify-content: center; gap: 10px; flex-wrap: wrap; }
 .modal-mask { position: fixed; inset: 0; background: rgba(20,35,31,0.3); display: grid; place-items: center; z-index: 40; overflow: auto; padding: 24px; }
 .modal { width: min(680px, 96vw); padding: 24px; display: grid; gap: 12px; max-height: 92vh; overflow: auto; }
 .modal label { display: grid; gap: 6px; font-size: 13px; color: var(--ink-soft); }

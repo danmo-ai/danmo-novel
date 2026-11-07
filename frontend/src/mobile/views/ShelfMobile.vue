@@ -3,7 +3,7 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAppStore } from '@/stores/app'
 import { api } from '@/api/client'
-import { seedSampleBook } from '../demoBook'
+import { seedSampleBook } from '@/api/demo'
 
 /**
  * 手机书架：列表 + 一个三字段的新建表单。
@@ -44,8 +44,9 @@ async function seedSample() {
   if (seeding.value) return
   seeding.value = true
   try {
-    const id = await seedSampleBook()
+    const { id } = await seedSampleBook()
     await store.loadBooks()
+    // 示例书有总纲与正文，直接进设定页看结构，再从底部「书」进单元列表。
     router.push(`/books/${id}/bible`)
   } catch (e) {
     store.fail(e)
@@ -132,7 +133,7 @@ function open(id: string) {
       <button type="button" @click="openCreate">从自己的灵感开始</button>
     </div>
     <p class="welcome-note">
-      示例书只包含创意提案与设定，不调用任何模型；看完可以直接删掉，或照着它走一遍立项。
+      示例书是一本完整的小书：总纲、设定、卷纲、细纲和一整单元的正文都已写好，不调用任何模型。
     </p>
   </div>
 

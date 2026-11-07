@@ -1,0 +1,34 @@
+unit_id: v01-U1
+status: drafted
+title_working: "最后一潜"
+function: "立规矩与第一次下水"
+desire: "在潮水转向前完成一次干净的例行检查"
+obstacle: "能见度不足半米，船体结构和图纸对不上"
+choice: "先上浮保记录，而不是抢窗口多切一刀"
+payoff: "一份完整的水下记录"
+pleasure: "专业感：他真的按规矩做了，规矩马上救了他"
+forbidden: "不揭舱单上多出来的人是谁"
+chapter_chars: 3000
+chapter_range: [1, 3]
+pov: "lin-an"
+on_stage: ["lin-an", "zhou-laoda"]
+story_day: 1
+end_day: 2
+gap_days: 0
+timeline_id: main
+chapters:
+  - chapter: 1
+    goal: 接下委托并把作业规矩讲清楚
+    change: 从"接单吃饭"到发现图纸有问题
+    cut_hook: 图纸上少了一条夹层
+    day_offset: 0
+  - chapter: 2
+    goal: 下水摸清船体结构
+    change: 从按图作业改为按触觉作业
+    cut_hook: 气瓶读数比预计低得快
+    day_offset: 0
+  - chapter: 3
+    goal: 在气压见底前决定保记录还是抢工期
+    change: 选择上浮，丢了加急费
+    cut_hook: 记录里三处焊点和图纸差了一米
+    day_offset: 1

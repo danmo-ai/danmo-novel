@@ -1,0 +1,17 @@
+version: 1
+segments:
+  - stem: lin-an
+    role_title: 自由潜水员
+    org: 无（独立接单）
+    from_unit: v01-U1
+    note: 初始身份
+  - stem: zhou-laoda
+    role_title: 船老大
+    org: 私人打捞队
+    from_unit: v01-U1
+    note: 初始身份
+  - stem: shen-li
+    role_title: 法务专员
+    org: 潮生港务
+    from_unit: v01-U1
+    note: 初始身份

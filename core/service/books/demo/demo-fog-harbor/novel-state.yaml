@@ -1,0 +1,15 @@
+title: "雾港夜航"
+genre: "悬疑"
+subgenre: "近海打捞"
+stage: units
+last_committed_ch: 0
+next_action: review
+active_unit: "v01-U1"
+time_system: story_day
+qc_profile: general
+continuation_mode: false
+gates:
+  knowledge: pass
+  asset: pass
+  qc: unknown
+blockers: []

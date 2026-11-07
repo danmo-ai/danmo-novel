@@ -427,6 +427,22 @@ func registerBooks(api *gin.RouterGroup, app *App) {
 		_ = app.Store.UpsertBook(c.Request.Context(), snap.Summary.ID, root, snap.Summary.Title, snap.Revision, false)
 		c.JSON(200, snap)
 	})
+	// 内置示例书：首启没有模型 Key 时唯一能看到完整成品（总纲/卷纲/细纲/正文）的入口。
+	// 幂等：已存在就返回现有的，不覆盖作者改动。
+	api.POST("/books/demo", func(c *gin.Context) {
+		root, created, err := books.CreateDemoBook(app.Settings.Get().LibraryRoot)
+		if err != nil {
+			c.JSON(500, gin.H{"error": err.Error()})
+			return
+		}
+		snap, err := books.LoadBook(root, false)
+		if err != nil {
+			c.JSON(500, gin.H{"error": err.Error()})
+			return
+		}
+		_ = app.Store.UpsertBook(c.Request.Context(), snap.Summary.ID, root, snap.Summary.Title, snap.Revision, false)
+		c.JSON(200, gin.H{"created": created, "book": snap})
+	})
 	api.GET("/books/:id", func(c *gin.Context) {
 		root, readOnly, err := app.Store.GetBookRoot(c.Request.Context(), c.Param("id"))
 		if err != nil {

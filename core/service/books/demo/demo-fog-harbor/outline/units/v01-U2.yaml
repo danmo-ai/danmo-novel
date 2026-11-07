@@ -1,0 +1,34 @@
+unit_id: v01-U2
+status: accepted
+title_working: "夹层"
+function: "第一件物证落袋"
+desire: "赶在封舱前找到焊点对应的舱室"
+obstacle: "公司只给四十分钟，且不允许带走船上的任何物品"
+choice: "把舱单塞进配重袋，而不是交给现场监理"
+payoff: "一份被改动过的舱单"
+pleasure: "违规取证的紧张感，和读者先一步看懂的编号"
+forbidden: "不揭舱单上第十一个人的身份"
+chapter_chars: 3000
+chapter_range: [4, 6]
+pov: "lin-an"
+on_stage: ["lin-an", "zhou-laoda", "shen-li"]
+story_day: 3
+end_day: 3
+gap_days: 0
+timeline_id: main
+chapters:
+  - chapter: 4
+    goal: 用绳语让船老大拖住现场监理
+    change: 从被监视到争取到十分钟
+    cut_hook: 监理开始数气瓶
+    day_offset: 0
+  - chapter: 5
+    goal: 在断电的夹层里靠触觉找密封袋
+    change: 从"找焊点"到"摸到一个不属于这里的东西"
+    cut_hook: 密封袋上的编号是事故那年的
+    day_offset: 0
+  - chapter: 6
+    goal: 把舱单带出水面
+    change: 从取物证到成为知情者
+    cut_hook: 舱单上多出一个名字，监理认出了它
+    day_offset: 0

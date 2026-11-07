@@ -94,9 +94,14 @@ Set `APPLE_SIGNING_IDENTITY` (and a team) to get a signed `.ipa` for devices.
 - The app is fully offline for reading and editing; only generation calls the
   user's own model endpoint. Submissions should say "local engine, data stays on
   device" — the WebView itself is not a rejection reason, an empty shell is.
-- First launch offers a sample book that needs no model call
-  (`src/mobile/demoBook.ts`), because a reviewer has no API key and an empty
-  shelf with disabled buttons is the classic 4.2 failure.
+- First launch offers a sample book that needs no model call, because a
+  reviewer has no API key and an empty shelf with disabled buttons is the
+  classic 4.2 failure. The book itself is bundled in the Go binary
+  (`core/service/books/demo/demo-fog-harbor/`) and served by
+  `POST /api/books/demo`: it is a **complete** small book — 总纲, 设定, 卷纲,
+  细纲, and one unit of prose — and `books/demo_test.go` asserts it still passes
+  the same `ValidateStructuredOutlineFile` checks a real plan candidate must
+  pass. Re-clicking the entry never overwrites author edits.
 - No self-update on mobile: `hasUpdater()` in `src/utils/desktop.ts` is false
   when `VITE_SHELL=mobile`, and `capabilities/mobile.json` has no updater
   permission.
