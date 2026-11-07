@@ -22,7 +22,7 @@ const {
   store, view, selectedUnit, editorPath, editorContent, saving, busy,
   isProseUnit, editingProse, editingOutline,
   beginChapterEdit, cancelChapterEdit, saveChapterEdit, saveFile, runUnitAction,
-  reviseFindings, retrySplitReview, focusUnit, rejectUnitFindings, accept, reject,
+  reviseFindings, retrySplitReview, focusUnit, rejectUnitFindings, accept, reject, statusText,
 } = ws
 
 type Segment = 'outline' | 'write' | 'review'
@@ -36,10 +36,6 @@ const segment = computed<Segment>(() => (view.value === 'review' ? 'review' : vi
 function pickSegment(next: Segment) {
   // 审校/正文 在 workspace 里会切到对应 Tab；细纲保持在大纲语义。
   view.value = next
-}
-
-const statusText: Record<string, string> = {
-  proposed: '待细纲', accepted: '待写', drafted: '草稿', reviewed: '已审校', finalized: '定稿',
 }
 
 function back() {

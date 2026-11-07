@@ -10,12 +10,10 @@ import { useInjectedWorkspace } from '../workspace'
  * 卷分组仍然保留（多卷的书需要它），但默认全部展开——手机上折叠一次就
  * 等于让作者多点一次才能看到自己的单元。
  */
-const { store, volumeGroups, busy, primaryInfo } = useInjectedWorkspace()
+// 单元状态文案只有一份（useBookWorkspace）：三个壳说同一句话，才不会出现
+// 「草稿」在列表里叫草稿、在详情里叫待审校这种漂移。
+const { store, volumeGroups, busy, primaryInfo, statusText } = useInjectedWorkspace()
 const router = useRouter()
-
-const statusText: Record<string, string> = {
-  proposed: '待细纲', accepted: '待写', drafted: '草稿', reviewed: '已审校', finalized: '定稿',
-}
 
 function open(unitId: string) {
   router.push(`/books/${store.currentBook?.summary.id}/units/${unitId}`)

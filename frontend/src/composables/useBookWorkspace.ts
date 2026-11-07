@@ -27,7 +27,6 @@ export function useBookWorkspace(opts: { bookId: Ref<string>; view: Ref<Workspac
   const busy = ref(false)
   const modelId = ref('')
   const runDrawer = ref(false)
-  const showUnitPicker = ref(false)
   /**
    * 待审候选 = 「接受后会写文件」的候选。审校清单不在其中：它不写正文，唯一归属地是
    * 审校页。两处都渲染同一批 findings 只会让作者在两份列表之间来回跳。
@@ -55,7 +54,6 @@ export function useBookWorkspace(opts: { bookId: Ref<string>; view: Ref<Workspac
   function runCacheOf(run: { calls?: CallRecord[] } | null | undefined) { return cacheStat(run?.calls) }
 
   const pollTimer = ref<number | null>(null)
-  const customInstruction = ref('')
   const editingProse = ref(false)
   const editingChapter = ref<number | null>(null)
   const proseBeforeEdit = ref('')
@@ -133,7 +131,6 @@ export function useBookWorkspace(opts: { bookId: Ref<string>; view: Ref<Workspac
 
   watch(selectedUnit, () => { editingProse.value = false; editingChapter.value = null; editingOutline.value = false; void openSelected() })
   watch(view, (next) => {
-    showUnitPicker.value = false
     if (next !== 'write') runDrawer.value = false
   })
   watch(view, () => {
@@ -459,23 +456,6 @@ export function useBookWorkspace(opts: { bookId: Ref<string>; view: Ref<Workspac
     }
   }
 
-  /** 轮询一个已在服务端跑起来的 run（例如定稿）。 */
-  function startRunPoll(runId: string) {
-    if (pollTimer.value) clearInterval(pollTimer.value)
-    runDrawer.value = true
-    pollTimer.value = window.setInterval(async () => {
-      try {
-        const r = await store.pollRun(runId)
-        if (r.status !== 'running' && r.status !== 'pending') {
-          if (pollTimer.value) clearInterval(pollTimer.value)
-          pollTimer.value = null
-          await store.loadCandidates(bookId.value)
-          await store.loadRuns(bookId.value)
-        }
-      } catch (e) { store.fail(e) }
-    }, 1200)
-  }
-
   /** 按勾选的审校结论做一次定向修订；产物仍是候选，接受后才覆盖正文。 */
   async function reviseFindings(unitId: string, issueIds: string[]) {
     const book = store.currentBook
@@ -624,27 +604,6 @@ export function useBookWorkspace(opts: { bookId: Ref<string>; view: Ref<Workspac
     } catch (e) { store.fail(e) }
   }
 
-  async function localEdit(instruction: string) {
-    if (!editorContent.value) return
-    const spec = {
-      kind: 'local_edit', bookId: bookId.value, baseRevision: store.currentBook?.revision, modelId: modelId.value,
-      instruction,
-      selection: { path: editorPath.value, text: editorContent.value, before: '', after: '' },
-    }
-    try {
-      const run = await store.startRun(spec)
-      runDrawer.value = true
-      if (pollTimer.value) clearInterval(pollTimer.value)
-      pollTimer.value = window.setInterval(async () => {
-        const r = await store.pollRun(run.id)
-        if (r.status !== 'running') {
-          if (pollTimer.value) clearInterval(pollTimer.value)
-          await store.loadCandidates(bookId.value)
-        }
-      }, 1200)
-    } catch (e) { store.fail(e) }
-  }
-
   function chapterText(c: Candidate) {
     return (c.chapters || []).map((ch) => `## 第${ch.chapter}章 ${ch.title || ''}\n\n${ch.body}`).join('\n\n---\n\n')
   }
@@ -653,22 +612,18 @@ export function useBookWorkspace(opts: { bookId: Ref<string>; view: Ref<Workspac
   }
 
   return {
-    // state
+    // 只暴露壳层真正用到的成员。内部状态（pollTimer、proseBeforeEdit、collapsedVolumes
+    // 等）留在闭包里：它们由这里的方法维护，壳层读了也没有能做的事。
     store, bookId, view,
-    selectedUnit, editorPath, editorContent, saving, busy, modelId, runDrawer, showUnitPicker,
-    pollTimer, customInstruction, editingProse, editingChapter, proseBeforeEdit, editingOutline,
-    collapsedVolumes, confirmSpec, confirmTitle,
-    // computed
-    pendingCandidates, listedCandidates, isProseUnit, hasBookOutline, showSetupTab,
-    hasIdeaProposal, hasVolumes, volumeGroups, primaryInfo,
-    // helpers
+    selectedUnit, editorPath, editorContent, saving, busy, modelId, runDrawer,
+    editingProse, editingOutline, confirmSpec, confirmTitle,
+    listedCandidates, isProseUnit, hasBookOutline, showSetupTab, volumeGroups, primaryInfo,
     stageLabels, statusText,
-    unverifiedEvidence, runCacheOf, toggleVolume, isCollapsed,
-    reload, defaultModelFor, openSelected, saveFile,
-    beginChapterEdit, cancelChapterEdit, saveChapterEdit, saveOutlineField,
+    unverifiedEvidence, runCacheOf, toggleVolume, isCollapsed, defaultModelFor,
+    saveFile, beginChapterEdit, cancelChapterEdit, saveChapterEdit, saveOutlineField,
     reviewStructure, repairStructure, start, startIdea, startRewrite, startPlan,
     planCandidateFiles, planModeLabel, candidateTarget, candidateStructure, planCastPreview,
-    confirmRun, primaryAction, runUnitAction, accept, startRunPoll, reviseFindings,
-    focusUnit, rejectUnitFindings, retrySplitReview, reject, enableWrite, localEdit, chapterText,
+    confirmRun, primaryAction, runUnitAction, accept, reviseFindings,
+    focusUnit, rejectUnitFindings, retrySplitReview, reject, enableWrite, chapterText,
   }
 }

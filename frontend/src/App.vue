@@ -162,16 +162,6 @@ onMounted(async () => {
 .topnav a { color: var(--ink-soft); }
 .topnav a.router-link-active { color: var(--accent); font-weight: 700; }
 .app-main { padding: 0 24px 40px; }
-@media (max-width: 720px) {
-  .topbar { padding: 10px 12px; flex-wrap: wrap; gap: 6px; }
-  .app-main { padding: 0 12px 32px; }
-  .topnav { width: 100%; gap: 2px; justify-content: space-between; overflow-x: auto; scrollbar-width: none; }
-  .topnav::-webkit-scrollbar { display: none; }
-  .topnav a { padding: 8px 10px; min-height: 40px; display: inline-flex; align-items: center; white-space: nowrap; font-size: 13px; }
-  .brand { font-size: 14px; }
-  .brand-group { width: 100%; justify-content: space-between; }
-  .toast { width: calc(100% - 32px); bottom: max(16px, env(safe-area-inset-bottom)); }
-}
 .toast {
   position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
   background: var(--ink); color: white; padding: 10px 16px; border-radius: 12px; z-index: 50;

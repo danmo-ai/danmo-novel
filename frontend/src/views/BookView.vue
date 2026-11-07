@@ -29,7 +29,7 @@ const view = ref<WorkspaceView>('write')
 
 const {
   store,
-  selectedUnit, editorPath, editorContent, saving, busy, runDrawer, showUnitPicker,
+  selectedUnit, editorPath, editorContent, saving, busy, runDrawer,
   editingProse, editingOutline,
   confirmSpec, confirmTitle,
   listedCandidates, isProseUnit, showSetupTab, volumeGroups, primaryInfo,
@@ -70,18 +70,7 @@ const {
       <button role="tab" :aria-selected="view === 'review'" :class="{ active: view === 'review' }" @click="view = 'review'">审校</button>
     </div>
 
-    <div v-if="view === 'write'" class="mobile-workspace-tools">
-      <button class="unit-picker-toggle panel" :aria-expanded="showUnitPicker" @click="showUnitPicker = !showUnitPicker">
-        <span class="unit-picker-label">
-          <small>当前单元</small>
-          <strong>{{ selectedUnit?.unitId || '选择单元' }}</strong>
-          <span v-if="selectedUnit?.title">{{ selectedUnit.title }}</span>
-        </span>
-        <span class="unit-picker-caret">{{ showUnitPicker ? '收起' : '切换' }}</span>
-      </button>
-    </div>
-
-    <div class="workspace" :class="[`view-${view}`, { 'show-unit-picker': showUnitPicker }]">
+    <div class="workspace" :class="`view-${view}`">
       <aside v-if="view === 'write'" class="unit-tree panel">
         <div class="tree-head"><span>单元</span><span class="tree-count">{{ store.currentBook.units.length }}</span></div>
         <div v-for="g in volumeGroups" :key="g.volume" class="volume-group">
@@ -355,14 +344,6 @@ h1 { font-family: var(--font-prose); margin: 6px 0 0; font-size: 30px; line-heig
 .tabs button:hover:not(:disabled) { background: rgba(255,255,255,.7); color: var(--ink); }
 .tabs button.active { background: white; color: var(--accent); box-shadow: 0 2px 8px rgba(20,35,31,.1); }
 
-/* 手机工作区：当前单元选择器和上下文按需提供，正文优先。 */
-.mobile-workspace-tools { display: none; }
-.unit-picker-label { display: grid; gap: 3px; min-width: 0; text-align: left; }
-.unit-picker-label small { color: var(--ink-soft); font-size: 10px; }
-.unit-picker-label strong { color: var(--accent); font-size: 14px; }
-.unit-picker-label > span { color: var(--ink-soft); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.unit-picker-caret { color: var(--accent); font-size: 12px; flex-shrink: 0; }
-
 /* ---- 三栏工作区 ---- */
 .workspace { display: grid; grid-template-columns: 236px minmax(0, 1fr); gap: 18px; align-items: start; }
 .workspace:not(.view-write) { grid-template-columns: minmax(0, 1fr); }
@@ -449,47 +430,5 @@ h1 { font-family: var(--font-prose); margin: 6px 0 0; font-size: 30px; line-heig
 
 @media (max-width: 1180px) {
   .workspace.view-write { grid-template-columns: 210px minmax(0, 1fr); }
-}
-@media (max-width: 720px) {
-  .book-head { padding-bottom: 12px; }
-  .book-head h1 { font-size: 24px; }
-  .tabs { display: flex; width: 100%; overflow-x: auto; margin-bottom: 12px; scrollbar-width: none; }
-  .tabs::-webkit-scrollbar { display: none; }
-  .tabs button { flex: 1 0 auto; min-width: 64px; min-height: 40px; padding: 8px 16px; }
-  .mobile-workspace-tools { display: grid; gap: 8px; margin-bottom: 12px; }
-  .unit-picker-toggle { display: flex; align-items: center; justify-content: space-between; gap: 12px; width: 100%; padding: 12px 14px; text-align: left; }
-  .workspace, .workspace.view-write { display: grid; grid-template-columns: minmax(0, 1fr); width: 100%; min-width: 0; }
-  .workspace > * { min-width: 0; width: 100%; }
-  .editor-panel { min-width: 0; width: 100%; overflow: hidden; }
-  .unit-work { min-width: 0; width: 100%; }
-  .workspace.view-write:not(.show-unit-picker) .unit-tree { display: none; }
-  .workspace.view-write.show-unit-picker .unit-tree { display: block; max-height: 55dvh; overflow-y: auto; }
-  .book-head { flex-direction: column; align-items: flex-start; gap: 10px; }
-  .unit-tree { max-height: 240px; position: static; }
-  .workspace.view-write > .unit-tree { grid-row: 1; }
-  .workspace.view-write > .editor-panel { grid-row: 2; }
-  .editor-panel { min-height: 0; }
-  .prose-editor { min-height: 48vh; padding: 18px 16px; font-size: 16px; }
-  .editor-toolbar { align-items: flex-start; flex-direction: column; }
-  .candidate { padding: 14px; }
-  .candidate header { flex-direction: column; align-items: stretch; }
-  .candidate header > div:last-child { flex-wrap: wrap; }
-  .candidate header button { flex: 1; }
-  .candidate-prose { max-height: none; padding: 14px; font-size: 16px; }
-  .unit-tree { max-height: 40dvh; overflow: auto; }
-  .unit-work { padding: 16px 12px; min-width: 0; }
-  .unit-work-head { display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; align-items: stretch; }
-  .unit-work-head > div:first-child { min-width: 0; }
-  .unit-work-head h3 { overflow-wrap: anywhere; font-size: 22px; }
-  .unit-work-actions { display: grid; gap: 10px; width: 100%; min-width: 0; }
-  .unit-work-actions > * { width: 100%; min-width: 0; }
-  .unit-work-actions > button { width: 100%; min-height: 44px; }
-  .unit-work-actions :deep(.unit-flow-actions) { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); width: 100%; gap: 8px; }
-  .unit-work-actions :deep(.unit-flow-actions button) { width: 100%; min-width: 0; min-height: 44px; white-space: normal; padding: 10px 12px; }
-  .editor-actions { width: 100%; }
-  .editor-actions button { flex: 1; }
-  .run-drawer { inset: auto 0 0; width: 100%; max-height: 72dvh; overflow: auto; border-radius: 18px 18px 0 0; padding-bottom: max(18px, env(safe-area-inset-bottom)); }
-  .primary-task { align-items: stretch; flex-direction: column; gap: 12px; }
-  .primary-task .primary { width: 100%; }
 }
 </style>

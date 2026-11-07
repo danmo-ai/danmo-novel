@@ -3,18 +3,11 @@
  * 桌面设定面板 = 共享视图模型 + 桌面布局。
  * 文档清单、结构化解析、身份时间线都在 useBible（移动端同一份）。
  */
-import { ref } from 'vue'
 import RelationGraph from '@/components/book/RelationGraph.vue'
 import { useBible } from '@/composables/useBible'
 
 const props = defineProps<{ saving: boolean }>()
 const emit = defineEmits<{ save: [path: string, content: string]; openUnit: [unit: any]; rewrite: [spec: { targetPath: string; entityKind: string; title: string }] }>()
-
-/**
- * 手机上目录是唯一能进人物卡/关系图的入口；默认折叠会让作者以为"没有人物"，
- * 所以窄屏一开始就展开，宽屏保持原来的折叠。
- */
-const navOpen = ref(typeof window !== 'undefined' && window.matchMedia('(max-width: 800px)').matches)
 
 const {
   store, book, groups, docs, summaries, commits, missingCount,
@@ -31,11 +24,6 @@ const {
   onSave: (path, content) => emit('save', path, content),
   onRewrite: (spec) => emit('rewrite', spec),
 })
-
-// 目录在窄屏点完就收起：桌面端靠常驻侧栏，这个行为只在手机上有意义。
-function pickDoc(path: string) { chooseDoc(path); navOpen.value = false }
-function pickCast(stem: string) { chooseCast(stem); navOpen.value = false }
-function pickSpecial(view: 'relations') { chooseSpecial(view); navOpen.value = false }
 </script>
 
 <template>
@@ -56,19 +44,16 @@ function pickSpecial(view: 'relations') { chooseSpecial(view); navOpen.value = f
       <span v-if="missingCount" class="missing">缺 {{ missingCount }} 项</span>
     </div>
 
-    <button class="mobile-nav-toggle panel" :aria-expanded="navOpen" @click="navOpen = !navOpen">
-      <span>设定目录 · {{ currentLabel }}</span><span>{{ navOpen ? '收起' : '展开' }}</span>
-    </button>
     <div class="bible-primary-tabs" role="tablist" aria-label="设定分类">
       <button v-for="group in groups" :key="group" role="tab" :aria-selected="activeGroup === group" :class="{ active: activeGroup === group }" @click="chooseGroup(group)">{{ group }}</button>
     </div>
     <div class="bible-layout">
-      <nav class="bible-nav panel" :class="{ 'mobile-open': navOpen }">
+      <nav class="bible-nav panel">
         <template v-for="group in [activeGroup]" :key="group">
           <h3>{{ group }}</h3>
           <template v-if="group === '人物与关系'">
-            <button :class="{ active: specialView === 'relations' }" @click="pickSpecial('relations')"><span>人物关系图</span><small>正式表对方填 stem；关系锚点/与主角关系为虚线</small></button>
-            <button v-for="c in book?.cast || []" :key="c.stem" :class="{ active: selectedCast === c.stem, candidate: c.status === 'candidate' }" @click="pickCast(c.stem)">
+            <button :class="{ active: specialView === 'relations' }" @click="chooseSpecial('relations')"><span>人物关系图</span><small>正式表对方填 stem；关系锚点/与主角关系为虚线</small></button>
+            <button v-for="c in book?.cast || []" :key="c.stem" :class="{ active: selectedCast === c.stem, candidate: c.status === 'candidate' }" @click="chooseCast(c.stem)">
               <span>{{ c.name }}<i class="cast-role" :data-role="c.role">{{ roleLabel(c.role) }}</i><i v-if="c.status === 'candidate'" class="cand-mark">候选</i></span>
               <small v-if="c.tagline">{{ c.tagline }}</small>
               <small v-else class="cast-stem">{{ c.stem }}</small>
@@ -76,18 +61,18 @@ function pickSpecial(view: 'relations') { chooseSpecial(view); navOpen.value = f
             <p v-if="!book?.cast?.length" class="nav-empty">批准立项后人物卡进入这里。</p>
           </template>
           <template v-else-if="group === '连续性账本'">
-            <button v-for="d in docs.filter(x => x.group === group)" :key="d.path" :class="{ active: !selectedCast && currentDoc?.path === d.path }" @click="pickDoc(d.path)">
+            <button v-for="d in docs.filter(x => x.group === group)" :key="d.path" :class="{ active: !selectedCast && currentDoc?.path === d.path }" @click="chooseDoc(d.path)">
               <span>{{ d.label }}<i v-if="!d.exists">未创建</i></span><small>{{ d.path }}</small>
             </button>
-            <button v-for="path in summaries" :key="path" :class="{ active: selectedPath === path }" @click="pickDoc(path)">
+            <button v-for="path in summaries" :key="path" :class="{ active: selectedPath === path }" @click="chooseDoc(path)">
               <span>卷摘要 · {{ path.split('/').pop()?.replace('.md', '') }}</span><small>{{ path }}</small>
             </button>
-            <button v-for="path in commits" :key="path" :class="{ active: selectedPath === path }" @click="pickDoc(path)">
+            <button v-for="path in commits" :key="path" :class="{ active: selectedPath === path }" @click="chooseDoc(path)">
               <span>定稿账本 · {{ path.split('/').pop()?.replace('.md', '') }}</span><small>{{ path }}</small>
             </button>
           </template>
           <template v-else>
-            <button v-for="d in docs.filter(x => x.group === group)" :key="d.path" :class="{ active: !selectedCast && currentDoc?.path === d.path }" @click="pickDoc(d.path)">
+            <button v-for="d in docs.filter(x => x.group === group)" :key="d.path" :class="{ active: !selectedCast && currentDoc?.path === d.path }" @click="chooseDoc(d.path)">
               <span>{{ d.label }}<i v-if="!d.exists">未创建</i></span><small>{{ d.description }}</small>
               <small class="usage-tag">用于：{{ d.usage }}</small>
             </button>
@@ -307,35 +292,4 @@ function pickSpecial(view: 'relations') { chooseSpecial(view); navOpen.value = f
 .empty-state, .missing-doc, .secret-gate { padding: 36px 24px; text-align: center; }
 .missing-doc p, .secret-gate p { color: var(--ink-soft); line-height: 1.7; }
 .secret-gate strong { font-family: var(--font-prose); font-size: 22px; }
-.mobile-nav-toggle { display: none; }
-@media (max-width: 900px) {
-  .bible-layout { grid-template-columns: 1fr; }
-  .bible-nav { display: none; max-height: 55vh; }
-  .bible-nav.mobile-open { display: block; }
-  .mobile-nav-toggle { display: flex; justify-content: space-between; align-items: center; padding: 12px 14px; text-align: left; }
-  .view-title { flex-direction: column; align-items: stretch; gap: 12px; }
-  .view-title > div:first-child { min-width: 0; }
-  .view-title h2 { font-size: 24px; }
-  .view-title p { overflow-wrap: anywhere; }
-  .view-actions { flex-wrap: wrap; width: 100%; gap: 8px; }
-  .view-actions button { flex: 1 1 140px; min-width: 0; min-height: 44px; white-space: normal; }
-  .bible-content header { flex-wrap: wrap; }
-  .bible-content header > div { min-width: 0; }
-  .cast-title { flex-wrap: wrap; gap: 4px 8px; }
-  .cast-role.big { margin-left: 0; }
-  .candidate-badge { margin-left: 0; }
-  .coverage { align-items: flex-start; }
-  .coverage > span { min-width: 0; overflow-wrap: anywhere; }
-  .coverage { gap: 10px 16px; }
-  .coverage .missing { margin-left: 0; }
-  .identity-heading { flex-direction: column; }
-  .identity-actions { margin-left: 0; flex-wrap: wrap; }
-  .identity-seg { flex-wrap: wrap; gap: 6px 10px; }
-  .bible-content > header { align-items: flex-start; flex-direction: column; }
-  .bible-content header > span { max-width: 100%; }
-  .entity-view { padding: 16px; }
-  .table-wrap { max-width: 100%; }
-  .identity-dialog { max-height: 90dvh; overflow-y: auto; padding: 18px; }
-  .identity-dialog footer button { flex: 1; }
-}
 </style>

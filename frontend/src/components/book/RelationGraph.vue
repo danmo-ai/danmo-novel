@@ -58,18 +58,6 @@ function choose(stem: string) { selected.value = selected.value === stem ? '' : 
         </svg>
         <div class="legend"><span><i class="solid"></i>正式关系表</span><span><i class="dashed"></i>文字关系</span></div>
       </div>
-      <!--
-        手机屏幕放不下 700×520 的力导向图：等比缩到 378px 后节点文字只剩 6px，
-        名字全部糊成一团。窄屏改为可读的人物列表，选中后仍走右侧/下方详情。
-      -->
-      <ul class="cast-graph-list">
-        <li v-for="card in cards" :key="card.stem">
-          <button :class="{ selected: selected === card.stem }" @click="choose(card.stem)">
-            <span class="cast-name">{{ name(card.stem) }}<i v-if="isProtagonist(card.role)" class="cast-badge">主角</i></span>
-            <small>{{ relations.filter((r) => r.from === card.stem || r.to === card.stem).length }} 条关系</small>
-          </button>
-        </li>
-      </ul>
       <aside class="relation-detail panel">
         <template v-if="selectedCard">
           <h4>{{ name(selectedCard.stem) }}</h4>
@@ -118,22 +106,4 @@ function choose(stem: string) { selected.value = selected.value === stem ? '' : 
 .relation-item strong { font-size: 12px; }
 .relation-item p { color: var(--ink-soft); font-size: 12px; line-height: 1.6; }
 .empty { color: var(--ink-soft); padding: 16px; }
-@media (max-width: 800px) { .graph-layout { grid-template-columns: minmax(0, 1fr); } .relation-head { flex-direction: column; } }
-.cast-graph-list { display: none; }
-@media (max-width: 800px) {
-  .graph-canvas { display: none; }
-  .cast-graph-list { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
-  .cast-graph-list button {
-    display: flex; align-items: center; justify-content: space-between; gap: 10px;
-    width: 100%; padding: 12px 14px; text-align: left; font-size: 14px;
-  }
-  .cast-graph-list button.selected { border-color: var(--accent); color: var(--accent); }
-  .cast-graph-list .cast-name { display: inline-flex; align-items: center; gap: 6px; font-weight: 600; }
-  .cast-badge {
-    font-style: normal; font-size: 10px; font-weight: 600; padding: 1px 6px; border-radius: 6px;
-    background: rgba(15,107,92,.12); color: var(--accent);
-  }
-  .cast-graph-list small { color: var(--ink-soft); font-size: 12px; flex-shrink: 0; }
-  .relation-detail { max-height: none; }
-}
 </style>

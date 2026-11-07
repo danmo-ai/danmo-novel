@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import RelationGraph from '@/components/book/RelationGraph.vue'
 import { useBible } from '@/composables/useBible'
+import { isProtagonist, parseCastRelations } from '@/utils/castRelations'
 import { useInjectedWorkspace } from '../workspace'
 
 /**
@@ -33,6 +33,16 @@ const {
 const mode = ref<'list' | 'detail'>('list')
 
 const groupDocs = computed(() => docs.value.filter((d) => d.group === activeGroup.value))
+
+/**
+ * 关系在手机上不画图：700×520 的力导向图缩到 390px 后节点文字只剩几个像素。
+ * 这里给一张「每人几条关系」的列表，点名字进人物卡看具体关系——数据同源
+ * （parseCastRelations），只是换了一种能在小屏读的呈现。
+ */
+const relations = computed(() => parseCastRelations(book.value?.cast || []))
+function relationCount(stem: string) {
+  return relations.value.filter((r) => r.from === stem || r.to === stem).length
+}
 
 function openDoc(path: string) {
   chooseDoc(path)
@@ -134,7 +144,22 @@ function saveAndBack() {
     </div>
 
     <div v-if="specialView === 'relations'" class="panel pad">
-      <RelationGraph @open="openCast" />
+      <p class="muted relation-note">
+        实线关系是人物卡里的「## 关系」表，虚线是「关系锚点 / 与主角关系」等文字关系。
+        点名字进人物卡看具体条目。
+      </p>
+      <ul class="relation-list">
+        <li v-for="c in book?.cast || []" :key="c.stem">
+          <button type="button" @click="openCast(c.stem)">
+            <span class="rel-name">
+              {{ c.name }}
+              <i v-if="isProtagonist(c.role)" class="rel-badge">主角</i>
+            </span>
+            <small>{{ relationCount(c.stem) }} 条关系</small>
+          </button>
+        </li>
+      </ul>
+      <p v-if="!(book?.cast || []).length" class="muted">还没有人物卡。</p>
     </div>
 
     <template v-else>
@@ -283,6 +308,18 @@ function saveAndBack() {
 .cand { font-style: normal; font-size: 9px; padding: 0 5px; border-radius: 6px; background: rgba(161,92,18,.14); color: var(--warn); }
 .missing { font-style: normal; font-size: 10px; color: var(--warn); }
 .chev { color: var(--ink-soft); font-size: 20px; line-height: 1; flex-shrink: 0; }
+.relation-note { margin: 0 0 10px; line-height: 1.7; }
+.relation-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.relation-list button {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  width: 100%; padding: 12px 14px; text-align: left; font-size: 14px;
+}
+.rel-name { display: inline-flex; align-items: center; gap: 6px; font-weight: 600; }
+.rel-badge {
+  font-style: normal; font-size: 10px; font-weight: 600; padding: 1px 6px; border-radius: 6px;
+  background: rgba(15,107,92,.12); color: var(--accent);
+}
+.relation-list small { color: var(--ink-soft); font-size: 12px; flex-shrink: 0; }
 .detail-head { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
 .back { flex-shrink: 0; width: 40px; min-height: 40px; border: 0; background: transparent; font-size: 26px; line-height: 1; color: var(--accent); padding: 0; }
 .detail-title { min-width: 0; display: grid; gap: 2px; }

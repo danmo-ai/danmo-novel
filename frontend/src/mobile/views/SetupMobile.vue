@@ -28,12 +28,11 @@ const {
 </template>
 
 <style scoped>
-/* 立项表单里的按钮组在手机上是主操作，必须占满一行且够高；这是布局差异，
-   不是业务差异，所以放在这一层而不是 ProjectSetup 里。 */
+/* 立项表单里的按钮组在手机上是主操作，必须占满一行且够高。
+   .view-title 换行与 .setup-card 内边距已经写在 ProjectSetup 自己的窄屏规则里，
+   这里不重复。 */
 :deep(.view-actions),
 :deep(.card-actions) { display: grid; gap: 8px; }
 :deep(.view-actions button),
 :deep(.card-actions button) { width: 100%; min-height: 44px; }
-:deep(.view-title) { flex-direction: column; align-items: stretch; gap: 8px; }
-:deep(.setup-card) { padding: 14px; }
 </style>

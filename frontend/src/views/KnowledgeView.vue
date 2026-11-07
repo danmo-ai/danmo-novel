@@ -292,7 +292,8 @@ function renderMarkdown(raw: string) {
 .usage-details summary::-webkit-details-marker { display: none; }
 .usage-details summary::before { content: 'ⓘ '; }
 .usage-content { position: absolute; z-index: 10; top: calc(100% + 6px); left: 0; width: min(480px, calc(100vw - 56px)); display: grid; gap: 10px; padding: 16px 18px; background: var(--paper); box-shadow: 0 12px 32px rgba(20,35,31,.14); }
-@media (hover: hover) and (min-width: 721px) {
+/* hover 能力判断：触控笔电没有 hover，光标悬停展开会挡住点选。 */
+@media (hover: hover) {
   .usage-details:hover .usage-content { display: grid; }
 }
 .eyebrow { color: var(--accent); letter-spacing: 0.16em; text-transform: uppercase; font-size: 12px; margin: 0; }
@@ -350,22 +351,4 @@ function renderMarkdown(raw: string) {
 .kb-body blockquote { margin: 12px 0; padding: 4px 14px; border-left: 3px solid var(--accent); color: var(--ink-soft); font-size: 12px; line-height: 1.65; }
 .kb-editor { width: 100%; min-height: 66vh; border: none; padding: 24px 30px; font: 12px/1.75 ui-monospace, monospace; resize: vertical; background: transparent; outline: none; }
 @media (max-width: 900px) { .kb-layout { grid-template-columns: minmax(0, 1fr); } .kb-nav { max-height: 300px; } }
-@media (max-width: 720px) {
-  .page-head { padding: 24px 4px 18px; flex-direction: column; align-items: stretch; gap: 4px; }
-  .header-description > .sub { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .usage-details summary { min-height: 40px; display: inline-flex; align-items: center; }
-  .usage-content { left: auto; right: 0; width: calc(100vw - 48px); }
-  .kb-nav { max-height: 40dvh; }
-  .kb-content-head { padding: 16px; align-items: flex-start; }
-  .kb-title-row { flex-wrap: wrap; gap: 6px; min-width: 0; }
-  .kb-content-head h2 { overflow-wrap: anywhere; }
-  .kb-stage-bar { padding: 12px 16px; }
-  .stage-chip { min-height: 32px; }
-  .kb-subgenre { flex-wrap: wrap; margin-left: 0; width: 100%; }
-  .kb-subgenre input { flex: 1; width: auto; min-height: 40px; }
-  .kb-body { padding: 20px 18px; max-height: none; overflow: visible; }
-  .kb-body p { font-size: 14px; line-height: 1.9; }
-  .kb-body li { font-size: 13px; line-height: 1.8; }
-  .kb-editor { padding: 18px 16px; min-height: 60dvh; font-size: 14px; }
-}
 </style>

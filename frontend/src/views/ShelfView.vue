@@ -215,22 +215,4 @@ h1 { font-family: var(--font-prose); font-size: clamp(32px, 4.5vw, 56px); line-h
 .modal label { display: grid; gap: 6px; font-size: 13px; color: var(--ink-soft); }
 .modal input, .modal select { padding: 10px 12px; border-radius: 10px; border: 1px solid var(--line); }
 .modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 4px; }
-@media (max-width: 720px) {
-  .shelf-hero { align-items: flex-start; flex-direction: column; padding-top: 24px; }
-  .tool-row { flex-wrap: wrap; }
-  .tool-row input { flex-basis: 100%; }
-  .book-grid { grid-template-columns: minmax(0, 1fr); }
-  .book-card { min-width: 0; width: 100%; }
-  .book-cover { min-width: 0; }
-  .book-cover h3 { overflow-wrap: anywhere; }
-  .book-meta { flex-wrap: wrap; }
-  .book-meta > span { min-width: 0; }
-  .book-meta .pill { white-space: normal; }
-  .form-grid { grid-template-columns: minmax(0, 1fr); }
-  .modal-mask { padding: max(12px, env(safe-area-inset-top)) 12px max(12px, env(safe-area-inset-bottom)); place-items: center; }
-  .modal { width: 100%; max-width: 100%; min-width: 0; max-height: calc(100dvh - max(12px, env(safe-area-inset-top)) - max(12px, env(safe-area-inset-bottom))); margin: 0; padding: 18px 16px; border-radius: 14px; overflow-x: hidden; }
-  .modal > * { min-width: 0; }
-  .modal-actions { position: sticky; bottom: -18px; margin: 4px -16px -18px; padding: 12px 16px max(12px, env(safe-area-inset-bottom)); background: var(--paper); border-top: 1px solid var(--line); }
-  .modal-actions button { flex: 1; min-width: 0; }
-}
 </style>

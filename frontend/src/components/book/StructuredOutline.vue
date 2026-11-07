@@ -191,5 +191,4 @@ dt { color: var(--accent); font-size: 11px; } dd { margin: 0; color: var(--ink-s
 .diagnostics { padding: 14px; border: 1px solid var(--warn); border-radius: 12px; color: var(--warn); font-size: 12px; }
 .compact { max-height: 620px; overflow: auto; padding-right: 8px; }
 @media (max-width: 1050px) { .seed-main { grid-template-columns: repeat(2, minmax(0, 1fr)); } .seed-title { grid-column: 1 / -1; } .seed-clock { border-left: 0; padding-left: 0; } }
-@media (max-width: 720px) { .root-contract { grid-template-columns: 1fr; } .arc-card header { flex-direction: column; } .arc-card header > span { max-width: none; } .seed-summary { grid-template-columns: 1fr; } .seed-main { grid-template-columns: 1fr; } .seed-actions { flex-direction: row; justify-content: flex-start; align-items: center; border-left: 0; border-top: 1px solid var(--line); } .arc-state { grid-template-columns: 1fr; } .arc-state b { transform: rotate(90deg); } .unit-index-heading { align-items: flex-start; flex-direction: column; } }
 </style>
