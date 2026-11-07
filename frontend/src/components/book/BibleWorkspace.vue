@@ -13,7 +13,11 @@ const selectedCast = ref('')
 const editing = ref(false)
 const draft = ref('')
 const showSecrets = ref(false)
-const navOpen = ref(false)
+/**
+ * 手机上目录是唯一能进人物卡/关系图的入口；默认折叠会让作者以为"没有人物"，
+ * 所以窄屏一开始就展开，宽屏保持原来的折叠。
+ */
+const navOpen = ref(typeof window !== 'undefined' && window.matchMedia('(max-width: 800px)').matches)
 const activeGroup = ref('总纲派生')
 const specialView = ref<'relations' | null>(null)
 const book = computed(() => store.currentBook)

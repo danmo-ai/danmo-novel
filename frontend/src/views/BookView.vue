@@ -660,7 +660,6 @@ const statusText: Record<string, string> = {
   <div v-if="store.currentBook" class="book-page">
     <div class="book-head">
       <div>
-        <p class="crumb"><router-link to="/">书架</router-link> / {{ store.currentBook.summary.title }}</p>
         <h1>{{ store.currentBook.summary.title }}</h1>
       </div>
       <div class="book-head-actions">
@@ -953,7 +952,6 @@ const statusText: Record<string, string> = {
 <style scoped>
 /* ---- 页头 ---- */
 .book-head { display: flex; justify-content: space-between; align-items: flex-end; gap: 16px; padding: 4px 0 18px; }
-.crumb { color: var(--ink-soft); font-size: 12px; margin: 0; }
 h1 { font-family: var(--font-prose); margin: 6px 0 0; font-size: 30px; line-height: 1.25; }
 .book-head-actions { display: flex; gap: 8px; align-items: center; flex-shrink: 0; }
 
@@ -1068,7 +1066,6 @@ h1 { font-family: var(--font-prose); margin: 6px 0 0; font-size: 30px; line-heig
 @media (max-width: 720px) {
   .book-head { padding-bottom: 12px; }
   .book-head h1 { font-size: 24px; }
-  .book-head .crumb { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
   .tabs { display: flex; width: 100%; overflow-x: auto; margin-bottom: 12px; scrollbar-width: none; }
   .tabs::-webkit-scrollbar { display: none; }
   .tabs button { flex: 1 0 auto; min-width: 64px; min-height: 40px; padding: 8px 16px; }
