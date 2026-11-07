@@ -229,3 +229,115 @@ func TestOverLengthIsAdvisoryNotBlocking(t *testing.T) {
 		t.Fatal("short chapter must still block")
 	}
 }
+
+// 句子悬在逗号上是确定性硬伤：中文正句不会停在逗号上，命中一处即拦。
+//
+// 正则带 (?m)，所以 $ 匹配的是**任意行尾**而不是整段结尾——这正是需要的：
+// 判据是**段落**收尾：一段话没说完就停在逗号上，才是读者能看见的缺陷。
+//
+// 这里曾经按「任意行尾」判定（(?m)$），于是把话在逗号处硬折行也算命中——
+// 而硬折行在渲染后是一整句，读者根本看不出问题，等于白烧一次整章重写。
+// 现在只认段落末尾。
+func TestCommaHangBlocksLineFinalComma(t *testing.T) {
+	cases := map[string]string{
+		"整段以逗号收尾":   "王建国是踩着点进的，",
+		"段末逗号后还有空行": "王建国是踩着点进的，\n\n推开门时屋里已经坐满了人。",
+		"引号内以逗号收尾":  "“王建国是踩着点进的，”",
+		"末行对话悬置":    "他把烟按进烟灰缸。\n他说，",
+	}
+	for name, body := range cases {
+		rep := CheckProseWithRules([]domain.ChapterDraft{{Chapter: 8, Body: body}}, 0, nil)
+		var hit *domain.ReviewFinding
+		for i := range rep.Findings {
+			if rep.Findings[i].Title == "段落用逗号悬置收尾" {
+				hit = &rep.Findings[i]
+			}
+		}
+		if hit == nil {
+			t.Fatalf("%s: comma hang not detected: %+v", name, titles(rep))
+		}
+		if hit.Severity != "blocking" || hit.Chapter != 8 {
+			t.Fatalf("%s: finding=%+v", name, hit)
+		}
+		if rep.OK {
+			t.Fatalf("%s: blocking finding must fail the report", name)
+		}
+	}
+}
+
+// 句中逗号、硬折行、引号内逗号后仍有话，都不是缺陷。
+//
+// 这三类曾经被误判，其中硬折行最危险：它是排版习惯，不是断句错误，但会让
+// 一段没问题的正文被判 blocking 并触发整章重写。`“好，”他说` 同理——引号
+// 内的逗号是规范的中文对白标点。
+func TestCommaHangIgnoresInlineAndWrappedCommas(t *testing.T) {
+	for _, body := range []string{
+		"他把杯子放下，说：「好。」",
+		"他推门进来，外套湿了。屋里没人，灯还亮着。",
+		"他推门进来，外套湿了。\n屋里没人，灯还亮着。",
+		"他站了一会儿，\n然后坐下了。\n屋外有人敲门。",
+		"“好，”他说，“我这就去。”",
+		"“王建国是踩着点进的，”他说，“推门时屋里已经坐满了人。”",
+	} {
+		rep := CheckProseWithRules([]domain.ChapterDraft{{Chapter: 1, Body: body}}, 0, nil)
+		if findTitle(rep, "段落用逗号悬置收尾") {
+			t.Fatalf("合法中文被误判: %q → %+v", body, titles(rep))
+		}
+		if !rep.OK {
+			t.Fatalf("合法中文不该触发阻断: %q → %+v", body, titles(rep))
+		}
+	}
+
+	// 一段三行、只有段末那个逗号算一处。
+	body := "他推门进来，外套湿了。\n他站了一会儿，\n然后坐下了，"
+	rep := CheckProseWithRules([]domain.ChapterDraft{{Chapter: 1, Body: body}}, 0, nil)
+	var hit *domain.ReviewFinding
+	for i := range rep.Findings {
+		if rep.Findings[i].Title == "段落用逗号悬置收尾" {
+			hit = &rep.Findings[i]
+		}
+	}
+	if hit == nil {
+		t.Fatalf("paragraph-final comma not detected: %+v", titles(rep))
+	}
+	if !strings.Contains(hit.Evidence, "1 处") {
+		t.Fatalf("only the paragraph-final comma should count: evidence=%q", hit.Evidence)
+	}
+}
+
+// 「是……的」不能做成任何正则规则，包括 advisory。
+//
+// 这个测试是**回归护栏**，不是功能测试：它锁住「一旦有人再加回这条规则，
+// 就会误伤正确中文」这个事实。语料里 6 句合法中文与 6 句病灶表面结构完全
+// 相同，任何正则都只能命中全部或全不中。真要判断，只能看语义（这个 是……的
+// 是在指出「哪一个」，还是只是把动作包了一层），那是审校模型的活。
+func TestShiDeFrameHasNoRegexRule(t *testing.T) {
+	// 合法中文：焦点结构、疑问、否定、的字结构。全部不许被任何本地规则命中
+	// 标题里带「是……的」的条目。
+	legit := []string{
+		"是谁说的？",
+		"这案子是他报的。",
+		"他是新来的。",
+		"不是我说的。",
+		"他是什么时候走的？",
+		"他是昨天走的，走的时候什么都没说。",
+	}
+	for _, body := range legit {
+		rep := CheckProseWithRules([]domain.ChapterDraft{{Chapter: 1, Body: body}}, 0, nil)
+		for _, f := range rep.Findings {
+			if strings.Contains(f.Title, "是……的") {
+				t.Fatalf("合法中文被本地规则误伤: %q → %+v", body, f)
+			}
+		}
+		if !rep.OK {
+			t.Fatalf("合法中文不该触发阻断: %q → %+v", body, titles(rep))
+		}
+	}
+
+	// 内置规则表里必须没有这条：以后有人加回来，这里先红。
+	for _, sig := range BuiltinRules().Signals {
+		if strings.Contains(sig.Title, "是……的") {
+			t.Fatalf("「是……的」不能作为本地正则规则（无法区分真判断句）: %s", sig.ID)
+		}
+	}
+}

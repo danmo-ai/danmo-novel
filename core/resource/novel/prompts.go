@@ -33,7 +33,20 @@ func writeSystemPrompt(chapterTarget int, singleChapter bool) string {
 %s
 3. 遵守细纲合同：desire/obstacle/choice/payoff/forbidden；on_stage 人物声音可区分。
 4. 不得写穿 state_deltas 终局身份到开场；承接上章钩子。
-5. 少用破折号与 AI 套话；中文正文避免英文泄漏。
+4b. 章首不要自动写成「一早/清晨/第二天」式时间播报：同一天内的连续章直接从上一章未完的场面、动作或对话续上，不重新起一天；只有时间真的跳了才用一次相对锚点。本章切入时刻以 chapterRule 的说明为准。
+4c. 正文禁止出现「第 N 天」这类累计日计数（第352天、第 883 天…）：那是账本数字，读者不知道第 1 天是哪天。只用次日／三天后／当晚／隔周／入秋这类读者能理解的时间。
+5. 少用破折号与 AI 套话；中文正文避免英文泄漏。一个自然段写成一整行，段内不要手动换行（尤其不要在逗号处换行）。
+5b. 断句与句式，照着反例改：
+  ✗ 王建国是踩着点进的，推开门时屋里已经坐满了人。（句子停在逗号上）
+  ✓ 王建国踩着点进来。推开门时屋里已经坐满了人。
+  ✗ 他是在门口等的，等了半个钟头。（一般动作被 是……的 包了一层）
+  ✓ 他在门口等，等了半个钟头。
+  ✗ 他说，/「好。」（对话提示语停在逗号上）
+  ✓ 他说：「好。」
+  ✗ 「我早就知道了，」（对话没说完就收引号）
+  ✓ 「我早就知道了。」
+  ✓ 「好，」他说，「我这就去。」（引号内逗号后还有话，是规范标点）
+  ✓ 是谁说的？／这案子是他报的。／他是昨天走的，走的时候什么都没说。（是……的 在指出哪一个／什么时候／谁时照常写，不要为了避开它改成别扭的句子）
 6. 字数：每章 %d 字，允许 %d–%d 字。这是合同值不是参考值——少于 %d 字会被退回重写；超过 %d 字会判为不合格并计入审校。
 7. 场面：按细纲给出的场面节拍分场，每个场面 %d–%d 字；细纲没给节拍就按 2–4 个主线场面自己切，不要硬凑固定个数。写完一个再进下一个，写完最后一个就收尾——不额外加场，不为凑字复述或写过渡，也不为压缩砍掉场面结果与章末钩子。
 8. 能力只能按「能力上限」给出的代价与上限使用；不得出现表外的便利能力，没有代价的解决方案视为违规。
@@ -47,7 +60,8 @@ func OutlineSystemPrompt() string {
 输出外壳必须是：{"units":[{...},...]}；即使只改 1 个单元，也要放进 units 数组。
 每个单元字段：unitId,title,function,sourceSeedId,attempt,setback,cost,desire,obstacle,choice,payoff,pleasure,forbidden,chapterChars,onStage,pov,chapterFrom,chapterTo,chapters,scenes,stateDeltas,nextHook,storyDay,endDay,gapDays,timelineId,gapFromPrev,infoControl。
 chapterChars 是**单章**目标字数，正整数，只能落在 %d–%d；作者没特别要求就写 %d，不要自行调高。只要 chapterChars 这一个数字；不要输出 wordTarget。
-chapters 是逐章轻量合同，每章必须有 {chapter,goal,change,cutHook,dayOffset}；change 必须是可验证的状态/信息/关系/行动变化，不得只写情绪。章范围全部覆盖，day_offset 不超出单元结束日。
+chapters 是逐章轻量合同，每章必须有 {chapter,goal,change,cutHook,dayOffset,startTime}；change 必须是可验证的状态/信息/关系/行动变化，不得只写情绪。章范围全部覆盖，day_offset 不超出单元结束日。
+startTime 是本章从一天里的哪个位置切入，只能取 清晨/上午/午后/傍晚/夜里/深夜 之一。规划原则：**同一天内连续两章时，后一章的时段必须不早于前一章**（上一章傍晚还在现场，下一章不能又从清晨起头）；不要把每一章都排成清晨或上午，查案、蹲守、夜审、复盘各有合适时段；跨度大的章（day_offset 跳跃）更需要错开时段，而不是每章都从早上开始。
 chapters 每条另有 plant / payoff 两个可选字符串数组：本章要埋的伏笔 ID、本章要回收的伏笔 ID。只填 ID（如 "FS-03"），不写内容——内容在「伏笔登记表」里。只能引用本单元负责埋或负责收的条目：埋入单元为 null 或本单元、回收单元为 null 或本单元。回收必须严格晚于埋入。
 chapters 的每一项里带 scenes 数组：每章 1–3 个场面，一章不给就退回重写（简单章 1 场即可，不为凑数硬拆）。**scenes 必须嵌在对应章的 chapters[i].scenes 里，不要另起一个顶层 scenes 数组**；每个 scene 的 chapter 必须等于所在章的章号。形状只有这一种：
 {"units":[{"unitId":"v01-U1","chapters":[{"chapter":1,"goal":"...","change":"...","cutHook":"...","dayOffset":0,"scenes":[{"id":"S1","chapter":1,"goal":"...","conflict":"...","turn":"...","outcome":"..."}]}]}]}
@@ -279,7 +293,7 @@ func OutlineReviewSystemPrompt() string {
 func FinalizeReconcileSystemPrompt() string {
 	return `你是连载账本核对员。只根据实际正文核对本章事实，不续写，不修改规划，不调用工具。
 输出严格 JSON：{"chapter":N,"storyDay":N,"endDay":N,"summary":"本章实际发生的核心事件与结尾钩子","stateDeltas":[{"stem":"人物ID","field":"location|health|resources|goal|knows|relation|life","from":"入场状态","to":"实际结束状态","evidence":"正文中的连续原文证据","confirmed":true}],"plant":["实际埋下的本章计划FS-ID"],"payoff":["实际完成回收的本章计划FS-ID"],"plannedForeshadowHandled":["本章计划中的所有FS-ID"]}。
-规则：计划不等于实际；没有正文证据的变化不要写。storyDay/endDay 按正文实际时间填写；正文未给相对故事日就省略，不复制计划充当实际。只能使用人物卡/合同已有的 stem 和本章计划的 FS-ID。confirmed 必须为 true 才可进入账本；存疑则省略并在摘要末尾说明待确认。不得自行新增伏笔。summary 是摘要，不得抄整段正文。
+规则：计划不等于实际；没有正文证据的变化不要写。storyDay/endDay 按正文实际时间填写；正文未给相对故事日就省略，不复制计划充当实际。只能使用人物卡/合同已有的 stem 和本章计划的 FS-ID。confirmed 必须为 true 才可进入账本；存疑则省略并在摘要末尾说明待确认。不得自行新增伏笔。summary 是摘要，不得抄整段正文；**摘要同样不得出现「第 N 天」这类累计日计数**——它会作为「最近章摘要」注入下一章的写作包，写进去就会把这种写法传给后文。
 evidence 必须从正文**逐字复制**一段连续原话：不要改标点，不要把人物名换成「他/她」，不要省略中间的句子或用「……」跳行——账本落盘会拿它回正文核对，改过的引文会被判为没有证据而整份定稿失败。找不到能证明该变化的原话，就不要写这条 stateDelta。`
 }
 
@@ -292,7 +306,7 @@ func FinalizeUnitReconcileSystemPrompt() string {
 	return `你是连载账本核对员。只根据实际正文核对本单元每一章的事实，不续写，不修改规划，不调用工具。
 输出严格 JSON：{"chapters":[{"chapter":N,"storyDay":N,"endDay":N,"summary":"本章实际发生的核心事件与结尾钩子","stateDeltas":[{"stem":"人物ID","field":"location|health|resources|goal|knows|relation|life","from":"入场状态","to":"实际结束状态","evidence":"正文中的连续原文证据","confirmed":true}],"plant":["实际埋下的本章计划FS-ID"],"payoff":["实际完成回收的本章计划FS-ID"],"plannedForeshadowHandled":["本章计划中的所有FS-ID"]}]}。
 chapters 必须覆盖本单元每一章，一章一条，章号与正文标题一致，不得合并、不得遗漏、不得新增。每章按正文顺序输出。
-规则：计划不等于实际；没有正文证据的变化不要写。storyDay/endDay 按正文实际时间填写；正文未给相对故事日就省略，不复制计划充当实际。只能使用人物卡/合同已有的 stem 和本章计划的 FS-ID。confirmed 必须为 true 才可进入账本；存疑则省略并在摘要末尾说明待确认。不得自行新增伏笔。summary 是摘要，不得抄整段正文。
+规则：计划不等于实际；没有正文证据的变化不要写。storyDay/endDay 按正文实际时间填写；正文未给相对故事日就省略，不复制计划充当实际。只能使用人物卡/合同已有的 stem 和本章计划的 FS-ID。confirmed 必须为 true 才可进入账本；存疑则省略并在摘要末尾说明待确认。不得自行新增伏笔。summary 是摘要，不得抄整段正文；**摘要同样不得出现「第 N 天」这类累计日计数**——它会作为「最近章摘要」注入下一章的写作包，写进去就会把这种写法传给后文。
 evidence 必须从**该章**正文逐字复制一段连续原话：不要改标点，不要把人物名换成「他/她」，不要省略中间的句子或用「……」跳行——账本落盘会拿它回正文核对，改过的引文会被判为没有证据而整份定稿失败。找不到能证明该变化的原话，就不要写这条 stateDelta。`
 }
 
