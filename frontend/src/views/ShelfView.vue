@@ -6,10 +6,7 @@ import { api } from '@/api/client'
 
 const store = useAppStore()
 const router = useRouter()
-const importPath = ref('')
 const showCreate = ref(false)
-const importReadOnly = ref(true)
-const createTab = ref<'new' | 'import'>('new')
 
 /**
  * 立项表单：基本信息 + 创意种子。
@@ -83,18 +80,6 @@ async function createBook() {
   } catch (e) { store.fail(e) }
 }
 
-async function importBook() {
-  if (!importPath.value) return
-  try {
-    const res = await api.post<any>('/api/books/import', { path: importPath.value, readOnly: importReadOnly.value })
-    importPath.value = ''
-    showCreate.value = false
-    await store.loadBooks()
-    store.note('已导入书籍')
-    if (res?.summary?.id) router.push(`/books/${res.summary.id}`)
-  } catch (e) { store.fail(e) }
-}
-
 function primaryLabel(b: any) {
   if (b.openCandidates) return '待审候选'
   return '继续创作'
@@ -126,19 +111,14 @@ function primaryLabel(b: any) {
     </button>
     <div v-if="!store.books.length" class="empty panel">
       <h2>书架还是空的</h2>
-      <p>新建一本书，或导入 Danmo Work 的小说目录。</p>
+      <p>从一句灵感开始，新建你的第一本书。</p>
       <button class="primary" @click="openCreate">开始</button>
     </div>
   </section>
 
   <div v-if="showCreate" class="modal-mask" @click.self="showCreate = false">
     <div class="modal panel">
-      <div class="modal-tabs">
-        <button :class="{ active: createTab === 'new' }" @click="createTab = 'new'">新建</button>
-        <button :class="{ active: createTab === 'import' }" @click="createTab = 'import'">导入 Danmo Work 书</button>
-      </div>
-      <template v-if="createTab === 'new'">
-        <h2>立项</h2>
+      <h2>立项</h2>
         <p class="form-note">先填基础信息与创意种子。创建后进入立项工作台：先扩写创意提案，确认后再生成总纲与设定。</p>
 
         <h3 class="group-head">基本信息</h3>
@@ -174,17 +154,6 @@ function primaryLabel(b: any) {
           <button @click="showCreate = false">取消</button>
           <button class="primary" :disabled="!form.title.trim() || !form.bookId.trim()" @click="createBook">创建并进入立项</button>
         </div>
-      </template>
-      <template v-else>
-        <h2>导入 Danmo Work 书目录</h2>
-        <p class="import-note">仅支持 Danmo Work 的小说目录（含 <code>novel-state.yaml</code> / <code>canon</code> / <code>outline</code> 的 <code>novel/&lt;book-id&gt;</code>）。字段结构不同的第三方书籍无法导入。</p>
-        <label>目录路径<input v-model="importPath" placeholder="/Users/…/files/novel/<book-id>" /></label>
-        <label class="check"><input v-model="importReadOnly" type="checkbox" /> 只读导入（不写回源目录，推荐）</label>
-        <div class="modal-actions">
-          <button @click="showCreate = false">取消</button>
-          <button class="primary" :disabled="!importPath" @click="importBook">导入</button>
-        </div>
-      </template>
     </div>
   </div>
 </template>
@@ -197,12 +166,6 @@ function primaryLabel(b: any) {
 .eyebrow { color: var(--accent); letter-spacing: 0.16em; text-transform: uppercase; font-size: 12px; }
 h1 { font-family: var(--font-prose); font-size: clamp(32px, 4.5vw, 56px); line-height: 1.05; margin: 8px 0 12px; }
 .sub { color: var(--ink-soft); margin: 0; }
-.check { display: flex; gap: 6px; align-items: center; color: var(--ink-soft); font-size: 12px; }
-.modal-tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--line); margin: -6px -6px 4px; padding: 0 6px; }
-.modal-tabs button { border: none; border-bottom: 2px solid transparent; border-radius: 0; background: transparent; color: var(--ink-soft); padding: 8px 14px; }
-.modal-tabs button.active { color: var(--accent); border-bottom-color: var(--accent); font-weight: 700; }
-.import-note { margin: 0; font-size: 12px; color: var(--ink-soft); line-height: 1.7; }
-.import-note code { background: rgba(20,35,31,.06); padding: 1px 5px; border-radius: 5px; font-size: 11px; }
 .form-note { margin: 0; font-size: 12px; color: var(--ink-soft); line-height: 1.7; }
 .group-head { margin: 4px 0 0; font-size: 12px; color: var(--accent); letter-spacing: .06em; }
 .form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 12px; }
@@ -232,7 +195,18 @@ h1 { font-family: var(--font-prose); font-size: clamp(32px, 4.5vw, 56px); line-h
   .shelf-hero { align-items: flex-start; flex-direction: column; padding-top: 24px; }
   .tool-row { flex-wrap: wrap; }
   .tool-row input { flex-basis: 100%; }
-  .book-grid { grid-template-columns: 1fr; }
-  .form-grid { grid-template-columns: 1fr; }
+  .book-grid { grid-template-columns: minmax(0, 1fr); }
+  .book-card { min-width: 0; width: 100%; }
+  .book-cover { min-width: 0; }
+  .book-cover h3 { overflow-wrap: anywhere; }
+  .book-meta { flex-wrap: wrap; }
+  .book-meta > span { min-width: 0; }
+  .book-meta .pill { white-space: normal; }
+  .form-grid { grid-template-columns: minmax(0, 1fr); }
+  .modal-mask { padding: max(12px, env(safe-area-inset-top)) 12px max(12px, env(safe-area-inset-bottom)); place-items: center; }
+  .modal { width: 100%; max-width: 100%; min-width: 0; max-height: calc(100dvh - max(12px, env(safe-area-inset-top)) - max(12px, env(safe-area-inset-bottom))); margin: 0; padding: 18px 16px; border-radius: 14px; overflow-x: hidden; }
+  .modal > * { min-width: 0; }
+  .modal-actions { position: sticky; bottom: -18px; margin: 4px -16px -18px; padding: 12px 16px max(12px, env(safe-area-inset-bottom)); background: var(--paper); border-top: 1px solid var(--line); }
+  .modal-actions button { flex: 1; min-width: 0; }
 }
 </style>

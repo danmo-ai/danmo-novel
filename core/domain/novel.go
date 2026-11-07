@@ -22,7 +22,6 @@ const (
 	TaskPolish          TaskKind = "polish"
 	TaskRewriteSel      TaskKind = "rewrite_selection"
 	TaskStructureReview TaskKind = "structure_review"
-	TaskOutlineReview   TaskKind = "outline_review"
 	// TaskIdea 是立项之前的自由创意扩写：产出作者可读的创意提案，
 	// 不写总纲/设定/人物，也不参与卷纲与单元生产。
 	TaskIdea TaskKind = "idea"

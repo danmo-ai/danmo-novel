@@ -115,8 +115,7 @@ fn prepare_runtime_binary(bundled: &Path, home: &Path) -> Result<PathBuf, String
                 .map_err(|e| format!("sidecar chmod stat: {e}"))?
                 .permissions();
             perms.set_mode(0o755);
-            fs::set_permissions(&runtime_bin, perms)
-                .map_err(|e| format!("sidecar chmod: {e}"))?;
+            fs::set_permissions(&runtime_bin, perms).map_err(|e| format!("sidecar chmod: {e}"))?;
         }
         let _ = fs::write(&stamp_path, &wanted_stamp);
         eprintln!("[sidecar] refreshed runtime binary ({wanted_stamp})");
@@ -125,7 +124,11 @@ fn prepare_runtime_binary(bundled: &Path, home: &Path) -> Result<PathBuf, String
 }
 
 fn external_backend_requested() -> bool {
-    for key in ["NOVEL_EXTERNAL_BACKEND", "WORK_EXTERNAL_BACKEND", "SKIP_BACKEND"] {
+    for key in [
+        "NOVEL_EXTERNAL_BACKEND",
+        "WORK_EXTERNAL_BACKEND",
+        "SKIP_BACKEND",
+    ] {
         match std::env::var(key).as_deref() {
             Ok("1") | Ok("true") | Ok("TRUE") | Ok("yes") | Ok("YES") => return true,
             _ => {}
@@ -286,10 +289,14 @@ fn stop_pid(pid: u32) {
     {
         let pg = format!("-{pid}");
         let _ = Command::new("kill").args(["-TERM", &pg]).status();
-        let _ = Command::new("kill").args(["-TERM", &pid.to_string()]).status();
+        let _ = Command::new("kill")
+            .args(["-TERM", &pid.to_string()])
+            .status();
         std::thread::sleep(Duration::from_millis(200));
         let _ = Command::new("kill").args(["-KILL", &pg]).status();
-        let _ = Command::new("kill").args(["-KILL", &pid.to_string()]).status();
+        let _ = Command::new("kill")
+            .args(["-KILL", &pid.to_string()])
+            .status();
     }
     #[cfg(windows)]
     {
@@ -306,7 +313,9 @@ fn terminate_child(child: &mut std::process::Child) {
     {
         let pg = format!("-{pid}");
         let _ = Command::new("kill").args(["-TERM", &pg]).status();
-        let _ = Command::new("kill").args(["-TERM", &pid.to_string()]).status();
+        let _ = Command::new("kill")
+            .args(["-TERM", &pid.to_string()])
+            .status();
         std::thread::sleep(Duration::from_millis(250));
         match child.try_wait() {
             Ok(Some(status)) => {
@@ -393,12 +402,7 @@ fn listeners_on_backend_port() -> Vec<u32> {
     }
 }
 
-fn wait_for_our_backend(
-    addr: &str,
-    child_pid: u32,
-    timeout: Duration,
-    interval: Duration,
-) -> bool {
+fn wait_for_our_backend(addr: &str, child_pid: u32, timeout: Duration, interval: Duration) -> bool {
     let deadline = Instant::now() + timeout;
     while Instant::now() < deadline {
         if !wait_for_backend_listen(addr, Duration::from_millis(100), Duration::from_millis(20)) {
@@ -487,11 +491,17 @@ fn open_external(url: String) -> Result<(), String> {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_localcore::init())
         .plugin(tauri_plugin_process::init())
-        .plugin(tauri_plugin_updater::Builder::new().build())
+        .on_page_load(|window, payload| {
+            if matches!(payload.event(), tauri::webview::PageLoadEvent::Finished) {
+                let _ = window.window().show();
+            }
+        })
         .invoke_handler(tauri::generate_handler![open_external])
         .setup(|app| {
             handle_first_launch(&app.handle());
+            #[cfg(not(any(target_os = "ios", target_os = "android")))]
             if let Err(e) = spawn_backend(&app.handle()) {
                 eprintln!("WARNING: backend sidecar failed to start: {e}");
                 eprintln!("The app will run without backend API. Start it manually if needed.");
@@ -502,6 +512,7 @@ pub fn run() {
         .expect("error while building tauri application")
         .run(|app_handle, event| match event {
             tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit => {
+                #[cfg(not(any(target_os = "ios", target_os = "android")))]
                 shutdown_sidecar(&app_handle);
             }
             _ => {}

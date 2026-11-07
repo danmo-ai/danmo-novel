@@ -89,7 +89,8 @@ onMounted(async () => {
 </script>
 
 <template>
-  <div class="app-shell">
+  <router-view v-if="$route.meta.public" />
+  <div v-else class="app-shell">
     <header class="topbar">
       <!-- 版本按钮不能放进 router-link：那样点「升级」会顺带跳回书架。 -->
       <div class="brand-group">
@@ -162,10 +163,14 @@ onMounted(async () => {
 .topnav a.router-link-active { color: var(--accent); font-weight: 700; }
 .app-main { padding: 0 24px 40px; }
 @media (max-width: 720px) {
-  .topbar { padding: 12px 16px; }
-  .app-main { padding: 0 16px 32px; }
-  .topnav { gap: 12px; }
+  .topbar { padding: 10px 12px; flex-wrap: wrap; gap: 6px; }
+  .app-main { padding: 0 12px 32px; }
+  .topnav { width: 100%; gap: 2px; justify-content: space-between; overflow-x: auto; scrollbar-width: none; }
+  .topnav::-webkit-scrollbar { display: none; }
+  .topnav a { padding: 8px 10px; min-height: 40px; display: inline-flex; align-items: center; white-space: nowrap; font-size: 13px; }
   .brand { font-size: 14px; }
+  .brand-group { width: 100%; justify-content: space-between; }
+  .toast { width: calc(100% - 32px); bottom: max(16px, env(safe-area-inset-bottom)); }
 }
 .toast {
   position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);

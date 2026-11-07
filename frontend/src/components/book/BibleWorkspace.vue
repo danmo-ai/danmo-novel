@@ -618,6 +618,29 @@ async function scaffoldMissing() {
   .bible-nav { display: none; max-height: 55vh; }
   .bible-nav.mobile-open { display: block; }
   .mobile-nav-toggle { display: flex; justify-content: space-between; align-items: center; padding: 12px 14px; text-align: left; }
-  .view-title { flex-direction: column; align-items: flex-start; }
+  .view-title { flex-direction: column; align-items: stretch; gap: 12px; }
+  .view-title > div:first-child { min-width: 0; }
+  .view-title h2 { font-size: 24px; }
+  .view-title p { overflow-wrap: anywhere; }
+  .view-actions { flex-wrap: wrap; width: 100%; gap: 8px; }
+  .view-actions button { flex: 1 1 140px; min-width: 0; min-height: 44px; white-space: normal; }
+  .bible-content header { flex-wrap: wrap; }
+  .bible-content header > div { min-width: 0; }
+  .cast-title { flex-wrap: wrap; gap: 4px 8px; }
+  .cast-role.big { margin-left: 0; }
+  .candidate-badge { margin-left: 0; }
+  .coverage { align-items: flex-start; }
+  .coverage > span { min-width: 0; overflow-wrap: anywhere; }
+  .coverage { gap: 10px 16px; }
+  .coverage .missing { margin-left: 0; }
+  .identity-heading { flex-direction: column; }
+  .identity-actions { margin-left: 0; flex-wrap: wrap; }
+  .identity-seg { flex-wrap: wrap; gap: 6px 10px; }
+  .bible-content > header { align-items: flex-start; flex-direction: column; }
+  .bible-content header > span { max-width: 100%; }
+  .entity-view { padding: 16px; }
+  .table-wrap { max-width: 100%; }
+  .identity-dialog { max-height: 90dvh; overflow-y: auto; padding: 18px; }
+  .identity-dialog footer button { flex: 1; }
 }
 </style>

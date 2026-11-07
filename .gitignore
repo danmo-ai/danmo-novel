@@ -13,3 +13,12 @@ desktop/src-tauri/bin/
 desktop/src-tauri/target/
 desktop/src-tauri/gen/
 desktop/src-tauri/keys/updater.key
+
+# Embedded frontend copy produced by scripts/pack_mobile.sh
+/web/
+
+# Mobile core artifacts (built by scripts/build_go_mobile.sh / make mobile-core)
+desktop/plugins/localcore/ios/Frameworks/
+desktop/plugins/localcore/android/libs/
+desktop/plugins/localcore/.tauri/
+desktop/plugins/localcore/android/.tauri/

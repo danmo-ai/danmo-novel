@@ -36,13 +36,19 @@ type Service struct {
 	Pipeline *pipeline.Runner
 	mu       sync.Mutex
 	cancels  map[string]context.CancelFunc
+	rootCtx  context.Context
+	rootStop context.CancelFunc
+	wg       sync.WaitGroup
+	closing  bool
 }
 
 func New(store *sqlite.Store, settings *config.Manager, llm port.LLMProvider) *Service {
+	rootCtx, rootStop := context.WithCancel(context.Background())
 	s := &Service{
 		Store: store, Settings: settings, LLM: llm,
 		Pipeline: pipeline.New(llm),
 		cancels:  map[string]context.CancelFunc{},
+		rootCtx:  rootCtx, rootStop: rootStop,
 	}
 	s.Pipeline.ModelMaxOut = func(modelID string) int {
 		if s.Models == nil {
@@ -69,8 +75,6 @@ func (s *Service) resolveModel(spec domain.TaskSpec) string {
 	switch spec.Kind {
 	case domain.TaskPlan, domain.TaskIdea:
 		role = domain.StagePlan
-	case domain.TaskOutlineReview:
-		role = domain.StageReview
 	case domain.TaskOutline:
 		role = domain.StageOutline
 	case domain.TaskReview, domain.TaskRevise:
@@ -100,6 +104,9 @@ func (s *Service) Start(ctx context.Context, spec domain.TaskSpec) (domain.Run, 
 }
 
 func (s *Service) startLocked(ctx context.Context, spec domain.TaskSpec) (domain.Run, error) {
+	if s.closing {
+		return domain.Run{}, fmt.Errorf("local core is stopping")
+	}
 	root, readOnly, err := s.Store.GetBookRoot(ctx, spec.BookID)
 	if err != nil {
 		return domain.Run{}, err
@@ -160,11 +167,42 @@ func (s *Service) startLocked(ctx context.Context, spec domain.TaskSpec) (domain
 		return domain.Run{}, err
 	}
 
-	runCtx, cancel := context.WithCancel(context.Background())
+	runCtx, cancel := context.WithCancel(s.rootCtx)
 	s.cancels[run.ID] = cancel
+	s.wg.Add(1)
 
-	go s.execute(runCtx, run, snap, modelID)
+	go func() {
+		defer s.wg.Done()
+		s.execute(runCtx, run, snap, modelID)
+	}()
 	return run, nil
+}
+
+// Shutdown cancels every active LLM request and waits for final persistence
+// before the caller closes SQLite. No new run can start after this point.
+func (s *Service) Shutdown(ctx context.Context) error {
+	s.mu.Lock()
+	if s.closing {
+		s.mu.Unlock()
+		return nil
+	}
+	s.closing = true
+	s.rootStop()
+	for _, cancel := range s.cancels {
+		cancel()
+	}
+	s.mu.Unlock()
+	done := make(chan struct{})
+	go func() {
+		s.wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return fmt.Errorf("waiting for active runs: %w", ctx.Err())
+	}
 }
 
 func (s *Service) execute(ctx context.Context, run domain.Run, snap domain.BookSnapshot, modelID string) {
@@ -207,13 +245,6 @@ func (s *Service) execute(ctx context.Context, run domain.Run, snap domain.BookS
 			err = fmt.Errorf("unit not found: %s", run.Spec.UnitID)
 		} else {
 			res, err = runner.RunWriteWithMode(ctx, snap, unit, run.Spec.Instruction, run.Spec.RewriteMode, modelID)
-		}
-	case domain.TaskOutlineReview:
-		unit, ok := findUnit(snap, run.Spec.UnitID)
-		if !ok {
-			err = fmt.Errorf("unit not found: %s", run.Spec.UnitID)
-		} else {
-			res, err = runner.RunOutlineReview(ctx, snap, unit, modelID)
 		}
 	case domain.TaskOutline:
 		ids := run.Spec.ExtraContextIDs
@@ -383,7 +414,7 @@ func (s *Service) execute(ctx context.Context, run domain.Run, snap domain.BookS
 // PreviewPacket builds the packet the model would actually receive.
 //
 // 知识文章在这之前是漏的：真实调用每个生成路径都会把作者勾选的参考知识
-// 追加进 references（write/outline/plan/idea/revise/outline_review 全走
+// 追加进 references（write/outline/plan/idea/revise 全走
 // Runner.withKnowledge），但预览只给 review 和 finalize 补了这一手。结果是
 // 作者在"预览"里看到的 prompt 偏小、estPromptTokens 偏低，正好在作者拿预览
 // 判断成本的时候给出一个错的数字。唯一不追加的是结构审校（它另走一条
@@ -421,12 +452,6 @@ func (s *Service) previewPacket(_ context.Context, spec domain.TaskSpec) (domain
 		// 用真实首章包，而不是基础包：预览要能让作者核对"上一章尾部带没带"。
 		// 基础包只含 documents + 通用 instruction，按章变化的那几项全在 extra 里。
 		return contextsvc.WritePreviewPacketFor(snap, unit, spec.Instruction, spec.RewriteMode), nil
-	case domain.TaskOutlineReview:
-		unit, ok := findUnit(snap, spec.UnitID)
-		if !ok {
-			return domain.ContextPacket{}, fmt.Errorf("unit not found")
-		}
-		return contextsvc.BuildOutlineReviewPacket(snap, unit), nil
 	case domain.TaskOutline:
 		vnum := 1
 		if spec.VolumeID != "" {
@@ -654,7 +679,7 @@ func (s *Service) acceptLocked(ctx context.Context, cmd domain.AcceptCommand) (d
 	// 审校候选只是问题清单，接受=归档确认（不写盘）。正文被修订后旧结论仍然可归档，
 	// 所以不校验 baseRevision；否则「定向修订→接受」之后旧审校候选会报过期错误、
 	// 只能靠拒绝清掉，等于分不清「已复核」和「被丢弃」。
-	if cand.Kind != domain.TaskReview && cand.Kind != domain.TaskStructureReview && cand.Kind != domain.TaskOutlineReview {
+	if cand.Kind != domain.TaskReview && cand.Kind != domain.TaskStructureReview {
 		if cmd.BaseRevision != "" && cmd.BaseRevision != snap.Revision {
 			s.expireCandidate(ctx, cand, "书籍在生成后被修改，候选已过期")
 			return domain.Candidate{}, fmt.Errorf("baseRevision expired; re-compare and regenerate if needed")
@@ -985,7 +1010,7 @@ func (s *Service) acceptLocked(ctx context.Context, cmd domain.AcceptCommand) (d
 		if err := os.WriteFile(full, []byte(cand.Replacement), 0o644); err != nil {
 			return domain.Candidate{}, err
 		}
-	case domain.TaskReview, domain.TaskStructureReview, domain.TaskOutlineReview:
+	case domain.TaskReview, domain.TaskStructureReview:
 		// 接受审校候选只做归档：问题清单不外写、不推进单元状态。
 		// 真正改正文的是 review → revise → 接受 revise 候选。
 	case domain.TaskFinalize:
@@ -1040,6 +1065,14 @@ func (s *Service) acceptLocked(ctx context.Context, cmd domain.AcceptCommand) (d
 		run.UpdatedAt = now
 	}
 	if err := s.Store.CompleteAcceptance(ctx, cand, run); err != nil {
+		// Accept changes multiple book files and two database rows. If the DB
+		// commit fails, restore the exact pre-accept canonical files rather than
+		// leaving prose changed while the candidate remains open.
+		restore := map[string][]byte{}
+		for path, body := range snap.Files {
+			restore[path] = []byte(body)
+		}
+		_ = books.AtomicWriteFiles(root, restore)
 		return domain.Candidate{}, err
 	}
 

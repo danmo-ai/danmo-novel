@@ -183,18 +183,23 @@ function renderMarkdown(raw: string) {
 <template>
   <section class="knowledge-page">
     <header class="page-head">
-      <div>
+      <div class="page-title">
         <p class="eyebrow">Knowledge Base</p>
-        <h1>知识库</h1>
-        <p class="sub">
-          四类内容：<strong>程序规则</strong>（代码执行，不在知识库）· <strong>默认注入</strong>（每次自动带上）·
-          <strong>用户选择</strong>（在创作确认窗口勾选）· <strong>作者文档</strong>（平台运营/应用流程/出处，永不进提示词）。
-        </p>
-        <p class="sub">
-          写作步骤与题材标签决定"什么时候可选"；带「作者文档」标记的只供阅读，不会出现在选择器里。
-        </p>
+        <div class="title-line"><h1>知识库</h1><span class="doc-count">{{ docs.length }} 篇</span></div>
+        <div class="header-description">
+          <p class="sub">程序规则、默认注入、用户选择与作者文档的分类知识。</p>
+          <details class="usage-details">
+            <summary>说明</summary>
+            <div class="usage-content panel">
+              <p class="sub">
+                四类内容：<strong>程序规则</strong>（代码执行，不在知识库）· <strong>默认注入</strong>（每次自动带上）·
+                <strong>用户选择</strong>（在创作确认窗口勾选）· <strong>作者文档</strong>（平台运营/应用流程/出处，永不进提示词）。
+              </p>
+              <p class="sub">写作步骤与题材标签决定“什么时候可选”；带「作者文档」标记的只供阅读，不会出现在选择器里。</p>
+            </div>
+          </details>
+        </div>
       </div>
-      <span class="doc-count">{{ docs.length }} 篇</span>
     </header>
 
     <div class="kb-layout">
@@ -277,6 +282,19 @@ function renderMarkdown(raw: string) {
 
 <style scoped>
 .page-head { display: flex; justify-content: space-between; align-items: flex-end; gap: 20px; padding: 32px 4px 24px; }
+.page-title { flex: 1; min-width: 0; }
+.title-line { display: flex; align-items: baseline; flex-wrap: wrap; gap: 12px; }
+.title-line h1 { flex-shrink: 0; }
+.header-description { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.header-description > .sub { flex: 0 1 auto; min-width: 0; max-width: none; }
+.usage-details { position: relative; flex-shrink: 0; font-size: 12px; color: var(--ink-soft); }
+.usage-details summary { cursor: pointer; color: var(--accent); padding: 6px 0; list-style: none; }
+.usage-details summary::-webkit-details-marker { display: none; }
+.usage-details summary::before { content: 'ⓘ '; }
+.usage-content { position: absolute; z-index: 10; top: calc(100% + 6px); left: 0; width: min(480px, calc(100vw - 56px)); display: grid; gap: 10px; padding: 16px 18px; background: var(--paper); box-shadow: 0 12px 32px rgba(20,35,31,.14); }
+@media (hover: hover) and (min-width: 721px) {
+  .usage-details:hover .usage-content { display: grid; }
+}
 .eyebrow { color: var(--accent); letter-spacing: 0.16em; text-transform: uppercase; font-size: 12px; margin: 0; }
 .page-head h1 { font-family: var(--font-prose); font-size: clamp(28px, 3.5vw, 44px); margin: 8px 0 8px; line-height: 1.05; }
 .sub { color: var(--ink-soft); font-size: 13px; margin: 0; max-width: 640px; line-height: 1.7; }
@@ -331,5 +349,23 @@ function renderMarkdown(raw: string) {
 .kb-code { padding: 12px; background: rgba(15,107,92,.05); border-radius: 8px; overflow-x: auto; font: 12px/1.7 ui-monospace, monospace; white-space: pre-wrap; }
 .kb-body blockquote { margin: 12px 0; padding: 4px 14px; border-left: 3px solid var(--accent); color: var(--ink-soft); font-size: 12px; line-height: 1.65; }
 .kb-editor { width: 100%; min-height: 66vh; border: none; padding: 24px 30px; font: 12px/1.75 ui-monospace, monospace; resize: vertical; background: transparent; outline: none; }
-@media (max-width: 900px) { .kb-layout { grid-template-columns: 1fr; } .kb-nav { max-height: 300px; } }
+@media (max-width: 900px) { .kb-layout { grid-template-columns: minmax(0, 1fr); } .kb-nav { max-height: 300px; } }
+@media (max-width: 720px) {
+  .page-head { padding: 24px 4px 18px; flex-direction: column; align-items: stretch; gap: 4px; }
+  .header-description > .sub { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .usage-details summary { min-height: 40px; display: inline-flex; align-items: center; }
+  .usage-content { left: auto; right: 0; width: calc(100vw - 48px); }
+  .kb-nav { max-height: 40dvh; }
+  .kb-content-head { padding: 16px; align-items: flex-start; }
+  .kb-title-row { flex-wrap: wrap; gap: 6px; min-width: 0; }
+  .kb-content-head h2 { overflow-wrap: anywhere; }
+  .kb-stage-bar { padding: 12px 16px; }
+  .stage-chip { min-height: 32px; }
+  .kb-subgenre { flex-wrap: wrap; margin-left: 0; width: 100%; }
+  .kb-subgenre input { flex: 1; width: auto; min-height: 40px; }
+  .kb-body { padding: 20px 18px; max-height: none; overflow: visible; }
+  .kb-body p { font-size: 14px; line-height: 1.9; }
+  .kb-body li { font-size: 13px; line-height: 1.8; }
+  .kb-editor { padding: 18px 16px; min-height: 60dvh; font-size: 14px; }
+}
 </style>

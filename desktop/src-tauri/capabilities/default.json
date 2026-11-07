@@ -2,6 +2,7 @@
   "identifier": "default",
   "description": "Default capabilities for Danmo Novel desktop",
   "windows": ["main"],
+  "platforms": ["macOS", "windows", "linux"],
   "permissions": [
     "core:default",
     "updater:default",

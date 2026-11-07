@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"fmt"
+	"io/fs"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -29,6 +30,7 @@ type App struct {
 	Models   *llmconfig.ModelRegistry
 	LLM      port.LLMProvider
 	Runs     *runs.Service
+	WebRoot  string
 }
 
 func NewRouter(app *App) *gin.Engine {
@@ -175,6 +177,13 @@ func NewRouter(app *App) *gin.Engine {
 		registerRuns(api, app)
 	}
 	mountMCP(r, app)
+	var assets fs.FS
+	if app.WebRoot != "" {
+		if stat, err := os.Stat(filepath.Join(app.WebRoot, "index.html")); err == nil && !stat.IsDir() {
+			assets = os.DirFS(app.WebRoot)
+		}
+	}
+	mountWeb(r, assets)
 	return r
 }
 
@@ -195,11 +204,25 @@ func mountMCP(r *gin.Engine, app *App) {
 }
 
 func cors() gin.HandlerFunc {
+	allowed := map[string]bool{
+		"tauri://localhost":      true, // macOS, iOS, Linux
+		"http://tauri.localhost": true, // Windows, Android
+		"http://localhost:5804":  true,
+		"http://127.0.0.1:5804":  true,
+	}
 	return func(c *gin.Context) {
-		c.Header("Access-Control-Allow-Origin", "*")
+		origin := c.GetHeader("Origin")
+		if allowed[origin] {
+			c.Header("Access-Control-Allow-Origin", origin)
+			c.Header("Vary", "Origin")
+		}
 		c.Header("Access-Control-Allow-Headers", "Content-Type, Authorization")
 		c.Header("Access-Control-Allow-Methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS")
 		if c.Request.Method == http.MethodOptions {
+			if origin != "" && !allowed[origin] {
+				c.AbortWithStatus(403)
+				return
+			}
 			c.AbortWithStatus(204)
 			return
 		}
@@ -402,31 +425,6 @@ func registerBooks(api *gin.RouterGroup, app *App) {
 			return
 		}
 		_ = app.Store.UpsertBook(c.Request.Context(), snap.Summary.ID, root, snap.Summary.Title, snap.Revision, false)
-		c.JSON(200, snap)
-	})
-	api.POST("/books/import", func(c *gin.Context) {
-		var body struct {
-			Path     string `json:"path"`
-			ReadOnly *bool  `json:"readOnly"`
-		}
-		if err := c.BindJSON(&body); err != nil {
-			c.JSON(400, gin.H{"error": err.Error()})
-			return
-		}
-		if body.Path == "" {
-			c.JSON(400, gin.H{"error": "path required"})
-			return
-		}
-		readOnly := true
-		if body.ReadOnly != nil {
-			readOnly = *body.ReadOnly
-		}
-		snap, err := books.LoadBook(body.Path, readOnly)
-		if err != nil {
-			c.JSON(400, gin.H{"error": err.Error()})
-			return
-		}
-		_ = app.Store.UpsertBook(c.Request.Context(), snap.Summary.ID, body.Path, snap.Summary.Title, snap.Revision, readOnly)
 		c.JSON(200, snap)
 	})
 	api.GET("/books/:id", func(c *gin.Context) {

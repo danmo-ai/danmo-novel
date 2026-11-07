@@ -3,10 +3,9 @@ import { computed, ref } from 'vue'
 import type { UnitInfo } from '@/types'
 
 const props = defineProps<{ unit: UnitInfo; raw: string; canWrite: boolean }>()
-const emit = defineEmits<{ edit: [] }>()
+const emit = defineEmits<{ edit: [chapter: number, title: string, raw: string] }>()
 const activeChapter = ref(0)
 const copied = ref<number | null>(null)
-const copiedAll = ref(false)
 
 // 发布端单章超过这个字数通常要拆成上下两章。这里只在**展示层**标出建议切分点，
 // 不写回正文：正文仍是模型的连续输出，切分是作者发布时的人工决定。
@@ -99,11 +98,10 @@ async function copyChapter() {
   setTimeout(() => { copied.value = null }, 1600)
 }
 
-async function copyAll() {
-  const text = chapters.value.map((c) => `第${c.chapter}章 ${c.title}\n\n${c.body}`).join('\n\n')
-  await copyText(text)
-  copiedAll.value = true
-  setTimeout(() => { copiedAll.value = false }, 1600)
+function editChapter() {
+  const c = current.value
+  if (!c) return
+  emit('edit', c.chapter, c.title, `## 第${c.chapter}章${c.title ? ` ${c.title}` : ''}\n\n${c.body}`)
 }
 </script>
 
@@ -116,9 +114,7 @@ async function copyAll() {
         <h3>{{ unit.title || '单元正文' }}</h3>
       </div>
       <div class="prose-actions">
-        <slot name="actions" />
-        <button class="copy-all" @click="copyAll">{{ copiedAll ? '✓ 已复制全部' : '复制全部' }}</button>
-        <button v-if="canWrite" @click="emit('edit')">编辑</button>
+        <div class="production-actions"><slot name="actions" /></div>
       </div>
     </header>
 
@@ -134,9 +130,12 @@ async function copyAll() {
     <article v-if="current" class="chapter-card">
       <div class="chapter-title-row">
         <h2>第 {{ current.chapter }} 章<template v-if="current.title"> · {{ current.title }}</template></h2>
-        <button class="copy-chapter" :class="{ done: copied === current.chapter }" @click="copyChapter">
-          {{ copied === current.chapter ? '✓ 已复制' : '复制本章' }}
-        </button>
+        <div class="chapter-actions">
+          <button class="copy-chapter" :class="{ done: copied === current.chapter }" @click="copyChapter">
+            {{ copied === current.chapter ? '✓ 已复制' : '复制' }}
+          </button>
+          <button v-if="canWrite" @click="editChapter">编辑</button>
+        </div>
       </div>
       <div class="chapter-body">
         <template v-for="(p, i) in paragraphs" :key="i">
@@ -169,12 +168,14 @@ async function copyAll() {
 .prose-head small { color: var(--accent); font-size: 11px; font-weight: 600; letter-spacing: .03em; }
 .prose-head h3 { margin: 6px 0 0; font-family: var(--font-prose); font-size: 24px; line-height: 1.3; }
 .prose-actions { display: flex; gap: 8px; flex-shrink: 0; flex-wrap: wrap; justify-content: flex-end; align-items: center; max-width: min(100%, 520px); }
+.production-actions { display: contents; }
+.chapter-actions { display: flex; gap: 8px; flex-shrink: 0; }
 
 .chapter-tabs { display: flex; gap: 10px; overflow-x: auto; padding: 2px 2px 6px; }
 .chapter-tabs button { display: grid; gap: 3px; padding: 10px 18px; border-radius: 12px; white-space: nowrap; border: 1px solid var(--line); background: rgba(255,255,255,.65); color: var(--ink-soft); text-align: center; flex-shrink: 0; }
 .chapter-tabs button span { font-size: 13px; font-weight: 600; }
 .chapter-tabs button small { font-size: 10px; opacity: .75; }
-.chapter-tabs button.active { background: var(--accent); border-color: var(--accent); color: white; box-shadow: 0 4px 12px rgba(15,107,92,.25); }
+.chapter-tabs button.active { background: var(--accent); border-color: var(--accent); color: white; }
 .chapter-tabs button.active small { opacity: .85; }
 
 .chapter-card { background: rgba(255,255,255,.7); border: 1px solid var(--line); border-radius: 16px; overflow: hidden; }
@@ -194,14 +195,27 @@ async function copyAll() {
 .chapter-foot div { display: flex; gap: 8px; }
 .empty { color: var(--ink-soft); padding: 24px; }
 @media (max-width: 720px) {
-  .prose-view { padding: 16px 14px 20px; gap: 16px; }
-  .chapter-body { padding: 20px; }
-  .chapter-body p { font-size: 16px; }
+  .prose-view { padding: 16px 12px 20px; gap: 16px; min-width: 0; }
+  .prose-head { display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; align-items: stretch; }
+  .prose-head > div:first-child { min-width: 0; }
+  .prose-head h3 { font-size: 22px; overflow-wrap: anywhere; }
+  .prose-actions { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; width: 100%; max-width: none; }
+  .production-actions { display: block; width: 100%; min-width: 0; }
+  .production-actions :deep(.unit-flow-actions) { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); width: 100%; gap: 8px; }
+  .production-actions :deep(.unit-flow-actions button) { width: 100%; min-width: 0; min-height: 44px; padding: 10px 12px; white-space: normal; }
+  .chapter-tabs { gap: 8px; padding: 2px 0 8px; scrollbar-width: none; scroll-snap-type: x proximity; overscroll-behavior-inline: contain; }
+  .chapter-tabs::-webkit-scrollbar { display: none; }
+  .chapter-tabs button { min-height: 52px; padding: 8px 14px; scroll-snap-align: start; }
+  .chapter-card { border-radius: 12px; }
+  .chapter-title-row { padding: 14px 16px; gap: 10px; align-items: flex-start; }
+  .chapter-title-row h2 { font-size: 19px; min-width: 0; }
+  .copy-chapter { min-height: 36px; padding: 6px 10px; font-size: 11px; }
+  .chapter-body { max-height: none; padding: 20px 18px; overflow: visible; }
+  .chapter-body p { font-size: 17px; line-height: 1.95; }
   .split-mark { gap: 8px; }
   .split-mark small { font-size: 10px; line-height: 1.7; }
   .split-line { flex: 1 1 8px; min-width: 8px; }
-  .chapter-foot { flex-wrap: wrap; gap: 8px; }
-  .chapter-title-row { padding: 16px 18px; }
-  .prose-head { flex-direction: column; align-items: flex-start; }
+  .chapter-foot { padding: 12px 16px; flex-wrap: wrap; gap: 8px; }
+  .chapter-foot button { min-height: 40px; }
 }
 </style>

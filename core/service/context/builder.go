@@ -882,14 +882,6 @@ func BuildPlanPacketWithMode(snap domain.BookSnapshot, volume int, mode, instruc
 	}
 }
 
-func BuildOutlineReviewPacket(snap domain.BookSnapshot, unit domain.UnitInfo) domain.ContextPacket {
-	base := BuildOutlinePacket(snap, unit.Volume, []string{unit.UnitID}, "")
-	blocks := append([]domain.ContextBlock(nil), base.Blocks...)
-	blocks = append(blocks, domain.ContextBlock{ID: "outline-target", Label: "待确认完整细纲", Source: unit.OutlinePath, Content: unit.OutlineRaw, Bytes: len(unit.OutlineRaw)})
-	user := BuildUserPrompt("outline_review", "", map[string]any{"id": snap.Summary.ID, "unitId": unit.UnitID}, "检查这份细纲能否直接执行正文；只输出问题，不改写。", blocks, nil)
-	return domain.ContextPacket{ContractVersion: ContractVersion, TaskKind: domain.TaskOutlineReview, BookID: snap.Summary.ID, UnitID: unit.UnitID, VolumeID: base.VolumeID, Blocks: blocks, Policy: DefaultPolicy(domain.TaskOutlineReview, 1), SystemPrompt: novel.OutlineReviewSystemPrompt(), UserPrompt: user, EstPromptTokens: len([]rune(user)) / 2}
-}
-
 // BuildRewriteEntityPacket builds a single-entity rewrite packet.
 // 总纲派生设定（人物/揭示/世界/底牌等）必须携带总纲与相关结构作依据；
 // 工艺类只带规则与风格。Accept 只写目标文件，依据只读。

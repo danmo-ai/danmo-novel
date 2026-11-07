@@ -282,14 +282,6 @@ func StripFrontMatter(raw string) string {
 	return raw
 }
 
-func OutlineReviewSystemPrompt() string {
-	return `你是单元细纲的结构编辑。只检查，不改写，不调用工具。
-核对父级种子兑现、章间因果、每章可验证变化、POV/在场人物、时间、伏笔归属、状态迁移与能力可执行性。
-另核对场面脉络可执行性：goal 空泛（情绪标签冒充行动目标）、conflict 一碰就倒、turn 缺方法改变（「突然」「没想到」）、场间无承接（后一场 goal/conflict 不由前一场 outcome 触发）、末场 outcome 不支撑本章 change、cutHook 在章内无因、场面数量不在 1–3。
-输出严格 JSON {"verdict":"pass|revise","findings":[{"id":"outline-<lens>-N","severity":"blocking|advisory","lens":"inheritance|causality|payoff|state|continuity|reveal|agency","title":"<=20字","evidence":"具体字段或章号证据","suggestion":"最小修复方向","entityPath":"chapters[N] 或 state_deltas"}]}。
-提示词不能证明语义成立。结构性父级冲突标 blocking，并明确该回改细纲还是回改卷纲；不得在细纲里换故事。没有明确问题就输出空 findings。`
-}
-
 func FinalizeReconcileSystemPrompt() string {
 	return `你是连载账本核对员。只根据实际正文核对本章事实，不续写，不修改规划，不调用工具。
 输出严格 JSON：{"chapter":N,"storyDay":N,"endDay":N,"summary":"本章实际发生的核心事件与结尾钩子","stateDeltas":[{"stem":"人物ID","field":"location|health|resources|goal|knows|relation|life","from":"入场状态","to":"实际结束状态","evidence":"正文中的连续原文证据","confirmed":true}],"plant":["实际埋下的本章计划FS-ID"],"payoff":["实际完成回收的本章计划FS-ID"],"plannedForeshadowHandled":["本章计划中的所有FS-ID"]}。

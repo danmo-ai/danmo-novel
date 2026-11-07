@@ -49,6 +49,12 @@ echo "==> Building sidecar: $BINARY_NAME ($GOOS/$GOARCH)"
 
 cd "$ROOT_DIR"
 GOOS=$GOOS GOARCH=$GOARCH go build -trimpath -ldflags "$VERSION_LDFLAGS" -o "$BIN_DIR/$BINARY_NAME" ./cmd/danmo-novel
+# The desktop sidecar serves the built UI from its own loopback listener.
+WEB_DIR="$BIN_DIR/web"
+mkdir -p "$WEB_DIR"
+if [[ -d "$ROOT_DIR/out/frontend/dist" ]]; then
+  cp -R "$ROOT_DIR/out/frontend/dist/" "$WEB_DIR/"
+fi
 
 if [[ "$GOOS" != "windows" ]]; then
   chmod +x "$BIN_DIR/$BINARY_NAME"

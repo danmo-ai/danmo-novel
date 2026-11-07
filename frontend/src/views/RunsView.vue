@@ -183,5 +183,17 @@ h1 { margin: 8px 0 8px; font-family: var(--font-prose); font-size: clamp(28px, 3
   .expand { position: absolute; right: 16px; }
   .run-record { position: relative; }
 }
-@media (max-width: 720px) { .page-head { align-items: flex-start; flex-direction: column; } .run-row { grid-template-columns: 1fr 1fr; } .model { grid-column: 1 / -1; } }
+@media (max-width: 720px) {
+  .page-head { align-items: flex-start; flex-direction: column; }
+  .summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .summary { padding: 16px; }
+  .summary strong { font-size: 20px; overflow-wrap: anywhere; }
+  .filters { display: grid; grid-template-columns: 1fr; }
+  .filters input { min-width: 0; width: 100%; }
+  .filters select, .filters button { width: 100%; }
+  .run-row { grid-template-columns: 1fr 1fr; padding: 14px; }
+  .model { grid-column: 1 / -1; overflow-wrap: anywhere; }
+  .run-details { padding: 14px; }
+  .run-details table { min-width: 620px; }
+}
 </style>

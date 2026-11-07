@@ -318,6 +318,25 @@ jobs:
           chmod +x scripts/*.sh
           make pack-windows-desktop RELEASE_VERSION="$RELEASE_VERSION"
 
+      - name: Sign Windows installer
+        if: ${{ secrets.WINDOWS_CERTIFICATE != '' && secrets.WINDOWS_CERTIFICATE_PASSWORD != '' }}
+        working-directory: ${{ env.REPO_DIR }}
+        shell: powershell
+        env:
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+        run: |
+          $bytes = [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE)
+          $path = Join-Path $env:TEMP 'danmo-signing.p12'
+          [IO.File]::WriteAllBytes($path, $bytes)
+          $password = ConvertTo-SecureString $env:WINDOWS_CERTIFICATE_PASSWORD -AsPlainText -Force
+          $cert = Import-PfxCertificate -FilePath $path -CertStoreLocation Cert:\CurrentUser\My -Password $password
+          Get-ChildItem -Recurse out/desktop/bundle -Filter *.exe | ForEach-Object {
+            & signtool sign /fd SHA256 /td SHA256 /tr http://timestamp.digicert.com /sha1 $cert.Thumbprint $_.FullName
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+          Remove-Item $path -Force
+
       - name: Upload Windows desktop artifact
         uses: actions/upload-artifact@v4
         with:

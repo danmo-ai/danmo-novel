@@ -70,7 +70,7 @@ export async function checkForUpdates(options?: { silent?: boolean }): Promise<b
   const silent = options?.silent ?? false
   await ensureVersion()
 
-  if (!isTauriRuntime()) {
+  if (!isTauriRuntime() || /iPhone|iPad|Android/i.test(navigator.userAgent)) {
     status.value = 'idle'
     availableVersion.value = ''
     updateNotes.value = ''
@@ -112,7 +112,7 @@ export async function checkForUpdates(options?: { silent?: boolean }): Promise<b
 }
 
 export function startSilentUpdateCheck(delayMs = 2500): void {
-  if (!isTauriRuntime() || silentCheckStarted) return
+  if (!isTauriRuntime() || /iPhone|iPad|Android/i.test(navigator.userAgent) || silentCheckStarted) return
   silentCheckStarted = true
   window.setTimeout(() => {
     void checkForUpdates({ silent: true })

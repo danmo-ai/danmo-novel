@@ -1,0 +1,9 @@
+{
+  "build": {
+    "frontendDist": "../../out/frontend/dist"
+  },
+  "bundle": {
+    "externalBin": [],
+    "createUpdaterArtifacts": false
+  }
+}

@@ -17,7 +17,7 @@
         "width": 1280,
         "height": 800,
         "titleBarStyle": "Visible",
-        "url": "/",
+        "url": "index.html",
         "visible": true
       }
     ],

@@ -30,6 +30,7 @@ const saving = ref(false)
 const busy = ref(false)
 const modelId = ref('')
 const runDrawer = ref(false)
+const showUnitPicker = ref(false)
 /**
  * 待审候选 = 「接受后会写文件」的候选。审校清单不在其中：它不写正文，唯一归属地是
  * 审校页。两处都渲染同一批 findings 只会让作者在两份列表之间来回跳。
@@ -58,9 +59,11 @@ function runCacheOf(run: { calls?: CallRecord[] } | null | undefined) { return c
 const pollTimer = ref<number | null>(null)
 const customInstruction = ref('')
 const editingProse = ref(false)
+const editingChapter = ref<number | null>(null)
+const proseBeforeEdit = ref('')
 const editingOutline = ref(false)
 const isProseUnit = computed(() => Boolean(selectedUnit.value?.hasProse && selectedUnit.value.prosePath === editorPath.value))
-const stageLabels: Record<string, string> = { idea: '创意扩写', plan: '立项', outline: '细纲', write: '写作', review: '审校', structure_review: '结构审校', outline_review: '细纲检查', finalize: '定稿', revise: '修订', local_edit: '局部编辑', rewrite_entity: '重写设定' }
+const stageLabels: Record<string, string> = { idea: '创意扩写', plan: '立项', outline: '细纲', write: '写作', review: '审校', structure_review: '结构审校', finalize: '定稿', revise: '修订', local_edit: '局部编辑', rewrite_entity: '重写设定' }
 const hasBookOutline = computed(() => Boolean((store.currentBook?.files?.['outline/book_outline.md'] || '').trim()))
 // 立项工作台只服务「还没有总纲」的书：它是 idea loop 到一次结构化立项的入口。
 // 总纲一旦落盘，优化与重新立项都归大纲 Tab，避免两个页面做同一件事。
@@ -73,20 +76,6 @@ const hasIdeaProposal = computed(() => {
   return raw.split('\n').slice(idx + 1).join('\n').replace(/<!--[\s\S]*?-->/g, '').trim().length > 0
 })
 const hasVolumes = computed(() => (store.currentBook?.volumes?.length || 0) > 0)
-// 单元驱动工作流：proposed→细纲 → accepted→正文 → drafted→审校 → reviewed→定稿核对 → finalized。
-// 逐单元闭环推进，下一单元细纲才能读到最新连续性账本。
-const FLOW_STEPS = [
-  { key: 'outline', label: '细纲', desc: '单元合同' },
-  { key: 'write', label: '正文', desc: '候选稿' },
-  { key: 'review', label: '审校', desc: '本地+AI' },
-  { key: 'finalize', label: '定稿', desc: '回写账本' },
-]
-const flowState = computed(() => {
-  const u = selectedUnit.value
-  if (!u) return { active: -1, done: -1 }
-  const idx = { proposed: 0, accepted: 1, drafted: 2, reviewed: 3, finalized: 4 }[u.status] ?? 0
-  return { active: idx, done: u.status === 'finalized' ? 4 : idx - 1 }
-})
 // 单元按卷分组；默认展开选中单元所在卷，其余卷可折叠。
 const collapsedVolumes = ref<Set<number>>(new Set())
 const volumeGroups = computed(() => {
@@ -144,7 +133,11 @@ onUnmounted(() => {
   if (pollTimer.value) clearInterval(pollTimer.value)
 })
 
-watch(selectedUnit, () => { editingProse.value = false; editingOutline.value = false; void openSelected() })
+watch(selectedUnit, () => { editingProse.value = false; editingChapter.value = null; editingOutline.value = false; void openSelected() })
+watch(view, (next) => {
+  showUnitPicker.value = false
+  if (next !== 'write') runDrawer.value = false
+})
 watch(view, () => {
   void openSelected()
 })
@@ -196,6 +189,40 @@ async function saveFile(path = editorPath.value, content = editorContent.value) 
     store.note('已保存')
     await reload()
   } catch (e) { store.fail(e) } finally { saving.value = false }
+}
+
+function beginChapterEdit(chapter: number, _title: string, raw: string) {
+  proseBeforeEdit.value = editorContent.value
+  editingChapter.value = chapter
+  editorContent.value = raw
+  editingProse.value = true
+}
+
+function cancelChapterEdit() {
+  if (editingChapter.value !== null) editorContent.value = proseBeforeEdit.value
+  editingChapter.value = null
+  editingProse.value = false
+}
+
+async function saveChapterEdit() {
+  const chapter = editingChapter.value
+  if (chapter === null) return
+  const original = proseBeforeEdit.value.replace(/\r\n/g, '\n')
+  const heading = new RegExp(`^##\\s*第\\s*${chapter}\\s*章(?:\\s.*)?$`, 'm')
+  const match = heading.exec(original)
+  if (!match) {
+    store.fail(`找不到第 ${chapter} 章，未保存`)
+    return
+  }
+  const next = /^##\s*第\s*\d+\s*章(?:\s.*)?$/m
+  next.lastIndex = match.index + match[0].length
+  const rest = original.slice(next.lastIndex)
+  const following = next.exec(rest)
+  const end = following ? next.lastIndex + following.index : original.length
+  const updated = original.slice(0, match.index) + editorContent.value.trimEnd() + '\n\n' + original.slice(end).trimStart()
+  await saveFile(editorPath.value, updated)
+  editingChapter.value = null
+  editingProse.value = false
 }
 
 async function saveOutlineField(payload: { path: string; kind: string; entityId: string; field: string; value: string }, done: (ok: boolean) => void) {
@@ -400,18 +427,11 @@ async function primaryAction() {
 }
 
 /** 对当前选中单元启动生产/重做；审校与定稿会切到审校页便于看结果。 */
-function runUnitAction(kind: 'outline' | 'write' | 'review' | 'finalize' | 'outline_review') {
+function runUnitAction(kind: 'outline' | 'write' | 'review' | 'finalize') {
   if (!selectedUnit.value || busy.value) return
-  if (kind === 'review' || kind === 'finalize' || kind === 'outline_review') view.value = 'review'
+  if (kind === 'review' || kind === 'finalize') view.value = 'review'
   else if (kind === 'outline' || kind === 'write') view.value = 'write'
   start(kind)
-}
-
-function runFlowStep(key: string) {
-  if (!selectedUnit.value) return
-  if (key === 'outline' || key === 'write' || key === 'review' || key === 'finalize' || key === 'outline_review') {
-    runUnitAction(key)
-  }
 }
 
 async function accept(c: Candidate, force = false) {
@@ -634,22 +654,6 @@ function chapterText(c: Candidate) {
 const statusText: Record<string, string> = {
   proposed: '待细纲', accepted: '待写', drafted: '草稿', reviewed: '已审校', finalized: '定稿',
 }
-const castExpanded = ref(false)
-const visibleCast = computed(() => {
-  const all = store.currentBook?.cast || []
-  return castExpanded.value ? all : all.slice(0, 6)
-})
-function castName(name: string) {
-  // loader 已把姓名与说明分离；这里只做兜底清洗。
-  return name.replace(/^#+\s*/, '').trim()
-}
-function castInitial(name: string) { return castName(name).slice(0, 1) || '?' }
-function roleLabel(role?: string) {
-  const r = (role || '').toLowerCase()
-  if (['protagonist', 'hero', 'main'].includes(r)) return '主角'
-  if (['antagonist', 'volume_antagonist', 'villain'].includes(r)) return '卷反派'
-  return '常驻'
-}
 </script>
 
 <template>
@@ -680,24 +684,19 @@ function roleLabel(role?: string) {
       <button role="tab" :aria-selected="view === 'review'" :class="{ active: view === 'review' }" @click="view = 'review'">审校</button>
     </div>
 
-    <div class="workspace" :class="`view-${view}`">
+    <div v-if="view === 'write'" class="mobile-workspace-tools">
+      <button class="unit-picker-toggle panel" :aria-expanded="showUnitPicker" @click="showUnitPicker = !showUnitPicker">
+        <span class="unit-picker-label">
+          <small>当前单元</small>
+          <strong>{{ selectedUnit?.unitId || '选择单元' }}</strong>
+          <span v-if="selectedUnit?.title">{{ selectedUnit.title }}</span>
+        </span>
+        <span class="unit-picker-caret">{{ showUnitPicker ? '收起' : '切换' }}</span>
+      </button>
+    </div>
+
+    <div class="workspace" :class="[`view-${view}`, { 'show-unit-picker': showUnitPicker }]">
       <aside v-if="view === 'write'" class="unit-tree panel">
-        <div class="flow-guide">
-          <div class="flow-steps">
-            <template v-for="(s, i) in FLOW_STEPS" :key="s.key">
-              <button
-                type="button"
-                class="flow-step"
-                :class="{ active: flowState.active === i, done: flowState.done >= i }"
-                :disabled="busy || !selectedUnit || store.currentBook.summary.readOnly"
-                :title="selectedUnit ? `${s.desc} · 对 ${selectedUnit.unitId}` : s.desc"
-                @click="runFlowStep(s.key)"
-              >{{ s.label }}</button>
-              <span v-if="i < FLOW_STEPS.length - 1" class="flow-arrow">→</span>
-            </template>
-          </div>
-          <p class="flow-note">点步骤或下方按钮：对<strong>当前选中单元</strong>生成/重做。定稿接受后回写账本，再开下一单元。</p>
-        </div>
         <div class="tree-head"><span>单元</span><span class="tree-count">{{ store.currentBook.units.length }}</span></div>
         <div v-for="g in volumeGroups" :key="g.volume" class="volume-group">
           <button class="volume-head" @click="toggleVolume(g.volume)">
@@ -764,7 +763,7 @@ function roleLabel(role?: string) {
       <section v-else class="editor-panel panel">
         <template v-if="isProseUnit && selectedUnit">
           <UnitProse v-if="!editingProse" :unit="selectedUnit" :raw="editorContent"
-            :can-write="!store.currentBook.summary.readOnly" @edit="editingProse = true">
+            :can-write="!store.currentBook.summary.readOnly" @edit="beginChapterEdit">
             <template #contract>
               <details class="inline-contract">
                 <summary>单元合同 · 写正文时对照</summary>
@@ -785,8 +784,8 @@ function roleLabel(role?: string) {
             <div class="editor-toolbar">
               <span class="path">{{ editorPath }}</span>
               <div class="editor-actions">
-                <button @click="saveFile(); editingProse = false" :disabled="saving">{{ saving ? '保存中' : '保存' }}</button>
-                <button @click="editingProse = false">取消</button>
+                <button @click="saveChapterEdit" :disabled="saving">{{ saving ? '保存中' : '保存' }}</button>
+                <button @click="cancelChapterEdit">取消</button>
               </div>
             </div>
             <textarea v-model="editorContent" class="prose-editor" spellcheck="false"></textarea>
@@ -842,35 +841,6 @@ function roleLabel(role?: string) {
         </template>
       </section>
 
-      <aside v-if="view === 'write'" class="context-panel">
-        <section class="side-card panel">
-          <h4>全书下一步</h4>
-          <div class="next-step">
-            <span class="next-kind">{{ stageLabels[store.primary?.kind || ''] || store.primary?.kind }}</span>
-            <strong>{{ store.primary?.unitId || `第 ${store.primary?.volume} 卷` }}</strong>
-          </div>
-          <p class="side-note">页顶大按钮跟这一步。当前单元的细纲/正文/审校/定稿在中间顶栏操作。</p>
-        </section>
-        <section class="side-card panel">
-          <h4>本卷人物 <span class="side-count">{{ store.currentBook.cast?.length || 0 }}</span></h4>
-          <div class="cast-list">
-            <button class="cast-item" v-for="c in visibleCast" :key="c.stem" @click="view = 'bible'">
-              <span class="cast-avatar">{{ castInitial(c.name) }}</span>
-              <span class="cast-info">
-                <strong>{{ castName(c.name) }}<i class="role-badge" :data-role="c.role">{{ roleLabel(c.role) }}</i></strong>
-                <small v-if="c.tagline">{{ c.tagline }}</small>
-              </span>
-            </button>
-          </div>
-          <button v-if="(store.currentBook.cast?.length || 0) > 6" class="cast-more" @click="castExpanded = !castExpanded">
-            {{ castExpanded ? '收起' : `查看全部 ${store.currentBook.cast?.length} 人` }}
-          </button>
-        </section>
-        <section v-if="hasBookOutline" class="side-card panel side-actions">
-          <!-- 重新立项的唯一入口在大纲 Tab；这里只是同一动作的快捷方式。 -->
-          <button :disabled="busy || store.currentBook.summary.readOnly" @click="startPlan('reinit')">重新立项</button>
-        </section>
-      </aside>
     </div>
 
     <section v-if="listedCandidates.length" class="candidates">
@@ -1000,8 +970,16 @@ h1 { font-family: var(--font-prose); margin: 6px 0 0; font-size: 30px; line-heig
 .tabs button:hover:not(:disabled) { background: rgba(255,255,255,.7); color: var(--ink); }
 .tabs button.active { background: white; color: var(--accent); box-shadow: 0 2px 8px rgba(20,35,31,.1); }
 
+/* 手机工作区：当前单元选择器和上下文按需提供，正文优先。 */
+.mobile-workspace-tools { display: none; }
+.unit-picker-label { display: grid; gap: 3px; min-width: 0; text-align: left; }
+.unit-picker-label small { color: var(--ink-soft); font-size: 10px; }
+.unit-picker-label strong { color: var(--accent); font-size: 14px; }
+.unit-picker-label > span { color: var(--ink-soft); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.unit-picker-caret { color: var(--accent); font-size: 12px; flex-shrink: 0; }
+
 /* ---- 三栏工作区 ---- */
-.workspace { display: grid; grid-template-columns: 236px minmax(0, 1fr) 252px; gap: 18px; align-items: start; }
+.workspace { display: grid; grid-template-columns: 236px minmax(0, 1fr); gap: 18px; align-items: start; }
 .workspace:not(.view-write) { grid-template-columns: minmax(0, 1fr); }
 
 /* 左：单元树 */
@@ -1035,16 +1013,6 @@ h1 { font-family: var(--font-prose); margin: 6px 0 0; font-size: 30px; line-heig
 .volume-title { margin: 0 10px 6px 28px; font-size: 10px; color: var(--ink-soft); line-height: 1.5; overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 1; -webkit-box-orient: vertical; }
 .volume-group .unit-row { margin-left: 6px; }
 /* 单元工作流引导：侧栏窄，必须单行 */
-.flow-guide { padding: 8px 4px 12px; border-bottom: 1px solid var(--line); margin-bottom: 10px; }
-.flow-steps { display: flex; align-items: center; justify-content: space-between; gap: 0; flex-wrap: nowrap; width: 100%; min-width: 0; }
-.flow-step { flex: 1 1 0; min-width: 0; font-size: 10px; padding: 3px 0; border-radius: 20px; border: 1px solid transparent; background: rgba(20,35,31,.05); color: var(--ink-soft); white-space: nowrap; cursor: pointer; text-align: center; line-height: 1.2; }
-.flow-step:hover:not(:disabled) { border-color: rgba(15,107,92,.35); color: var(--ink); }
-.flow-step:disabled { opacity: .45; cursor: not-allowed; }
-.flow-step.active { background: var(--accent); color: white; font-weight: 700; }
-.flow-step.done { background: rgba(31,122,77,.15); color: var(--ok); }
-.flow-arrow { flex: 0 0 auto; color: var(--ink-soft); font-size: 9px; opacity: .45; padding: 0 1px; line-height: 1; }
-.flow-note { margin: 10px 2px 0; font-size: 10px; color: var(--ink-soft); line-height: 1.7; }
-
 /* 中：正文/编辑器 */
 .editor-panel { min-height: 60vh; overflow: hidden; }
 .editor-toolbar { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 12px 16px; border-bottom: 1px solid var(--line); }
@@ -1055,32 +1023,6 @@ h1 { font-family: var(--font-prose); margin: 6px 0 0; font-size: 30px; line-heig
   font-family: var(--font-prose); font-size: 17px; line-height: 1.9; color: var(--ink);
   background: transparent; outline: none;
 }
-
-/* 右：上下文侧栏 */
-.context-panel { display: grid; gap: 14px; position: sticky; top: 12px; }
-.side-card { padding: 16px; }
-.side-card h4 { margin: 0 0 12px; font-size: 12px; font-weight: 700; color: var(--ink-soft); letter-spacing: .04em; display: flex; align-items: center; gap: 6px; }
-.side-count { font-size: 10px; background: rgba(20,35,31,.06); padding: 1px 7px; border-radius: 20px; font-weight: 500; }
-.next-step { display: flex; align-items: center; gap: 10px; }
-.next-kind { font-size: 11px; padding: 3px 10px; border-radius: 8px; background: rgba(15,107,92,.1); color: var(--accent); font-weight: 600; flex-shrink: 0; }
-.next-step strong { font-size: 14px; font-family: var(--font-prose); }
-.side-note { margin: 12px 0 0; color: var(--ink-soft); font-size: 11px; line-height: 1.7; }
-.cast-list { display: grid; gap: 2px; }
-.cast-item { display: flex; align-items: center; gap: 10px; width: 100%; border: none; background: transparent; padding: 7px 6px; border-radius: 10px; text-align: left; }
-.cast-item:hover:not(:disabled) { background: rgba(15,107,92,.06); }
-.cast-avatar { width: 30px; height: 30px; border-radius: 50%; background: linear-gradient(135deg, rgba(15,107,92,.18), rgba(15,107,92,.06)); color: var(--accent); display: grid; place-items: center; font-size: 13px; font-weight: 700; font-family: var(--font-prose); flex-shrink: 0; }
-.cast-info { display: grid; gap: 2px; min-width: 0; }
-.cast-info strong { font-size: 13px; display: flex; align-items: center; gap: 6px; }
-.role-badge { font-style: normal; font-size: 9px; padding: 1px 6px; border-radius: 6px; background: rgba(20,35,31,.06); color: var(--ink-soft); flex-shrink: 0; font-weight: 500; }
-.role-badge[data-role="protagonist"] { background: rgba(15,107,92,.12); color: var(--accent); }
-.role-badge[data-role="volume_antagonist"] { background: rgba(163,59,50,.1); color: var(--bad); }
-.cast-info small { font-size: 10px; color: var(--ink-soft); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.cast-more { margin-top: 10px; width: 100%; border: none; background: transparent; color: var(--accent); font-size: 12px; padding: 6px; }
-.cast-more:hover:not(:disabled) { background: rgba(15,107,92,.06); }
-.side-actions { display: grid; gap: 8px; }
-.side-actions :deep(.unit-flow-actions) { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-.side-actions :deep(.unit-flow-actions button) { width: 100%; padding: 10px; }
-.side-actions > button { width: 100%; padding: 10px; }
 
 /* 无正文单元：细纲工作区 */
 .unit-work { padding: 24px 26px; display: grid; gap: 20px; }
@@ -1122,18 +1064,47 @@ h1 { font-family: var(--font-prose); margin: 6px 0 0; font-size: 30px; line-heig
 
 @media (max-width: 1180px) {
   .workspace.view-write { grid-template-columns: 210px minmax(0, 1fr); }
-  .context-panel { grid-column: 1 / -1; grid-template-columns: repeat(3, minmax(0, 1fr)); position: static; }
 }
 @media (max-width: 720px) {
-  .workspace { grid-template-columns: minmax(0, 1fr); }
+  .book-head { padding-bottom: 12px; }
+  .book-head h1 { font-size: 24px; }
+  .book-head .crumb { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
+  .tabs { display: flex; width: 100%; overflow-x: auto; margin-bottom: 12px; scrollbar-width: none; }
+  .tabs::-webkit-scrollbar { display: none; }
+  .tabs button { flex: 1 0 auto; min-width: 64px; min-height: 40px; padding: 8px 16px; }
+  .mobile-workspace-tools { display: grid; gap: 8px; margin-bottom: 12px; }
+  .unit-picker-toggle { display: flex; align-items: center; justify-content: space-between; gap: 12px; width: 100%; padding: 12px 14px; text-align: left; }
+  .workspace, .workspace.view-write { display: grid; grid-template-columns: minmax(0, 1fr); width: 100%; min-width: 0; }
+  .workspace > * { min-width: 0; width: 100%; }
+  .editor-panel { min-width: 0; width: 100%; overflow: hidden; }
+  .unit-work { min-width: 0; width: 100%; }
+  .workspace.view-write:not(.show-unit-picker) .unit-tree { display: none; }
+  .workspace.view-write.show-unit-picker .unit-tree { display: block; max-height: 55dvh; overflow-y: auto; }
   .book-head { flex-direction: column; align-items: flex-start; gap: 10px; }
   .unit-tree { max-height: 240px; position: static; }
-  .context-panel { grid-template-columns: minmax(0, 1fr); }
+  .workspace.view-write > .unit-tree { grid-row: 1; }
+  .workspace.view-write > .editor-panel { grid-row: 2; }
   .editor-panel { min-height: 0; }
   .prose-editor { min-height: 48vh; padding: 18px 16px; font-size: 16px; }
   .editor-toolbar { align-items: flex-start; flex-direction: column; }
-  .candidate header { flex-direction: column; align-items: flex-start; }
-  .run-drawer { right: 16px; bottom: 16px; }
+  .candidate { padding: 14px; }
+  .candidate header { flex-direction: column; align-items: stretch; }
+  .candidate header > div:last-child { flex-wrap: wrap; }
+  .candidate header button { flex: 1; }
+  .candidate-prose { max-height: none; padding: 14px; font-size: 16px; }
+  .unit-tree { max-height: 40dvh; overflow: auto; }
+  .unit-work { padding: 16px 12px; min-width: 0; }
+  .unit-work-head { display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; align-items: stretch; }
+  .unit-work-head > div:first-child { min-width: 0; }
+  .unit-work-head h3 { overflow-wrap: anywhere; font-size: 22px; }
+  .unit-work-actions { display: grid; gap: 10px; width: 100%; min-width: 0; }
+  .unit-work-actions > * { width: 100%; min-width: 0; }
+  .unit-work-actions > button { width: 100%; min-height: 44px; }
+  .unit-work-actions :deep(.unit-flow-actions) { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); width: 100%; gap: 8px; }
+  .unit-work-actions :deep(.unit-flow-actions button) { width: 100%; min-width: 0; min-height: 44px; white-space: normal; padding: 10px 12px; }
+  .editor-actions { width: 100%; }
+  .editor-actions button { flex: 1; }
+  .run-drawer { inset: auto 0 0; width: 100%; max-height: 72dvh; overflow: auto; border-radius: 18px 18px 0 0; padding-bottom: max(18px, env(safe-area-inset-bottom)); }
   .primary-task { align-items: stretch; flex-direction: column; gap: 12px; }
   .primary-task .primary { width: 100%; }
 }

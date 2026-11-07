@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
+import { useRoute } from 'vue-router'
 import { useAppStore } from '@/stores/app'
 import { api } from '@/api/client'
 import { useAppUpdater } from '@/composables/useAppUpdater'
@@ -73,7 +74,10 @@ async function onInstallUpdate() {
 }
 
 type Tab = 'version' | 'providers' | 'stages' | 'modelConfig'
-const activeTab = ref<Tab>('providers')
+const route = useRoute()
+const tabs: Tab[] = ['version', 'providers', 'stages', 'modelConfig']
+const routeTab = route.query.tab
+const activeTab = ref<Tab>(tabs.includes(routeTab as Tab) ? routeTab as Tab : 'providers')
 const showForm = ref(false)
 const editingId = ref('')
 const form = ref<any>({ provider: 'openai', name: '', apiKey: '', baseUrl: '', defaultProtocolDialect: '', models: [] })
@@ -321,7 +325,7 @@ async function saveReviewSettings() {
     <header class="settings-hero">
       <p class="eyebrow">Settings</p>
       <h1>配置你的写作引擎。</h1>
-      <p class="sub">版本 · 提供商 · 创作阶段 · 模型参数</p>
+      <p class="sub">版本、模型与写作参数管理。</p>
     </header>
 
     <nav class="tab-bar">
@@ -597,7 +601,7 @@ async function saveReviewSettings() {
 .tab-bar { display: flex; gap: 0; border-bottom: 1px solid var(--line); margin-bottom: 22px; }
 .tab-bar button { padding: 10px 22px; border: none; background: none; cursor: pointer; font-size: 14px; color: var(--ink-soft); border-bottom: 2px solid transparent; margin-bottom: -1px; border-radius: 0; }
 .tab-bar button:hover:not(:disabled) { color: var(--accent); background: none; border-color: transparent; }
-.tab-bar button.active { color: var(--accent); border-bottom-color: var(--accent); font-weight: 600; }
+.tab-bar button.active { color: var(--accent); border-bottom-color: var(--accent); font-weight: 600; background: none; }
 .tab-content { display: grid; gap: 18px; align-items: start; }
 .block { padding: 20px; }
 .block-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; }
@@ -654,4 +658,29 @@ async function saveReviewSettings() {
 .mc-switch { display: flex; align-items: center; gap: 8px; }
 .mc-switch input { width: auto; }
 .mc-delete { margin-top: 8px; color: var(--bad); background: none; border: 1px solid var(--bad); border-radius: 10px; padding: 6px 14px; cursor: pointer; font-size: 13px; }
+@media (max-width: 720px) {
+  .settings-hero { padding: 24px 4px 18px; }
+  .tab-bar { flex-wrap: wrap; gap: 4px 12px; border-bottom: none; }
+  .tab-bar button { flex: 0 0 auto; padding: 10px 12px; min-height: 44px; border: 1px solid transparent; border-radius: 10px; margin-bottom: 0; }
+  .tab-bar button.active,
+  .tab-bar button.active:hover:not(:disabled) {
+    border-color: rgba(15,107,92,.28);
+    background: rgba(15,107,92,.1);
+    color: var(--accent);
+    font-weight: 600;
+  }
+  .block { padding: 16px; }
+  .provider-row, .model-row { flex-wrap: wrap; }
+  .model-row > span:first-child { flex: 1 1 100%; word-break: break-all; }
+  .assign-row { grid-template-columns: minmax(0, 1fr); gap: 8px; }
+  .assign-controls { grid-template-columns: minmax(0, 1fr); }
+  .assign-controls select { text-overflow: clip; font-size: 13px; }
+  .assign-hint { margin-left: 0; }
+  .model-edit-row { grid-template-columns: minmax(0, 1fr) 96px 30px; }
+  .modal-mask { padding: max(12px, env(safe-area-inset-top)) 12px max(12px, env(safe-area-inset-bottom)); }
+  .modal { width: 100%; max-width: 100%; min-width: 0; max-height: calc(100dvh - max(12px, env(safe-area-inset-top)) - max(12px, env(safe-area-inset-bottom))); border-radius: 14px; padding: 18px 16px; overflow-x: hidden; }
+  .modal > * { min-width: 0; }
+  .modal-actions { position: sticky; bottom: -18px; margin: 4px -16px -18px; padding: 12px 16px max(12px, env(safe-area-inset-bottom)); background: var(--paper); border-top: 1px solid var(--line); }
+  .modal-actions button { flex: 1; min-width: 0; }
+}
 </style>

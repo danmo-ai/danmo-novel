@@ -636,7 +636,7 @@ func (r *Runner) chat(ctx context.Context, modelID, system, user string, policy 
 	}
 	if len(resp.ToolCalls) > 0 {
 		rec.Error = "model returned tool calls which are forbidden"
-		return "", rec, fmt.Errorf(rec.Error)
+		return "", rec, fmt.Errorf("%s", rec.Error)
 	}
 	return resp.Content, rec, nil
 }

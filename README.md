@@ -92,11 +92,6 @@ make pack-macos-desktop RELEASE_VERSION=0.1.0
 
 打 `v*` tag 触发 GitHub Actions，产出三平台安装包与 Tauri 自升级清单。详见 [docs/desktop-release.md](docs/desktop-release.md)。
 
-## 导入已有书
-
-书架 → 新建 → 「导入 Danmo Work 书」。填 `novel/<book-id>/` 的绝对路径；默认**只读**，
-需要写回时在书内显式开启。只读书籍仍可生成候选，但接受会被拒绝。
-
 ## 数据与目录
 
 | 位置 | 内容 |

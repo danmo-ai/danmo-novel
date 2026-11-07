@@ -9,10 +9,12 @@ const props = defineProps<{
   /** highlight the stage matching unit status */
   emphasize?: boolean
 }>()
-const emit = defineEmits<{ run: [kind: 'outline' | 'write' | 'review' | 'finalize' | 'outline_review'] }>()
+const emit = defineEmits<{ run: [kind: 'outline' | 'write' | 'review' | 'finalize'] }>()
 
-const outlineLabel = computed(() => (props.unit.status === 'proposed' ? '生成细纲' : '重写细纲'))
-const writeLabel = computed(() => (props.unit.hasProse ? '重写正文' : '写正文'))
+const outlineLabel = computed(() => (props.unit.status === 'proposed' ? '细纲' : '重写细纲'))
+const writeLabel = computed(() => (props.unit.hasProse ? '重写正文' : '正文'))
+const reviewLabel = computed(() => (['reviewed', 'finalized'].includes(props.unit.status) ? '重新审校' : '审校'))
+const finalizeLabel = computed(() => (props.unit.status === 'finalized' ? '重新定稿' : '定稿'))
 const canWrite = computed(() => ['accepted', 'drafted', 'reviewed', 'finalized'].includes(props.unit.status))
 const canReview = computed(() => Boolean(props.unit.hasProse))
 const canFinalize = computed(() => Boolean(props.unit.hasProse) && props.unit.status !== 'proposed')
@@ -34,7 +36,7 @@ const primaryKind = computed(() => {
       :title="unit.status === 'proposed' ? '补全单元写作合同' : '重新生成单元合同（接受后覆盖）'"
       @click="emit('run', 'outline')"
     >{{ outlineLabel }}</button>
-    <button type="button" :disabled="busy || readOnly || unit.status === 'proposed'" title="检查章间因果、父级兑现与状态合同；不自动改写" @click="emit('run', 'outline_review')">细纲检查</button>
+    <span class="flow-arrow" aria-hidden="true">→</span>
     <button
       type="button"
       :class="{ primary: emphasize && primaryKind === 'write' }"
@@ -42,24 +44,32 @@ const primaryKind = computed(() => {
       :title="canWrite ? (unit.hasProse ? '重写正文：确认弹窗里可选「在原文上优化」或「重新生成」' : '按合同生成正文候选') : '先接受细纲后再写正文'"
       @click="emit('run', 'write')"
     >{{ writeLabel }}</button>
+    <span class="flow-arrow" aria-hidden="true">→</span>
     <button
       type="button"
       :class="{ primary: emphasize && primaryKind === 'review' }"
       :disabled="busy || readOnly || !canReview"
       :title="canReview ? '本地硬门 + AI 审校' : '先有正文再审校'"
       @click="emit('run', 'review')"
-    >审校</button>
+    >{{ reviewLabel }}</button>
+    <span class="flow-arrow" aria-hidden="true">→</span>
     <button
       type="button"
       :class="{ primary: emphasize && primaryKind === 'finalize' }"
       :disabled="busy || readOnly || !canFinalize"
       :title="canFinalize ? '定稿检查；接受后回写账本并将单元标为已定稿' : '先有正文再定稿'"
       @click="emit('run', 'finalize')"
-    >{{ unit.status === 'finalized' ? '重跑定稿' : '定稿' }}</button>
+    >{{ finalizeLabel }}</button>
   </div>
 </template>
 
 <style scoped>
-.unit-flow-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
-.unit-flow-actions button { padding: 8px 12px; font-size: 12px; }
+.unit-flow-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; min-width: 0; }
+.unit-flow-actions button { padding: 8px 12px; font-size: 12px; white-space: normal; }
+.unit-flow-actions .flow-arrow { flex: 0 0 auto; color: var(--ink-soft); opacity: .55; font-size: 12px; }
+@media (max-width: 720px) {
+  .unit-flow-actions .flow-arrow { display: none; }
+  .unit-flow-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); width: 100%; gap: 8px; }
+  .unit-flow-actions button { min-width: 0; min-height: 44px; width: 100%; }
+}
 </style>

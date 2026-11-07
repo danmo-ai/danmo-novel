@@ -12,7 +12,7 @@ export function isTauriRuntime(): boolean {
  * - Otherwise empty (same-origin, proxied by Vite).
  */
 export function apiBaseUrl(): string {
-  return import.meta.env.VITE_API_BASE_URL ?? (isTauriRuntime() ? 'http://127.0.0.1:7804' : '')
+  return import.meta.env.VITE_API_BASE_URL ?? window.__DANMO_API_BASE__ ?? (isTauriRuntime() ? 'http://127.0.0.1:7804' : '')
 }
 
 /** Wait until the local Go backend accepts HTTP (desktop first-launch race). */

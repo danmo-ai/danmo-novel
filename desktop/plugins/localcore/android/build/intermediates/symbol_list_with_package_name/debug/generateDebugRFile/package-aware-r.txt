@@ -1,0 +1,1 @@
+com.danmo.novel.localcore
