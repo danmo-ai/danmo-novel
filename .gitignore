@@ -20,5 +20,10 @@ desktop/src-tauri/keys/updater.key
 # Mobile core artifacts (built by scripts/build_go_mobile.sh / make mobile-core)
 desktop/plugins/localcore/ios/Frameworks/
 desktop/plugins/localcore/android/libs/
+# Gradle output from building the localcore plugin (tauri android build).
+# Committed once by accident: the Kotlin cache filenames are long enough that
+# a Windows checkout fails outright, so it must never come back.
+desktop/plugins/localcore/android/build/
+desktop/plugins/localcore/android/.gradle/
 desktop/plugins/localcore/.tauri/
 desktop/plugins/localcore/android/.tauri/
