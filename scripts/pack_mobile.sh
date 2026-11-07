@@ -45,7 +45,20 @@ case "$PLATFORM" in
     # init 幂等；必须在 build 之前，否则工程刚生成就被覆盖，补丁丢失。
     npm run tauri -- ios init
     "$ROOT_DIR/scripts/ios_hygiene.sh"
-    npm run tauri -- ios build --ci --config src-tauri/tauri.${PLATFORM}.conf.json
+    # 没有签名身份时明确走 --no-sign：这样本地/CI 都能产出可用的产物用来验证，
+    # 而不是在 xcodebuild 里报 "requires a development team" 后失败。
+    #
+    # 设备归档（.ipa）必须有开发团队：xcodebuild 在无团队时 arch 解析失败
+    # （"Arch specified by Xcode was invalid"）。所以无签名时改出模拟器包，
+    # 用它验证 UI 与本地内核，而不是留一个永远失败的 CI 步骤。
+    IOS_SIGN_ARGS=(--ci)
+    if [[ -z "${APPLE_SIGNING_IDENTITY:-}" ]]; then
+      echo "==> 没有 APPLE_SIGNING_IDENTITY：构建模拟器包（--no-sign，不产出 .ipa）"
+      IOS_SIGN_ARGS+=(--no-sign --target aarch64-sim)
+    else
+      echo "==> 签名身份: $APPLE_SIGNING_IDENTITY"
+    fi
+    npm run tauri -- ios build "${IOS_SIGN_ARGS[@]}" --config src-tauri/tauri.${PLATFORM}.conf.json
     ;;
   android) npm run tauri -- android build --ci --config src-tauri/tauri.${PLATFORM}.conf.json ;;
 esac

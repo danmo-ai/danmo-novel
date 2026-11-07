@@ -36,9 +36,12 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: danmo-novel-ios
+          # 没有签名密钥时产出的是模拟器包，所以两种产物都收：有 .ipa 收 .ipa，
+          # 没有就收 .app（可直接 simctl install 验证）。
           path: |
             ${{ env.REPO_DIR }}/out/mobile/*.xcframework/**
             ${{ env.REPO_DIR }}/desktop/src-tauri/gen/apple/build/**/*.ipa
+            ${{ env.REPO_DIR }}/desktop/src-tauri/gen/apple/build/**/*.app/**
           if-no-files-found: ignore
 
   android:

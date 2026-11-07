@@ -45,9 +45,12 @@ watch(selectedUnit, (unit) => {
 })
 
 // 没有总纲 = 还没立项：单元列表必然是空的，直接带去立项页。
-watch([hasBookOutline, () => route.name], ([has, name]) => {
+// 必须等书真的加载完再判断：初值 hasBookOutline 是 false，立即跳会把有总纲的书
+// 也甩到立项页（而且是在路由刚进来的一瞬间）。
+watch([hasBookOutline, () => route.name, () => store.currentBook], ([has, name, book]) => {
+  if (!book) return
   if (has === false && name === 'book') router.replace(`/books/${bookId.value}/setup`)
-}, { immediate: true })
+})
 
 function backToShelf() {
   router.push('/')
