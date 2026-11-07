@@ -157,20 +157,36 @@ func previousUnitID(from, boundary string, units []domain.UnitInfo) string {
 	return last.UnitID
 }
 
-func ValidateIdentityCoverage(segments []domain.IdentitySegment, cast []domain.CastCard, unit domain.UnitInfo, onStage []string) error {
+// MissingIdentityStems 列出 on_stage 里「既不是候选卡、身份时间线又在本单元没有
+// 生效段」的人物。与 ValidateIdentityCoverage 同一判据，只是返回名单而不是报错。
+//
+// 存在的意义是让调用方能**收窄** on_stage 而不是整份失败：模型是从卷人物表里
+// 挑人的，而卷人物表是「本卷出场人物」——人人都可能在，但不等于每个单元都在。
+// 它挑错一个还没登场的人，整份细纲就该作废吗？不该：那只是规划粒度问题，
+// 把这个人从本单元移除即可，故事本身没有被破坏。
+func MissingIdentityStems(segments []domain.IdentitySegment, cast []domain.CastCard, unit domain.UnitInfo, onStage []string) []string {
+	var missing []string
 	for _, stem := range onStage {
 		isCandidate := false
 		for _, c := range cast {
 			if c.Stem == stem && c.Status == domain.CastCandidate {
 				isCandidate = true
+				break
 			}
 		}
 		if isCandidate {
 			continue
 		}
 		if IdentityAt(segments, stem, unit.UnitID) == nil {
-			return fmt.Errorf("%s：%s 缺少生效的职务身份段，请在人物卡中登记", unit.UnitID, stem)
+			missing = append(missing, stem)
 		}
+	}
+	return missing
+}
+
+func ValidateIdentityCoverage(segments []domain.IdentitySegment, cast []domain.CastCard, unit domain.UnitInfo, onStage []string) error {
+	if missing := MissingIdentityStems(segments, cast, unit, onStage); len(missing) > 0 {
+		return fmt.Errorf("%s：%s 缺少生效的职务身份段，请在人物卡中登记", unit.UnitID, missing[0])
 	}
 	blocking, _ := ValidateUnitIdentity(segments, onStage, unit.UnitID)
 	if len(blocking) > 0 {

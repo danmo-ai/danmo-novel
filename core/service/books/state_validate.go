@@ -22,6 +22,44 @@ import (
 //     允许挂在 career、relationship 这类非人物实体上（细纲一直这么用）。
 //
 // prior 是进入本单元时的快照（StateAt 的结果），用于判断流转方向与死者在场。
+// SanitizeStateDeltas 剔除「字段用在了非人物 stem 上」的条目，并返回被剔除的说明。//
+// 典型情形：模型把故事线 ID 当人物用——`career.role_title=全国决赛竞争者->全国第一`
+// （名次不是职务），或 `career.resources=…`。career 是故事线，人物卡里没有它，
+// 这条迁移永远无法落到账本上。
+//
+// 为什么剔除而不是报错：这类错误只损失一条记账，故事本身没写错；而报错会让
+// 整份细纲作废、整单元停下来问作者——按一天几十个单元的速度，那等于流水线
+// 每几小时就要人介入一次。剔除后在候选的 findings 里留一条 advisory，作者
+// 打开候选就能看到被丢掉了什么。
+//
+// 判据与 ValidateStateDeltas 完全一致（同一份 people 集合），只是把「拒绝」
+// 改成「剔除」——两处若用不同判据，会出现「剔除了却还是校验失败」。
+func SanitizeStateDeltas(cast []domain.CastCard, raw string) (string, []string) {
+	deltas := parseStateDeltas(raw)
+	if len(deltas) == 0 {
+		return raw, nil
+	}
+	people := map[string]bool{}
+	for _, c := range cast {
+		people[c.Stem] = true
+	}
+	var dropped []string
+	var kept []string
+	for _, d := range deltas {
+		field := domain.CanonicalStateField(d.Field)
+		needsPerson := domain.OwnedByIdentityTimeline(field) || field == domain.StateFieldLife
+		if needsPerson && !people[d.Stem] {
+			dropped = append(dropped, fmt.Sprintf("%s.%s（人物卡中没有 %s）", d.Stem, d.Field, d.Stem))
+			continue
+		}
+		kept = append(kept, d.Stem+"."+d.Field+"="+d.From+"->"+d.To)
+	}
+	if len(dropped) == 0 {
+		return raw, nil
+	}
+	return strings.Join(kept, "；"), dropped
+}
+
 func ValidateStateDeltas(cast []domain.CastCard, unit domain.UnitInfo, raw string, prior domain.UnitState, onStage []string) error {
 	deltas := parseStateDeltas(raw)
 

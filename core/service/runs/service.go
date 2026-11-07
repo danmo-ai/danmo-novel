@@ -795,12 +795,38 @@ func (s *Service) acceptLocked(ctx context.Context, cmd domain.AcceptCommand) (d
 		if len(assignments) > 0 {
 			writes[books.ForeshadowSchedulePath] = foreshadowRaw
 		}
-		for _, u := range cand.UnitOutlines {
+		for i := range cand.UnitOutlines {
+			u := &cand.UnitOutlines[i]
 			// 单元还没落盘时也要校验身份：身份段的判定只依赖 unitId，不是文件。
 			// 以前整段包在 findUnit 成功分支里，单元不在盘上就静默跳过。
 			current, ok := findUnit(snap, u.UnitID)
 			if !ok {
 				current = domain.UnitInfo{UnitID: u.UnitID, Volume: vol}
+			}
+			// 卷人物表是「本卷出场人物」，不等于「每个单元都在场」。模型把它挑进
+			// on_stage 时，偶尔会选一个在本单元还没有生效身份段的人（还没登场，
+			// 或只在该卷后段登场）。这属于规划粒度问题，不是故事错误：把这个人
+			// 从本单元移除即可，整份细纲不该因此作废——那会让流水线在每一处
+			// 卷人物表与身份时间线的错位上停下来问作者。
+			if missing := books.MissingIdentityStems(snap.IdentitySegments, snap.Cast, current, u.OnStage); len(missing) > 0 {
+				drop := make(map[string]bool, len(missing))
+				for _, stem := range missing {
+					drop[stem] = true
+				}
+				kept := make([]string, 0, len(u.OnStage))
+				for _, stem := range u.OnStage {
+					if !drop[stem] {
+						kept = append(kept, stem)
+					}
+				}
+				u.OnStage = kept
+				cand.Findings = append(cand.Findings, domain.ReviewFinding{
+					ID:       "auto-drop-onstage-" + u.UnitID,
+					Severity: "advisory", Source: "local_gate", Lens: "identity", UnitID: u.UnitID,
+					Title:      "已自动移除本单元无生效身份段的人物",
+					Evidence:   u.UnitID + "：" + strings.Join(missing, "、"),
+					Suggestion: "这些人在本单元没有生效的身份段（尚未登场或已离场），已从 onStage 移除；若确需出场，请先在 canon/identity-timeline.yaml 补一段",
+				})
 			}
 			if err := books.ValidateIdentityCoverage(snap.IdentitySegments, snap.Cast, current, u.OnStage); err != nil {
 				return domain.Candidate{}, err
@@ -808,7 +834,20 @@ func (s *Service) acceptLocked(ctx context.Context, cmd domain.AcceptCommand) (d
 			// 连续性词表与生命周期：未识别的 field 名在落盘前就要拦下，
 			// 否则它会被 StateFromOutline 静默跳过（过去 70% 的写入就是这样丢的）。
 			prior, _ := books.StateAt(priorStates, u.UnitID)
-			if err := books.ValidateStateDeltas(snap.Cast, current, serializeUnitYAML(u), prior, u.OnStage); err != nil {
+			// 先把「字段用在非人物 stem 上」的条目剔掉（如 career.role_title，
+			// career 是故事线不是人）。这类错误只损失一条记账，不值得让整份
+			// 细纲作废——否则流水线每隔几小时就要作者介入一次。
+			if sanitized, dropped := books.SanitizeStateDeltas(snap.Cast, serializeUnitYAML(*u)); len(dropped) > 0 {
+				u.StateDeltas = stateDeltaRowsAsAny(sanitized)
+				cand.Findings = append(cand.Findings, domain.ReviewFinding{
+					ID:       "auto-drop-state-delta-" + u.UnitID,
+					Severity: "advisory", Source: "local_gate", Lens: "state", UnitID: u.UnitID,
+					Title:      "已自动剔除用在非人物上的身份/生命迁移",
+					Evidence:   u.UnitID + "：" + strings.Join(dropped, "；"),
+					Suggestion: "role_title 与 life 只能用于人物卡里存在的 stem；故事线（career/relationship…）进不了账本",
+				})
+			}
+			if err := books.ValidateStateDeltas(snap.Cast, current, serializeUnitYAML(*u), prior, u.OnStage); err != nil {
 				return domain.Candidate{}, err
 			}
 			if u.StateDeltas == nil {
@@ -816,7 +855,7 @@ func (s *Service) acceptLocked(ctx context.Context, cmd domain.AcceptCommand) (d
 			}
 			// 落盘文本只有一份，由结构体字段序列化而来：校验和写盘必须针对
 			// 同一份内容，否则「验过的」和「写下去的」可以不是一回事。
-			raw := serializeUnitYAML(u)
+			raw := serializeUnitYAML(*u)
 			// 单元内部身份恒定由 state_deltas 的结构化比对来保证（见下）。
 			// 关键词扫全文的旧检查已删除：它会把「不推晋升」这类合法口径判成硬伤。
 			// state_deltas 与身份时间线的一致性必须在细纲落盘时就查：
@@ -1518,6 +1557,42 @@ func stateDeltaRows(v any) ([]string, bool) {
 		out = append(out, "{"+strings.Join(parts, ", ")+"}")
 	}
 	return out, len(out) > 0
+}
+
+// stateDeltaRowsAsAny 把 `stem.field=from->to` 列表转回结构化 state_deltas。
+//
+// 用于「剔除非法条目后重新落盘」这一路径：SanitizeStateDeltas 返回的是紧凑写法
+// （与卷纲种子同一种语法），而候选持有的是结构化数组。往返必须是等价的，
+// 否则剔除一条就会顺手改掉其余条目的写法。
+func stateDeltaRowsAsAny(raw string) []any {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return []any{}
+	}
+	out := make([]any, 0, 8)
+	for _, item := range strings.Split(raw, "；") {
+		item = strings.TrimSpace(item)
+		if item == "" {
+			continue
+		}
+		target, value, ok := strings.Cut(item, "=")
+		if !ok {
+			continue
+		}
+		stem, field, ok := strings.Cut(target, ".")
+		if !ok {
+			continue
+		}
+		from, to, ok := strings.Cut(value, "->")
+		if !ok {
+			continue
+		}
+		out = append(out, map[string]any{
+			"stem": strings.TrimSpace(stem), "field": strings.TrimSpace(field),
+			"from": strings.TrimSpace(from), "to": strings.TrimSpace(to),
+		})
+	}
+	return out
 }
 
 // yamlQuote emits a double-quoted scalar safe for inline flow mappings.
