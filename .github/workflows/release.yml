@@ -33,12 +33,6 @@ jobs:
         with:
           path: ${{ env.REPO_DIR }}
 
-      - name: Checkout dq-ui
-        uses: actions/checkout@v4
-        with:
-          repository: danmo-ai/dq-ui
-          path: dq-ui
-
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
@@ -52,17 +46,6 @@ jobs:
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
-
-      - name: Install & build dq-ui workspace
-        working-directory: dq-ui
-        run: npm install --no-audit --no-fund
-      - name: Build dq-ui packages
-        run: npm run build
-        working-directory: dq-ui/packages/tokens
-      - run: npm run build
-        working-directory: dq-ui/packages/ui
-      - run: npm run build
-        working-directory: dq-ui/packages/shell
 
       - name: Set release version
         working-directory: ${{ env.REPO_DIR }}
@@ -133,12 +116,6 @@ jobs:
         with:
           path: ${{ env.REPO_DIR }}
 
-      - name: Checkout dq-ui
-        uses: actions/checkout@v4
-        with:
-          repository: danmo-ai/dq-ui
-          path: dq-ui
-
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
@@ -169,17 +146,6 @@ jobs:
             librsvg2-dev \
             patchelf \
             libfuse2
-
-      - name: Install & build dq-ui workspace
-        working-directory: dq-ui
-        run: npm install --no-audit --no-fund
-      - name: Build dq-ui packages
-        run: npm run build
-        working-directory: dq-ui/packages/tokens
-      - run: npm run build
-        working-directory: dq-ui/packages/ui
-      - run: npm run build
-        working-directory: dq-ui/packages/shell
 
       - name: Set release version
         working-directory: ${{ env.REPO_DIR }}
@@ -241,12 +207,6 @@ jobs:
         with:
           path: ${{ env.REPO_DIR }}
 
-      - name: Checkout dq-ui
-        uses: actions/checkout@v4
-        with:
-          repository: danmo-ai/dq-ui
-          path: dq-ui
-
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
@@ -266,21 +226,6 @@ jobs:
       - name: Install Make
         run: choco install make -y --no-progress
         shell: pwsh
-
-      - name: Install & build dq-ui workspace
-        working-directory: dq-ui
-        run: npm install --no-audit --no-fund
-      - name: Build dq-ui packages
-        run: npm run build
-        working-directory: dq-ui/packages/tokens
-      - run: npm run build
-        working-directory: dq-ui/packages/ui
-      - run: npm run build
-        working-directory: dq-ui/packages/shell
-
-      - name: Verify dq-ui checkout
-        run: test -f dq-ui/packages/ui/package.json
-        shell: bash
 
       - name: Set release version
         working-directory: ${{ env.REPO_DIR }}

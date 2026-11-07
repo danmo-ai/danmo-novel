@@ -5,6 +5,23 @@ export function isTauriRuntime(): boolean {
 }
 
 /**
+ * 是否跑在移动外壳里。
+ *
+ * 用构建期标记而不是 UA：UA 会被系统语言、iPadOS 的桌面模式、以及未来的
+ * 浏览器改动影响，而「这个包是给 iOS/Android 打的」在构建时就是确定的。
+ * 移动能力清单（capabilities/mobile.json）里没有 updater，所以任何自升级
+ * 调用都会失败——判断必须在这里就断言，不能等调用报错。
+ */
+export function isMobileShell(): boolean {
+  return import.meta.env.VITE_SHELL === 'mobile'
+}
+
+/** 自升级只在桌面外壳里存在；网页版与移动端都没有。 */
+export function hasUpdater(): boolean {
+  return isTauriRuntime() && !isMobileShell()
+}
+
+/**
  * Resolve the API base URL for backend requests.
  * - VITE_API_BASE_URL (build-time) takes highest priority.
  * - In Tauri desktop the webview may load from a custom protocol where relative

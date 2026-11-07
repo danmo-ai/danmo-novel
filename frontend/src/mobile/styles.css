@@ -1,0 +1,41 @@
+/**
+ * 移动壳的样式基础。
+ *
+ * 只取 tokens，不取 desktop.css：桌面那套 24px 边距与 720px 断点在手机上只会
+ * 和移动布局打架。移动端的布局一律写死在组件里（固定单列 + 路由分层），
+ * 这里只处理「WebView 特有的坑」：
+ *   - 系统字体：不联网加载 webfont，离线首启不会闪回退字体，也不给 App Store
+ *     留下「应用内取远程资源」的话柄；
+ *   - 16px 输入字号：低于它 iOS 会在聚焦时自动放大整页；
+ *   - overscroll / touch-action：关掉 WebView 的橡皮筋与双指缩放。
+ */
+@import '../styles/tokens.css';
+
+:root {
+  --font-ui: -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Noto Sans SC', 'Microsoft YaHei', system-ui, sans-serif;
+  --font-prose: 'Songti SC', 'Source Han Serif SC', 'Noto Serif SC', Georgia, serif;
+  --tap: 44px;
+}
+
+html, body {
+  overscroll-behavior: none;
+  -webkit-text-size-adjust: 100%;
+  -webkit-tap-highlight-color: transparent;
+}
+body { touch-action: manipulation; }
+#app { height: 100dvh; }
+
+/* iOS 会忽略 min-height:100vh 的键盘避让，只有 dvh 会跟着可视区收。 */
+button, select, input:not([type="checkbox"]):not([type="radio"]) { min-height: var(--tap); }
+input, select, textarea { font-size: 16px; }
+textarea { resize: none; }
+.panel { border-radius: 14px; }
+
+/* 键盘弹出时给正文编辑器让位：可视区高度由 visualViewport 写入 --vvh。 */
+.safe-bottom { padding-bottom: max(8px, env(safe-area-inset-bottom)); }
+.safe-top { padding-top: max(8px, env(safe-area-inset-top)); }
+
+/* 全屏编辑区（正文/细纲/源码）：高度跟着可视区，键盘顶上来时不遮住光标的下一行。 */
+.fill-view {
+  min-height: calc(var(--vvh, 100dvh) - 210px);
+}

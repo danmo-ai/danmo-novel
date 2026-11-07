@@ -5,14 +5,13 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "dev:mobile": "vite --mode mobile",
     "build": "vue-tsc --noEmit && vite build",
+    "build:mobile": "vue-tsc --noEmit && vite build --mode mobile",
     "preview": "vite preview",
     "typecheck": "vue-tsc --noEmit"
   },
   "dependencies": {
-    "@danqing/dq-shell": "file:../../dq-ui/packages/shell",
-    "@danqing/dq-tokens": "file:../../dq-ui/packages/tokens",
-    "@danqing/dq-ui": "file:../../dq-ui/packages/ui",
     "@tauri-apps/api": "^2.2.0",
     "@tauri-apps/plugin-process": "^2.2.0",
     "@tauri-apps/plugin-updater": "^2.2.0",

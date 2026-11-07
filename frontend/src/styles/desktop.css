@@ -1,0 +1,17 @@
+/**
+ * 桌面/浏览器壳的基础样式。
+ *
+ * 只放「桌面才有意义」的规则：24px 页面边距、滑杆上的触控尺寸、safe-area。
+ * 移动壳不导入这个文件，所以它不会把桌面边距带进手机。
+ */
+.app-main { min-width: 0; }
+
+@media (max-width: 720px) {
+  button, select, input:not([type="checkbox"]):not([type="radio"]) { min-height: 44px; }
+  button { touch-action: manipulation; }
+  input, select, textarea { font-size: 16px; }
+  .panel { border-radius: 14px; }
+  .app-shell { padding-top: env(safe-area-inset-top); padding-bottom: env(safe-area-inset-bottom); }
+  .modal-mask { padding: env(safe-area-inset-top) 0 env(safe-area-inset-bottom); }
+  .modal { max-height: 100dvh; }
+}

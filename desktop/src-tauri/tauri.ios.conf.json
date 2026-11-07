@@ -1,6 +1,6 @@
 {
   "build": {
-    "frontendDist": "../../out/frontend/dist"
+    "frontendDist": "../../out/frontend/mobile"
   },
   "bundle": {
     "externalBin": [],

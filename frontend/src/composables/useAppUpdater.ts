@@ -1,7 +1,7 @@
 import { computed, ref } from 'vue'
 import type { Update } from '@tauri-apps/plugin-updater'
 import { api } from '@/api/client'
-import { isTauriRuntime } from '@/utils/desktop'
+import { hasUpdater, isTauriRuntime } from '@/utils/desktop'
 
 export type UpdaterStatus =
   | 'idle'
@@ -70,7 +70,8 @@ export async function checkForUpdates(options?: { silent?: boolean }): Promise<b
   const silent = options?.silent ?? false
   await ensureVersion()
 
-  if (!isTauriRuntime() || /iPhone|iPad|Android/i.test(navigator.userAgent)) {
+  // 移动外壳与浏览器都没有 updater：build 时就已知，不再靠 UA 嗅探。
+  if (!hasUpdater()) {
     status.value = 'idle'
     availableVersion.value = ''
     updateNotes.value = ''
@@ -112,7 +113,7 @@ export async function checkForUpdates(options?: { silent?: boolean }): Promise<b
 }
 
 export function startSilentUpdateCheck(delayMs = 2500): void {
-  if (!isTauriRuntime() || /iPhone|iPad|Android/i.test(navigator.userAgent) || silentCheckStarted) return
+  if (!hasUpdater() || silentCheckStarted) return
   silentCheckStarted = true
   window.setTimeout(() => {
     void checkForUpdates({ silent: true })
@@ -120,7 +121,7 @@ export function startSilentUpdateCheck(delayMs = 2500): void {
 }
 
 export async function downloadAndInstallUpdate(): Promise<void> {
-  if (!isTauriRuntime()) {
+  if (!hasUpdater()) {
     throw new Error('Updates are only available in the desktop app')
   }
   if (!pendingUpdate) {
@@ -177,9 +178,9 @@ export function useAppUpdater() {
       status.value === 'downloading' ||
       status.value === 'installing',
   )
-  const canCheck = computed(() => isTauriRuntime() && !isBusy.value)
+  const canCheck = computed(() => hasUpdater() && !isBusy.value)
   const canInstall = computed(
-    () => isTauriRuntime() && status.value === 'available' && !!pendingUpdate,
+    () => hasUpdater() && status.value === 'available' && !!pendingUpdate,
   )
 
   return {
@@ -194,7 +195,7 @@ export function useAppUpdater() {
     isBusy,
     canCheck,
     canInstall,
-    isDesktop: isTauriRuntime,
+    isDesktop: hasUpdater,
     initAppVersion,
     checkForUpdates,
     downloadAndInstallUpdate,

@@ -11,7 +11,7 @@ export DQ_BACKEND_PORT
 export DQ_FRONTEND_PORT
 
 .PHONY: help backend dev start stop frontend-install frontend-dev frontend-build \
-	dev-desktop test build build-sidecar clean set-release-secrets \
+	frontend-build-mobile dev-desktop test build build-sidecar clean set-release-secrets \
 	pack-prereqs pack-macos-desktop pack-linux-desktop pack-windows-desktop \
 	mobile-core pack-ios pack-android
 
@@ -49,6 +49,10 @@ frontend-dev: frontend-install
 frontend-build:
 	cd $(FRONTEND_DIR) && npm install && npm run build
 
+# 移动端是独立的 Vue 入口，产物在 out/frontend/mobile；桌面包不会带上它。
+frontend-build-mobile:
+	cd $(FRONTEND_DIR) && npm install && npm run build:mobile
+
 build-sidecar:
 	@chmod +x scripts/*.sh
 	@RELEASE_VERSION=$(RELEASE_VERSION) ./scripts/build_sidecar.sh
@@ -81,11 +85,11 @@ mobile-core:
 	@chmod +x scripts/build_go_mobile.sh
 	@./scripts/build_go_mobile.sh
 
-pack-ios: frontend-build
+pack-ios: pack-prereqs
 	@chmod +x scripts/*.sh
 	@./scripts/pack_mobile.sh ios
 
-pack-android: frontend-build
+pack-android: pack-prereqs
 	@chmod +x scripts/*.sh
 	@./scripts/pack_mobile.sh android
 
