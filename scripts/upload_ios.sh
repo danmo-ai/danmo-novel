@@ -18,8 +18,17 @@
 set -euo pipefail
 
 IPA="${1:-}"
-if [[ -z "$IPA" || ! -f "$IPA" ]]; then
-  echo "Usage: upload_ios.sh <path/to/app.ipa>" >&2
+
+# --list：只列出这个凭据能看到的 App，用来在上传前确认 app 记录（Bundle ID）
+# 已经在 App Store Connect 里建好。不存在的话上传一定失败，且报错很难看懂。
+LIST_ONLY=0
+if [[ "$IPA" == "--list" ]]; then
+  LIST_ONLY=1
+  IPA=""
+fi
+
+if [[ "$LIST_ONLY" == 0 && ( -z "$IPA" || ! -f "$IPA" ) ]]; then
+  echo "Usage: upload_ios.sh <path/to/app.ipa> | --list" >&2
   exit 2
 fi
 
@@ -27,10 +36,19 @@ if [[ -n "${ASC_KEY_ID:-}" && -n "${ASC_ISSUER_ID:-}" ]]; then
   KEY_DIR="${ASC_KEY_PATH:-$HOME/.appstoreconnect/private_keys}"
   KEY_FILE="$KEY_DIR/AuthKey_${ASC_KEY_ID}.p8"
   [[ -f "$KEY_FILE" ]] || { echo "找不到 API Key：$KEY_FILE" >&2; exit 1; }
+  if [[ "$LIST_ONLY" == 1 ]]; then
+    echo "==> 这个凭据能看到的 App（确认 com.danmo.novel 在其中）"
+    xcrun altool --list-apps --apiKey "$ASC_KEY_ID" --apiIssuer "$ASC_ISSUER_ID"
+    exit 0
+  fi
   echo "==> 用 App Store Connect API Key 上传（Key ${ASC_KEY_ID}）"
   xcrun altool --upload-app --type ios --file "$IPA" \
     --apiKey "$ASC_KEY_ID" --apiIssuer "$ASC_ISSUER_ID"
 elif [[ -n "${APPLE_ID:-}" && -n "${APPLE_PASSWORD:-}" ]]; then
+  if [[ "$LIST_ONLY" == 1 ]]; then
+    xcrun altool --list-apps --username "$APPLE_ID" --password "$APPLE_PASSWORD"
+    exit 0
+  fi
   echo "==> 用 Apple ID 上传（${APPLE_ID}）"
   xcrun altool --upload-app --type ios --file "$IPA" \
     --username "$APPLE_ID" --password "$APPLE_PASSWORD" \
