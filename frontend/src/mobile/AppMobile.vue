@@ -2,8 +2,8 @@
 import { computed, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { storeToRefs } from 'pinia'
-import { useAppStore } from '@/stores/app'
-import { waitForBackend } from '@/utils/desktop'
+import { useAppStore } from '@/shared/stores/app'
+import { waitForBackend } from '@/shared/utils/desktop'
 
 /**
  * 移动端外壳：只有底部 Tab 和全局提示。
@@ -17,6 +17,7 @@ const route = useRoute()
 const router = useRouter()
 
 const bookId = computed(() => (route.params.id ? String(route.params.id) : ''))
+const inBook = computed(() => ['book', 'unit', 'bible', 'setup'].includes(String(route.name)))
 const tabs = computed(() => {
   const items = [{ key: 'shelf', label: '书架', to: '/' }]
   // 没进书时「书」这一项没有落点，直接不显示，避免点了回到书架。
@@ -44,7 +45,7 @@ onMounted(async () => {
 
 <template>
   <div class="shell">
-    <main class="scroll">
+    <main class="scroll" :class="{ 'page-narrow': !inBook }">
       <router-view />
     </main>
 
@@ -63,8 +64,7 @@ onMounted(async () => {
     </nav>
 
     <div v-if="toast" class="toast">{{ toast }}</div>
-    <div v-if="error" class="toast error">{{ error }}</div>
-  </div>
+    <div v-if="error" class="toast error">{{ error }}</div>  </div>
 </template>
 
 <style scoped>
@@ -87,7 +87,8 @@ onMounted(async () => {
 .toast {
   position: fixed; left: 16px; right: 16px;
   bottom: calc(64px + env(safe-area-inset-bottom));
-  background: var(--ink); color: white; padding: 10px 14px; border-radius: 12px; z-index: 50;
+  /* 必须高于 sheet/dialog（60），否则底部 sheet 打开时保存成功提示被盖住。 */
+  background: var(--ink); color: white; padding: 10px 14px; border-radius: 12px; z-index: 80;
   font-size: 13px; line-height: 1.5;
 }
 .toast.error { background: var(--bad); }

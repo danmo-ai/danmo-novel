@@ -5,7 +5,7 @@ import UnitListMobile from './views/UnitListMobile.vue'
 import UnitDetailMobile from './views/UnitDetailMobile.vue'
 import BibleMobile from './views/BibleMobile.vue'
 import SetupMobile from './views/SetupMobile.vue'
-import RunsView from '@/views/RunsView.vue'
+import RunsView from '@/desktop/views/RunsView.vue'
 import SettingsMobile from './views/SettingsMobile.vue'
 
 /**

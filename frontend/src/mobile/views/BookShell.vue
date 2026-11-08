@@ -1,20 +1,25 @@
 <script setup lang="ts">
 import { computed, provide, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { useBookWorkspace, type WorkspaceView } from '@/composables/useBookWorkspace'
-import RunConfirmDialog from '@/components/book/RunConfirmDialog.vue'
+import { useBookWorkspace, type WorkspaceView } from '@/shared/composables/useBookWorkspace'
+import RunConfirmDialog from '@/shared/components/book/RunConfirmDialog.vue'
+import { useSizeClass } from '../useSizeClass'
+import UnitListMobile from './UnitListMobile.vue'
+import UnitDetailMobile from './UnitDetailMobile.vue'
 import { BOOK_WORKSPACE } from '../workspace'
 
 /**
  * 一本书的移动端外壳：持有工作台状态，子页只做展示。
  *
- * 这里也负责两件「层级」的事，桌面不需要：
- *   1. 还没有总纲的书直接落在立项页，否则作者看到的是空单元列表；
- *   2. 路由里的 unitId 与工作台选中的单元保持同步——两个方向都要映射，
- *      否则返回键/深链会让两处指向不同单元。
+ * 常规宽度（内屏/展开态/横屏）下，单元列表和单元详情同时出现：左边是卷/单元
+ * 目录，右边是选中单元的细纲/正文/审校。这正是 Duo 展开后该有的形态，
+ * 也顺带让折痕落在两栏中间，而不是压在正文上。
+ *
+ * 紧凑宽度保持原来的「列表 → 详情」push 导航，行为与之前一致。
  */
 const route = useRoute()
 const router = useRouter()
+const { isRegular } = useSizeClass()
 
 const bookId = computed(() => String(route.params.id))
 const view = ref<WorkspaceView>('write')
@@ -26,6 +31,11 @@ const { store, selectedUnit, busy, primaryInfo, hasBookOutline, showSetupTab, pr
 
 const unitIdInRoute = computed(() => (route.params.unitId ? String(route.params.unitId) : ''))
 
+// 常规宽度时，单元列表和详情必须同时挂载，否则左栏点选会卸载右栏、右栏的选中
+// 又会把左栏替换掉，两栏永远互相挤掉一个。
+const showSplit = computed(() => isRegular.value && (route.name === 'book' || route.name === 'unit'))
+const detailUnitId = computed(() => selectedUnit.value?.unitId || '')
+
 // 深链/返回键 → 选中单元
 watch([unitIdInRoute, () => store.currentBook?.units], () => {
   const id = unitIdInRoute.value
@@ -35,12 +45,23 @@ watch([unitIdInRoute, () => store.currentBook?.units], () => {
   if (unit) selectedUnit.value = unit
 }, { immediate: true })
 
-// 选中单元 → 路由（只在单元详情这一层同步，避免列表页被强制跳走）
+// 选中单元 → 路由。
+// 常规宽度下也同步到 /units/:unitId，但用 replace：切单元不是「进入下一级」，
+// 不应该在历史栈里留下几十条单元切换记录，否则返回键要按很多次才能出这本书。
 watch(selectedUnit, (unit) => {
   if (!unit) return
   const onUnitPage = route.name === 'unit'
   if (onUnitPage && unit.unitId !== unitIdInRoute.value) {
     router.replace(`/books/${bookId.value}/units/${unit.unitId}`)
+  }
+})
+
+// 从列表回到双栏时，把「当前选中单元」恢复成路由里的单元，避免右栏空白。
+watch(showSplit, (split) => {
+  if (!split) return
+  if (route.name === 'unit') return
+  if (selectedUnit.value) {
+    router.replace(`/books/${bookId.value}/units/${selectedUnit.value.unitId}`)
   }
 })
 
@@ -53,7 +74,10 @@ watch([hasBookOutline, () => route.name, () => store.currentBook], ([has, name, 
 })
 
 function backToShelf() {
-  router.push('/')
+  // 原来这里是 router.push('/')，会让系统返回键变成「再前进一次到这本书」。
+  // 有历史栈就退；没有（冷启动直接进书）就替换到书架。
+  if (window.history.state?.back) router.back()
+  else router.replace('/')
 }
 
 const title = computed(() => store.currentBook?.summary.title || '')
@@ -77,7 +101,19 @@ const title = computed(() => store.currentBook?.summary.title || '')
     <RouterLink v-if="showSetupTab" :to="`/books/${bookId}/setup`" class="subnav-item">立项</RouterLink>
   </nav>
 
-  <router-view />
+  <!-- 常规宽度：左栏单元列表 + 右栏单元详情，两栏各自滚动。 -->
+  <div v-if="showSplit" class="split">
+    <aside class="split-list">
+      <UnitListMobile />
+    </aside>
+    <section class="split-detail">
+      <UnitDetailMobile v-if="detailUnitId" :unit-id="detailUnitId" />
+      <div v-else class="split-empty">从左边选择一个单元开始。</div>
+    </section>
+  </div>
+
+  <!-- 紧凑宽度：列表/详情仍是两个路由层级。 -->
+  <router-view v-else />
 
   <!-- 运行确认与实时日志和桌面同一套：RunConfirmDialog 自带全屏移动布局。 -->
   <RunConfirmDialog
@@ -99,7 +135,7 @@ const title = computed(() => store.currentBook?.summary.title || '')
 <style scoped>
 .book-head { display: flex; align-items: center; gap: 10px; padding: 2px 0 10px; }
 .back {
-  flex-shrink: 0; width: 40px; min-height: 40px; border: 0; background: transparent;
+  flex-shrink: 0; width: 44px; min-height: 44px; border: 0; background: transparent;
   font-size: 26px; line-height: 1; color: var(--accent); padding: 0;
 }
 .head-main { min-width: 0; flex: 1; display: grid; gap: 2px; }
@@ -112,6 +148,24 @@ h1 { margin: 0; font-family: var(--font-prose); font-size: 20px; line-height: 1.
   border-bottom: 2px solid transparent;
 }
 .subnav-item.router-link-exact-active { color: var(--accent); border-bottom-color: var(--accent); font-weight: 700; }
+
+/* 双栏：列表固定在左，正文固定在右。折痕落在中缝上时，两栏各自仍在自己的半屏里。 */
+.split {
+  display: grid;
+  grid-template-columns: minmax(240px, 300px) minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+.split-list {
+  position: sticky; top: 0; max-height: calc(var(--vvh, 100dvh) - 200px);
+  overflow-y: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch;
+  padding-right: 4px;
+}
+.split-detail { min-width: 0; }
+.split-empty { padding: 40px 20px; color: var(--ink-soft); font-size: 13px; text-align: center; }
+.split-detail :deep(.md-p),
+.split-detail :deep(.table-wrap) { max-width: 720px; }
+
 .run-bar {
   position: fixed; left: 12px; right: 12px; display: flex; align-items: center; gap: 10px;
   bottom: calc(60px + env(safe-area-inset-bottom));
@@ -121,6 +175,6 @@ h1 { margin: 0; font-family: var(--font-prose); font-size: 20px; line-height: 1.
 .run-bar .muted { color: rgba(255,255,255,.72); }
 .run-bar button {
   margin-left: auto; flex-shrink: 0; background: transparent; border-color: rgba(255,255,255,.35);
-  color: white; min-height: 32px; padding: 2px 10px; font-size: 12px;
+  color: white; min-height: 44px; padding: 2px 10px; font-size: 12px;
 }
 </style>

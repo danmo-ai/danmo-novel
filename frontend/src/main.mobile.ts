@@ -2,7 +2,8 @@ import { createApp } from 'vue'
 import { createPinia } from 'pinia'
 import App from './mobile/AppMobile.vue'
 import router from './mobile/router'
-import { initCore } from './api/bootstrap'
+import { initCore } from '@/shared/api/bootstrap'
+import { useSizeClass } from './mobile/useSizeClass'
 import './mobile/styles.css'
 
 /**
@@ -52,6 +53,7 @@ async function bootstrap() {
   try {
     trackVisualViewport()
     markMobileShell()
+    useSizeClass()
     await initCore()
     createApp(App).use(createPinia()).use(router).mount('#app')
   } catch (error) {

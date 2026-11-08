@@ -1,10 +1,10 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useRouter } from 'vue-router'
-import UnitContract from '@/components/book/UnitContract.vue'
-import UnitProse from '@/components/book/UnitProse.vue'
-import UnitFlowActions from '@/components/book/UnitFlowActions.vue'
-import ReviewWorkspace from '@/components/book/ReviewWorkspace.vue'
+import UnitContract from '@/shared/components/book/UnitContract.vue'
+import UnitProse from '@/shared/components/book/UnitProse.vue'
+import UnitFlowActions from '@/shared/components/book/UnitFlowActions.vue'
+import ReviewWorkspace from '@/shared/components/book/ReviewWorkspace.vue'
 import { useInjectedWorkspace } from '../workspace'
 
 /**
@@ -39,7 +39,10 @@ function pickSegment(next: Segment) {
 }
 
 function back() {
-  router.push(`/books/${store.currentBook?.summary.id}`)
+  // 原来是 router.push('/books/:id')，会让系统返回键变成「再进入这个单元」。
+  // 有历史栈就退到列表，没有就替换到书根。
+  if (window.history.state?.back) router.back()
+  else router.replace(`/books/${store.currentBook?.summary.id}`)
 }
 </script>
 
@@ -112,6 +115,7 @@ function back() {
           :unit="selectedUnit"
           :raw="editorContent"
           :can-write="!(store.currentBook?.summary.readOnly ?? false)"
+          continuous
           @edit="beginChapterEdit"
         >
           <template #actions>

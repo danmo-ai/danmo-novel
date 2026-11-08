@@ -9,7 +9,7 @@
  *   - 16px 输入字号：低于它 iOS 会在聚焦时自动放大整页；
  *   - overscroll / touch-action：关掉 WebView 的橡皮筋与双指缩放。
  */
-@import '../styles/tokens.css';
+@import '../shared/styles/tokens.css';
 
 :root {
   --font-ui: -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Noto Sans SC', 'Microsoft YaHei', system-ui, sans-serif;
@@ -24,6 +24,12 @@ html, body {
 }
 body { touch-action: manipulation; }
 #app { height: 100dvh; }
+
+/* 常规宽度（内屏/展开态）下，内容不要铺满整条宽屏：
+   书架/日志/设置这类单栏页面给一条居中的阅读宽度，双栏页面由各自的 split 容器接管。 */
+html.size-regular .page-narrow { max-width: 840px; margin-inline: auto; }
+html.size-regular .scroll { padding-inline: 24px; }
+html.size-regular .tabbar { padding-inline: 24px; }
 
 /* iOS 会忽略 min-height:100vh 的键盘避让，只有 dvh 会跟着可视区收。 */
 button, select, input:not([type="checkbox"]):not([type="radio"]) { min-height: var(--tap); }

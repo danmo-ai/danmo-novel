@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import { useBible } from '@/composables/useBible'
-import { isProtagonist, parseCastRelations } from '@/utils/castRelations'
+import { useBible } from '@/shared/composables/useBible'
+import { isProtagonist, parseCastRelations } from '@/shared/utils/castRelations'
+import { useSizeClass } from '../useSizeClass'
 import { useInjectedWorkspace } from '../workspace'
 
 /**
@@ -30,7 +31,12 @@ const {
   requestRewrite, requestIdentityRewrite,
 } = bible
 
+const { isRegular } = useSizeClass()
+
 const mode = ref<'list' | 'detail'>('list')
+/** 常规宽度下两栏同时存在，目录不再让位给详情；紧凑宽度才需要 mode 切换。 */
+const showList = computed(() => isRegular.value || mode.value === 'list')
+const showDetail = computed(() => isRegular.value || mode.value === 'detail')
 
 const groupDocs = computed(() => docs.value.filter((d) => d.group === activeGroup.value))
 
@@ -57,19 +63,23 @@ function openRelations() {
   mode.value = 'detail'
 }
 function backToList() {
+  // 只在紧凑宽度下「返回目录」才有意义；常规宽度目录和详情一直在同一屏。
+  if (isRegular.value) return
   mode.value = 'list'
   specialView.value = null
 }
 
 function saveAndBack() {
   save()
-  mode.value = 'list'
+  // 常规宽度保存后仍停留在当前文档，别把作者踢回目录。
+  if (!isRegular.value) mode.value = 'list'
 }
 </script>
 
 <template>
-  <!-- 目录 -->
-  <template v-if="mode === 'list'">
+  <div class="bible-split" :class="{ 'is-split': isRegular }">
+  <!-- 目录：常规宽度常驻左栏；紧凑宽度只有 list 态才出现。 -->
+  <template v-if="showList">
     <div class="toolbar">
       <button v-if="missingCount" type="button" @click="scaffoldMissing">补齐 {{ missingCount }} 项模板</button>
       <span v-if="book" class="muted">{{ docs.filter(d => d.exists).length }}/{{ docs.length }} 已建立 · {{ book.cast?.length || 0 }} 人物</span>
@@ -133,10 +143,10 @@ function saveAndBack() {
     </ul>
   </template>
 
-  <!-- 详情 -->
-  <template v-else>
+  <!-- 详情：常规宽度常驻右栏；紧凑宽度只有 detail 态才出现。 -->
+  <template v-if="showDetail">
     <div class="detail-head">
-      <button type="button" class="back" aria-label="返回目录" @click="backToList">‹</button>
+      <button v-if="!isRegular" type="button" class="back" aria-label="返回目录" @click="backToList">‹</button>
       <div class="detail-title">
         <h2>{{ currentLabel }}</h2>
         <small>{{ currentFilePath }}</small>
@@ -254,6 +264,7 @@ function saveAndBack() {
       </div>
     </template>
   </template>
+  </div>
 
   <!-- 身份段编辑 -->
   <div v-if="identityEditing" class="sheet-mask" @click.self="identityEditing = null">
@@ -291,6 +302,15 @@ function saveAndBack() {
 </template>
 
 <style scoped>
+.bible-split { display: grid; gap: 12px; }
+.bible-split.is-split {
+  grid-template-columns: minmax(220px, 280px) minmax(0, 1fr);
+  gap: 16px; align-items: start;
+}
+.bible-split.is-split .toolbar { margin-bottom: 10px; }
+.bible-split.is-split .doc-list { max-height: calc(var(--vvh, 100dvh) - 240px); overflow-y: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; }
+.bible-split.is-split .detail-head { margin-bottom: 10px; }
+.bible-split.is-split .detail-title h2 { font-size: 22px; }
 .toolbar { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 10px; }
 .muted { color: var(--ink-soft); font-size: 12px; }
 .group-tabs { display: flex; gap: 4px; overflow-x: auto; margin-bottom: 12px; scrollbar-width: none; }
@@ -321,14 +341,14 @@ function saveAndBack() {
 }
 .relation-list small { color: var(--ink-soft); font-size: 12px; flex-shrink: 0; }
 .detail-head { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
-.back { flex-shrink: 0; width: 40px; min-height: 40px; border: 0; background: transparent; font-size: 26px; line-height: 1; color: var(--accent); padding: 0; }
+.back { flex-shrink: 0; width: 44px; min-height: 44px; border: 0; background: transparent; font-size: 26px; line-height: 1; color: var(--accent); padding: 0; }
 .detail-title { min-width: 0; display: grid; gap: 2px; }
 .detail-title h2 { margin: 0; font-family: var(--font-prose); font-size: 19px; overflow-wrap: anywhere; }
 .detail-title small { color: var(--ink-soft); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .actions { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 8px; margin-bottom: 12px; }
 .pad { padding: 14px; }
 .identity header { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
-.identity header button { font-size: 11px; padding: 3px 8px; min-height: 0; }
+.identity header button { font-size: 12px; padding: 8px 10px; min-height: 44px; }
 .warn { color: var(--warn); font-size: 12px; margin: 0 0 8px; }
 .seg { display: grid; gap: 2px; padding: 8px 10px; border-left: 3px solid var(--line); margin-bottom: 8px; }
 .seg.current { border-left-color: var(--accent); background: rgba(15,107,92,.05); border-radius: 0 8px 8px 0; }
@@ -337,7 +357,7 @@ function saveAndBack() {
 .seg small { color: var(--ink-soft); font-size: 11px; }
 .seg .note { font-style: italic; }
 .seg-actions { display: flex; gap: 8px; margin-top: 4px; }
-.seg-actions button { font-size: 10px; padding: 2px 8px; min-height: 0; }
+.seg-actions button { font-size: 12px; padding: 8px 10px; min-height: 44px; }
 .secret { text-align: center; display: grid; gap: 8px; justify-items: center; }
 .secret p { margin: 0; color: var(--ink-soft); font-size: 12px; line-height: 1.7; }
 .source-editor { width: 100%; min-height: 60dvh; padding: 12px; border: 1px solid var(--line); border-radius: 12px; font: 13px/1.7 ui-monospace, monospace; background: rgba(255,255,255,.9); }

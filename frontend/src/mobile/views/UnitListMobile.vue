@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { useRouter } from 'vue-router'
+import { useSizeClass } from '../useSizeClass'
 import { useInjectedWorkspace } from '../workspace'
 
 /**
@@ -14,9 +15,15 @@ import { useInjectedWorkspace } from '../workspace'
 // 「草稿」在列表里叫草稿、在详情里叫待审校这种漂移。
 const { store, volumeGroups, busy, primaryInfo, statusText } = useInjectedWorkspace()
 const router = useRouter()
+const { isRegular } = useSizeClass()
 
 function open(unitId: string) {
-  router.push(`/books/${store.currentBook?.summary.id}/units/${unitId}`)
+  // 常规宽度下，点击只是选中：双栏里的右栏由 selectedUnit 驱动，
+  // 用 replace 让路由记住当前单元（刷新/深链还能回来），但不产生新的历史项。
+  // 紧凑宽度才是「进入详情」，要 push，让返回键能回到列表。
+  const target = `/books/${store.currentBook?.summary.id}/units/${unitId}`
+  if (isRegular.value) router.replace(target)
+  else router.push(target)
 }
 </script>
 
@@ -35,7 +42,7 @@ function open(unitId: string) {
     <div v-if="!store.currentBook.units.length" class="state panel">
       <h2>还没有单元</h2>
       <p>先去「设定」确认立项结果，或回立项页生成本书的卷纲；单元会跟着卷纲一起播种。</p>
-      <button type="button" @click="router.push(`/books/${store.currentBook.summary.id}/setup`)">去立项</button>
+      <button type="button" @click="router.replace(`/books/${store.currentBook.summary.id}/setup`)">去立项</button>
     </div>
 
     <section v-for="g in volumeGroups" :key="g.volume" class="volume">

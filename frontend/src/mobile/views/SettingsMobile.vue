@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import SettingsView from '@/views/SettingsView.vue'
+import SettingsView from '@/desktop/views/SettingsView.vue'
 
 /**
  * 手机设置页复用桌面设置。

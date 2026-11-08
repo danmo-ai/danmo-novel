@@ -1,9 +1,9 @@
 import { createApp } from 'vue'
 import { createPinia } from 'pinia'
-import App from './App.vue'
-import router from './router'
-import { initCore } from './api/bootstrap'
-import './styles.css'
+import App from './desktop/App.vue'
+import router from './desktop/router'
+import { initCore } from '@/shared/api/bootstrap'
+import './shared/styles/index.css'
 
 async function bootstrap() {
   const loading = document.querySelector('.core-loading') as HTMLDivElement | null

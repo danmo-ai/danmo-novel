@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import ProjectSetup from '@/components/book/ProjectSetup.vue'
+import ProjectSetup from '@/shared/components/book/ProjectSetup.vue'
 import { useInjectedWorkspace } from '../workspace'
 
 /**

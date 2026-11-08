@@ -1,5 +1,5 @@
 import { inject, type InjectionKey } from 'vue'
-import type { useBookWorkspace } from '@/composables/useBookWorkspace'
+import type { useBookWorkspace } from '@/shared/composables/useBookWorkspace'
 
 /**
  * 书内页共享同一个工作台实例。

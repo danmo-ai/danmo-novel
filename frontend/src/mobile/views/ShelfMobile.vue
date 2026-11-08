@@ -1,9 +1,9 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
-import { useAppStore } from '@/stores/app'
-import { api } from '@/api/client'
-import { seedSampleBook } from '@/api/demo'
+import { useAppStore } from '@/shared/stores/app'
+import { api } from '@/shared/api/client'
+import { seedSampleBook } from '@/shared/api/demo'
 
 /**
  * 手机书架：列表 + 一个三字段的新建表单。
