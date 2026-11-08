@@ -75,4 +75,37 @@ else:
 PY
 fi
 
+# 签名：项目由 xcodegen 生成，DESIGN_TEAM 只能每次重建后写入，不能写在被 gitignore
+# 的工程文件里。team 优先取 APPLE_TEAM_ID，其次从本机安装的描述文件里推断。
+TEAM="${APPLE_TEAM_ID:-}"
+if [[ -z "$TEAM" ]]; then
+  TEAM="$(security cms -D -i "$HOME/Library/Developer/Xcode/UserData/Provisioning Profiles/"*.mobileprovision 2>/dev/null \
+    | plutil -extract TeamIdentifier.0 raw - 2>/dev/null | head -1 || true)"
+fi
+if [[ -z "$TEAM" ]]; then
+  echo "WARNING: 没有 APPLE_TEAM_ID，也没有本机描述文件可推断 team —— 只能出未签名包" >&2
+else
+  echo "==> Signing team: $TEAM"
+  python3 - "$PROJECT_YML" "$TEAM" <<'PY'
+import sys
+path, team = sys.argv[1], sys.argv[2]
+src = open(path).read()
+if "DEVELOPMENT_TEAM:" in src:
+    # 换 team 时覆盖旧值，避免沿用上一次的团队。
+    import re
+    src = re.sub(r'(\n\s*DEVELOPMENT_TEAM:\s*)\S+', r'\g<1>' + team, src, count=1)
+else:
+    marker = "      base:\n"
+    inject = (
+        f"        DEVELOPMENT_TEAM: {team}\n"
+        "        CODE_SIGN_STYLE: Automatic\n"
+    )
+    if marker not in src:
+        raise SystemExit("project.yml 缺少 settings.base，无法写入签名配置")
+    src = src.replace(marker, marker + inject, 1)
+open(path, "w").write(src)
+print("signing settings applied")
+PY
+fi
+
 echo "==> iOS hygiene OK"

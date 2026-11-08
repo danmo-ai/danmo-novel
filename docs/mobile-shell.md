@@ -75,10 +75,10 @@ generated project (`gen/apple` is gitignored, so the patch cannot be committed):
 - `PrivacyInfo.xcprivacy` (no data collection, no tracking)
 - `UIApplicationSupportsIndirectInputEvents`
 
-Without `APPLE_SIGNING_IDENTITY` the iOS build passes `--no-sign` **and targets
-the simulator**: a device archive needs a development team (`xcodebuild` fails
-with "Arch specified by Xcode was invalid" when none is set), while the
-simulator build still proves the whole chain — Go core, app assets, plugin IPC:
+Without `APPLE_TEAM_ID` the iOS build passes `--no-sign` **and targets the
+simulator**: a device archive needs a development team (`xcodebuild` fails with
+"Arch specified by Xcode was invalid" when none is set), while the simulator
+build still proves the whole chain — Go core, app assets, plugin IPC:
 
 ```bash
 xcrun simctl install booted "desktop/src-tauri/gen/apple/build/arm64-sim/Danmo Novel.app"
@@ -87,7 +87,52 @@ xcrun simctl launch booted com.danmo.novel
 
 On first launch the app writes `Library/Application Support/com.danmo.novel/novel.db`
 inside its container, which is the proof that the in-process Go core came up.
-Set `APPLE_SIGNING_IDENTITY` (and a team) to get a signed `.ipa` for devices.
+
+## iOS signing and distribution
+
+`pack_mobile.sh` decides by environment, so the same command works on a laptop
+and in CI:
+
+| Env | Result |
+|---|---|
+| no `APPLE_TEAM_ID` | simulator `.app`, unsigned |
+| `APPLE_TEAM_ID` + `IOS_EXPORT_METHOD=debugging` | device `.ipa` (Apple Development + team profile) |
+| `APPLE_TEAM_ID` + `IOS_EXPORT_METHOD=release-testing` | TestFlight `.ipa` |
+| `APPLE_TEAM_ID` + `IOS_EXPORT_METHOD=app-store-connect` | App Store `.ipa` |
+
+`scripts/ios_hygiene.sh` writes `DEVELOPMENT_TEAM` and `CODE_SIGN_STYLE=Automatic`
+into the generated `project.yml` on every `tauri ios init`, because `gen/apple`
+is gitignored and Xcode's automatic signing needs the team at generation time.
+With Xcode signed in to the Apple ID, exporting `app-store-connect` makes Xcode
+create the `Apple Distribution` certificate and an `iOS Team Store Provisioning
+Profile` on its own — no manual portal work.
+
+`RELEASE_VERSION=0.1.6` patches `tauri.conf.json` for the duration of the build
+and restores it afterwards, so `CFBundleShortVersionString` matches the tag
+without leaving the version pinned in git. CI does the same from the git tag.
+
+Install on a connected, unlocked device:
+
+```bash
+xcrun devicectl device install app --device <UDID> "desktop/src-tauri/gen/apple/build/arm64/Danmo Novel.ipa"
+```
+
+Upload for App Store / TestFlight: Xcode → Window → Organizer → Distribute App,
+or `scripts/upload_ios.sh` when an App Store Connect API key is available.
+
+CI secrets for a signed mobile build (all optional; without them the job builds
+the simulator bundle and says so):
+
+| Secret | Purpose |
+|---|---|
+| `IOS_CERTIFICATE` | Apple Development or Apple Distribution `.p12`, base64 |
+| `IOS_CERTIFICATE_PASSWORD` | Password of that `.p12` |
+| `IOS_PROVISIONING_PROFILE` | `.mobileprovision`, base64 |
+| `APPLE_TEAM_ID` | Already used by the desktop release |
+
+`scripts/ci_import_ios_signing.sh` installs them into the runner. Note that
+`APPLE_CERTIFICATE` (used by the macOS job) is a **Developer ID** certificate
+and cannot sign iOS builds — that is why the iOS secrets are separate.
 
 ## App Store notes
 

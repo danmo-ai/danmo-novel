@@ -31,8 +31,30 @@ jobs:
       # gomobile itself is installed by build_go_mobile.sh at the version go.mod
       # pins, so only the Xcode-side helpers are needed here.
       - run: brew install xcodegen cocoapods libimobiledevice
+      # 有 iOS 证书就签真机/TestFlight，没有就落到模拟器包（脚本里明确区分）。
+      - name: Import iOS signing
+        env:
+          IOS_CERTIFICATE: ${{ secrets.IOS_CERTIFICATE }}
+          IOS_CERTIFICATE_PASSWORD: ${{ secrets.IOS_CERTIFICATE_PASSWORD }}
+          IOS_PROVISIONING_PROFILE: ${{ secrets.IOS_PROVISIONING_PROFILE }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: ./scripts/ci_import_ios_signing.sh
+        working-directory: ${{ env.REPO_DIR }}
+      - name: Set release version
+        working-directory: ${{ env.REPO_DIR }}
+        run: |
+          # 和桌面发布同一口径：tag → 版本号，注入 tauri.conf.json，iOS 的
+          # CFBundleShortVersionString 由此而来。pack_mobile.sh 构建后还原文件。
+          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+            echo "RELEASE_VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+          else
+            echo "RELEASE_VERSION=$(git describe --tags --always --dirty)" >> "$GITHUB_ENV"
+          fi
       - run: ./scripts/pack_mobile.sh ios
         working-directory: ${{ env.REPO_DIR }}
+        env:
+          # TestFlight 用 release-testing；App Store 用 app-store-connect。
+          IOS_EXPORT_METHOD: ${{ vars.IOS_EXPORT_METHOD || 'debugging' }}
       - uses: actions/upload-artifact@v4
         with:
           name: danmo-novel-ios
@@ -69,6 +91,16 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-linux-android, armv7-linux-androideabi, x86_64-linux-android
+      - name: Set release version
+        working-directory: ${{ env.REPO_DIR }}
+        run: |
+          # 和桌面发布同一口径：tag → 版本号，注入 tauri.conf.json，iOS 的
+          # CFBundleShortVersionString 由此而来。pack_mobile.sh 构建后还原文件。
+          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+            echo "RELEASE_VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+          else
+            echo "RELEASE_VERSION=$(git describe --tags --always --dirty)" >> "$GITHUB_ENV"
+          fi
       - run: ./scripts/pack_mobile.sh android
         working-directory: ${{ env.REPO_DIR }}
       - uses: actions/upload-artifact@v4

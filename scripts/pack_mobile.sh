@@ -40,23 +40,52 @@ else
   cp -R "$MOBILE_DIST/." src-tauri/gen/android/app/src/main/assets/
 fi
 
+# 版本号：CI 用 tag 注入；本地给了 RELEASE_VERSION 就用它，并在构建后还原，
+# 免得把"这次发布的版本"写死进被 git 跟踪的配置文件。App Store Connect 看到的
+# CFBundleShortVersionString 就是这里写的值。
+TAURI_CONF="$ROOT_DIR/desktop/src-tauri/tauri.conf.json"
+TAURI_CONF_BAK=""
+if [[ -n "${RELEASE_VERSION:-}" ]]; then
+  case "$RELEASE_VERSION" in
+    v*) VERSION="${RELEASE_VERSION#v}" ;;
+    *) VERSION="$RELEASE_VERSION" ;;
+  esac
+  TAURI_CONF_BAK="$(mktemp)"
+  cp "$TAURI_CONF" "$TAURI_CONF_BAK"
+  python3 - "$TAURI_CONF" "$VERSION" <<'PY'
+import json, sys
+path, version = sys.argv[1], sys.argv[2]
+conf = json.load(open(path))
+conf['version'] = version
+json.dump(conf, open(path, 'w'), indent=2, ensure_ascii=False)
+open(path, 'a').write('\n')
+PY
+  trap '[[ -n "$TAURI_CONF_BAK" ]] && cp "$TAURI_CONF_BAK" "$TAURI_CONF" && rm -f "$TAURI_CONF_BAK"' EXIT
+  echo "==> Version: ${VERSION} (构建后还原 tauri.conf.json)"
+fi
+
 case "$PLATFORM" in
   ios)
+    # xcodegen 会把 project.yml 里的 ${FORCE_COLOR} 当成自己的变量在**生成时**替换掉。
+    # 只要环境里带着 FORCE_COLOR=0（Cursor/部分终端会设），生成的 Build Rust Code
+    # 脚本就会多出一个 `0` 参数，tauri 把它当作架构名，报
+    # "Arch specified by Xcode was invalid. 0 isn't a known arch"。
+    # 这个变量只影响彩色输出，直接清掉让它在 Xcode 里运行时展开。
+    unset FORCE_COLOR
     # init 幂等；必须在 build 之前，否则工程刚生成就被覆盖，补丁丢失。
     npm run tauri -- ios init
     "$ROOT_DIR/scripts/ios_hygiene.sh"
-    # 没有签名身份时明确走 --no-sign：这样本地/CI 都能产出可用的产物用来验证，
-    # 而不是在 xcodebuild 里报 "requires a development team" 后失败。
-    #
-    # 设备归档（.ipa）必须有开发团队：xcodebuild 在无团队时 arch 解析失败
-    # （"Arch specified by Xcode was invalid"）。所以无签名时改出模拟器包，
-    # 用它验证 UI 与本地内核，而不是留一个永远失败的 CI 步骤。
+    # 有 team 就签：没有签名身份时设备归档必然失败（xcodebuild 报
+    # "Arch specified by Xcode was invalid"），所以显式改出模拟器包。
     IOS_SIGN_ARGS=(--ci)
-    if [[ -z "${APPLE_SIGNING_IDENTITY:-}" ]]; then
-      echo "==> 没有 APPLE_SIGNING_IDENTITY：构建模拟器包（--no-sign，不产出 .ipa）"
-      IOS_SIGN_ARGS+=(--no-sign --target aarch64-sim)
+    if [[ -n "${APPLE_TEAM_ID:-}" ]]; then
+      # 导出方式决定产物：debugging=可装真机，release-testing=TestFlight，
+      # app-store-connect=App Store。
+      IOS_SIGN_ARGS+=(--export-method "${IOS_EXPORT_METHOD:-debugging}")
+      echo "==> 签名构建 · team=$APPLE_TEAM_ID · export=${IOS_EXPORT_METHOD:-debugging}"
     else
-      echo "==> 签名身份: $APPLE_SIGNING_IDENTITY"
+      echo "==> 没有 APPLE_TEAM_ID：构建模拟器包（--no-sign，不产出 .ipa）"
+      IOS_SIGN_ARGS+=(--no-sign --target aarch64-sim)
     fi
     npm run tauri -- ios build "${IOS_SIGN_ARGS[@]}" --config src-tauri/tauri.${PLATFORM}.conf.json
     ;;
