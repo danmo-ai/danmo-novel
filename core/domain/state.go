@@ -45,6 +45,12 @@ func CanonicalLife(v string) string {
 		return "missing"
 	case "dead", "死亡", "已死", "身亡":
 		return "dead"
+	// 汉语里「怎么死的」常被直接写成终止态：病故、殉职、牺牲、遇害。
+	// 不接受这些写法时，作者在卷纲里写 `life=在案智囊->病故` 会让细纲陷入死锁：
+	// 父级继承要求逐字包含这条迁移，而生命校验又只认 alive/missing/dead，
+	// 模型写哪一边都不对。语义上它们都等价于 dead，没有歧义，直接归一。
+	case "病故", "病死", "殉职", "牺牲", "遇害", "被害", "已故":
+		return "dead"
 	default:
 		return strings.ToLower(strings.TrimSpace(v))
 	}

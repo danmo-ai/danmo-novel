@@ -497,9 +497,24 @@ func ResolveIdentitySegment(segments []domain.IdentitySegment, stem, raw, atUnit
 		// 它有用的地方：种子可以点名"转换发生在哪个单元"）。
 		return IdentityAt(segments, stem, ref.Unit)
 	case ref.IsRef && ref.Key != "":
+		// `stem@单元` 有两种可能，必须按序尝试：
+		//
+		//  1. 段主键（来自 SegmentKey）：`lu-chen@v08-U1` 精确指向那一行。
+		//  2. 「这个人在这个单元是谁」：`lu-chen@v08-U6`——模型最常写的形式。
+		//     v08-U6 本身没有以它为起点的新段（省纪委常委从 v08-U1 起），
+		//     但按「该单元生效段」解析显然应得同一段。
+		//
+		// 只按主键匹配会让第 2 种永远失败：报「不对应本单元生效段」，而模型
+		// 每次都会写这种形式，于是一个单元重跑多少次都过不了（实测 v08-U6
+		// 连续两次撞死，最后一个单元卡住整本书）。
 		for i := range segments {
 			if segments[i].Stem == stem && SegmentKey(segments[i]) == ref.Key {
 				return &segments[i]
+			}
+		}
+		if keyStem, keyUnit, ok := strings.Cut(ref.Key, "@"); ok && keyStem == stem {
+			if seg := IdentityAt(segments, stem, keyUnit); seg != nil {
+				return seg
 			}
 		}
 		return nil
