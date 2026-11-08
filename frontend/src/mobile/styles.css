@@ -25,9 +25,10 @@ html, body {
 body { touch-action: manipulation; }
 #app { height: 100dvh; }
 
-/* 常规宽度（内屏/展开态）下，内容不要铺满整条宽屏：
-   书架/日志/设置这类单栏页面给一条居中的阅读宽度，双栏页面由各自的 split 容器接管。 */
-html.size-regular .page-narrow { max-width: 840px; margin-inline: auto; }
+/* 常规宽度（内屏/展开态）下，书架/日志/设置这类单栏页面直接撑满，
+   只保留一点页面边距，不再人为收窄成居中窄栏。
+   双栏页面由各自的 split 容器接管，不受这条影响。 */
+html.size-regular .page-narrow { max-width: none; margin-inline: 0; }
 html.size-regular .scroll { padding-inline: 24px; }
 html.size-regular .tabbar { padding-inline: 24px; }
 

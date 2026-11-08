@@ -154,7 +154,8 @@ h1 { margin: 0; font-family: var(--font-prose); font-size: 20px; line-height: 1.
   display: grid;
   grid-template-columns: minmax(240px, 300px) minmax(0, 1fr);
   gap: 16px;
-  align-items: start;
+  align-items: stretch;
+  min-height: calc(var(--vvh, 100dvh) - 190px);
 }
 .split-list {
   position: sticky; top: 0; max-height: calc(var(--vvh, 100dvh) - 200px);

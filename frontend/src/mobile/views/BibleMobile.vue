@@ -153,6 +153,7 @@ function saveAndBack() {
       </div>
     </div>
 
+    <div class="detail-body">
     <div v-if="specialView === 'relations'" class="panel pad">
       <p class="muted relation-note">
         实线关系是人物卡里的「## 关系」表，虚线是「关系锚点 / 与主角关系」等文字关系。
@@ -263,6 +264,7 @@ function saveAndBack() {
         <p v-if="!mdBlocks.length" class="muted">文件为空。</p>
       </div>
     </template>
+    </div>
   </template>
   </div>
 
@@ -305,12 +307,14 @@ function saveAndBack() {
 .bible-split { display: grid; gap: 12px; }
 .bible-split.is-split {
   grid-template-columns: minmax(220px, 280px) minmax(0, 1fr);
-  gap: 16px; align-items: start;
+  gap: 16px; align-items: stretch;
+  min-height: calc(var(--vvh, 100dvh) - 190px);
 }
 .bible-split.is-split .toolbar { margin-bottom: 10px; }
 .bible-split.is-split .doc-list { max-height: calc(var(--vvh, 100dvh) - 240px); overflow-y: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; }
 .bible-split.is-split .detail-head { margin-bottom: 10px; }
 .bible-split.is-split .detail-title h2 { font-size: 22px; }
+.bible-split.is-split .detail-body { min-width: 0; }
 .toolbar { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 10px; }
 .muted { color: var(--ink-soft); font-size: 12px; }
 .group-tabs { display: flex; gap: 4px; overflow-x: auto; margin-bottom: 12px; scrollbar-width: none; }
