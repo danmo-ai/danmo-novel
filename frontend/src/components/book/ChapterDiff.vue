@@ -181,5 +181,6 @@ const totalRemoved = computed(() => changedRows.value.reduce((n, r) => n + r.rem
 .seg { color: var(--ink-soft); }
 .seg.add, ins.add { color: var(--ok); background: rgba(31,122,77,.1); text-decoration: none; border-radius: 3px; }
 .seg.del, del.del { color: var(--bad); background: rgba(163,59,50,.08); border-radius: 3px; }
-@media (max-width: 720px) { .diff-head { flex-direction: column; align-items: flex-start; } }
+html.shell-mobile .diff-head { flex-direction: column; align-items: flex-start; }
+
 </style>

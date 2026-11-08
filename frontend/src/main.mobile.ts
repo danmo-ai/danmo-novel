@@ -26,6 +26,18 @@ function trackVisualViewport() {
   vv.addEventListener('scroll', apply)
 }
 
+/**
+ * 标记当前是移动壳。
+ *
+ * 共享组件（UnitProse / UnitFlowActions 等）的紧凑形态必须由「哪个壳」决定，
+ * 不能由窗口宽度决定：桌面版窗口被拖窄时不该突然换成手机布局，手机也不该
+ * 因为横屏宽于 720px 就退回桌面形态。所以移动端专属规则统一写成
+ * `html.shell-mobile ...`，只在这个入口里挂上这个类。
+ */
+function markMobileShell() {
+  document.documentElement.classList.add('shell-mobile')
+}
+
 async function bootstrap() {
   const loading = document.querySelector('.core-loading') as HTMLDivElement | null
   if (!loading) throw new Error('应用容器未初始化')
@@ -39,6 +51,7 @@ async function bootstrap() {
   })
   try {
     trackVisualViewport()
+    markMobileShell()
     await initCore()
     createApp(App).use(createPinia()).use(router).mount('#app')
   } catch (error) {

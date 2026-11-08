@@ -47,9 +47,23 @@ Presentational components are reused as-is by both shells: `UnitContract`,
    state through the store or a composable.
 2. **No `@media` in `src/mobile/`.** Layout is fixed; hierarchy comes from the
    router. If a screen needs two layouts, it is two routes.
-3. **New panel ⇒ composable first, templates second.** If a feature can only be
+3. **A layout that differs between shells is selected by the shell, never by the
+   window width.** The mobile entry sets `html.shell-mobile`; shared components
+   and `mobile/styles.css` write their compact rules as
+   `html.shell-mobile …` instead of `@media (max-width: …)`.
+   Why: with a breakpoint, dragging a desktop window narrow drops it into the
+   phone layout (hidden arrows, 2×2 grids), and a tablet wider than the
+   breakpoint silently loses the compact layout — which is how the flow bar
+   ended up squeezed to 156px inside `UnitProse`. The concrete case: the
+   production flow bar (细纲 → 正文 → 审校 → 定稿) is a flex row with arrows
+   everywhere on desktop, and a 2×2 grid without arrows in the mobile shell at
+   any width.
+   `@media` is still correct for *desktop window* sizing — the book outline
+   rail at 1180px, the knowledge-base columns at 900px, the runs table at
+   1000px. Those are not phone layouts.
+4. **New panel ⇒ composable first, templates second.** If a feature can only be
    written once, it belongs in the shared layer.
-4. `vue-tsc` runs over both entries (`npm run typecheck`), so a break in either
+5. `vue-tsc` runs over both entries (`npm run typecheck`), so a break in either
    shell fails the build.
 
 ## Build

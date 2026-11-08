@@ -194,28 +194,25 @@ function editChapter() {
 .chapter-foot { display: flex; justify-content: space-between; align-items: center; padding: 14px 28px; border-top: 1px solid var(--line); color: var(--ink-soft); font-size: 12px; }
 .chapter-foot div { display: flex; gap: 8px; }
 .empty { color: var(--ink-soft); padding: 24px; }
-@media (max-width: 720px) {
-  .prose-view { padding: 16px 12px 20px; gap: 16px; min-width: 0; }
-  .prose-head { display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; align-items: stretch; }
-  .prose-head > div:first-child { min-width: 0; }
-  .prose-head h3 { font-size: 22px; overflow-wrap: anywhere; }
-  .prose-actions { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; width: 100%; max-width: none; }
-  .production-actions { display: block; width: 100%; min-width: 0; }
-  .production-actions :deep(.unit-flow-actions) { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); width: 100%; gap: 8px; }
-  .production-actions :deep(.unit-flow-actions button) { width: 100%; min-width: 0; min-height: 44px; padding: 10px 12px; white-space: normal; }
-  .chapter-tabs { gap: 8px; padding: 2px 0 8px; scrollbar-width: none; scroll-snap-type: x proximity; overscroll-behavior-inline: contain; }
-  .chapter-tabs::-webkit-scrollbar { display: none; }
-  .chapter-tabs button { min-height: 52px; padding: 8px 14px; scroll-snap-align: start; }
-  .chapter-card { border-radius: 12px; }
-  .chapter-title-row { padding: 14px 16px; gap: 10px; align-items: flex-start; }
-  .chapter-title-row h2 { font-size: 19px; min-width: 0; }
-  .copy-chapter { min-height: 36px; padding: 6px 10px; font-size: 11px; }
-  .chapter-body { max-height: none; padding: 20px 18px; overflow: visible; }
-  .chapter-body p { font-size: 17px; line-height: 1.95; }
-  .split-mark { gap: 8px; }
-  .split-mark small { font-size: 10px; line-height: 1.7; }
-  .split-line { flex: 1 1 8px; min-width: 8px; }
-  .chapter-foot { padding: 12px 16px; flex-wrap: wrap; gap: 8px; }
-  .chapter-foot button { min-height: 40px; }
-}
+html.shell-mobile .prose-view { padding: 16px 12px 20px; gap: 16px; min-width: 0; }
+html.shell-mobile .prose-head { display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; align-items: stretch; }
+html.shell-mobile .prose-head > div:first-child { min-width: 0; }
+html.shell-mobile .prose-head h3 { font-size: 22px; overflow-wrap: anywhere; }
+html.shell-mobile .prose-actions { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; width: 100%; max-width: none; }
+html.shell-mobile .production-actions { display: block; width: 100%; min-width: 0; }
+html.shell-mobile .chapter-tabs { gap: 8px; padding: 2px 0 8px; scrollbar-width: none; scroll-snap-type: x proximity; overscroll-behavior-inline: contain; }
+html.shell-mobile .chapter-tabs::-webkit-scrollbar { display: none; }
+html.shell-mobile .chapter-tabs button { min-height: 52px; padding: 8px 14px; scroll-snap-align: start; }
+html.shell-mobile .chapter-card { border-radius: 12px; }
+html.shell-mobile .chapter-title-row { padding: 14px 16px; gap: 10px; align-items: flex-start; }
+html.shell-mobile .chapter-title-row h2 { font-size: 19px; min-width: 0; }
+html.shell-mobile .copy-chapter { min-height: 36px; padding: 6px 10px; font-size: 11px; }
+html.shell-mobile .chapter-body { max-height: none; padding: 20px 18px; overflow: visible; }
+html.shell-mobile .chapter-body p { font-size: 17px; line-height: 1.95; }
+html.shell-mobile .split-mark { gap: 8px; }
+html.shell-mobile .split-mark small { font-size: 10px; line-height: 1.7; }
+html.shell-mobile .split-line { flex: 1 1 8px; min-width: 8px; }
+html.shell-mobile .chapter-foot { padding: 12px 16px; flex-wrap: wrap; gap: 8px; }
+html.shell-mobile .chapter-foot button { min-height: 40px; }
+
 </style>

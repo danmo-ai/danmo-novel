@@ -64,12 +64,15 @@ const primaryKind = computed(() => {
 </template>
 
 <style scoped>
+/**
+ * 流程条只有一种形态：按钮 + 箭头，靠 flex 自动换行。
+ *
+ * 这里刻意不留窄屏断点。手机壳（mobile/views/UnitDetailMobile.vue）自己把这条
+ * 流程改成一个 2×2 网格并隐藏箭头，因为手机上没有横向空间放四个按钮加三个箭头。
+ * 如果这条规则写在组件里，桌面版窗口一窄也会变成手机布局——而桌面版已经不再
+ * 适配手机宽度了。
+ */
 .unit-flow-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; min-width: 0; }
 .unit-flow-actions button { padding: 8px 12px; font-size: 12px; white-space: normal; }
 .unit-flow-actions .flow-arrow { flex: 0 0 auto; color: var(--ink-soft); opacity: .55; font-size: 12px; }
-@media (max-width: 720px) {
-  .unit-flow-actions .flow-arrow { display: none; }
-  .unit-flow-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); width: 100%; gap: 8px; }
-  .unit-flow-actions button { min-width: 0; min-height: 44px; width: 100%; }
-}
 </style>

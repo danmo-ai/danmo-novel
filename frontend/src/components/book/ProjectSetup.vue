@@ -242,5 +242,7 @@ function candidateFiles(c: Candidate) {
 .coverage .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--line); flex: none; }
 .coverage li.on .dot { background: var(--ok); }
 .coverage .path { font-family: ui-monospace, monospace; word-break: break-all; }
-@media (max-width: 720px) { .view-title { align-items: flex-start; flex-direction: column; } .setup-card { padding: 14px; } }
+html.shell-mobile .view-title { align-items: flex-start; flex-direction: column; }
+html.shell-mobile .setup-card { padding: 14px; }
+
 </style>

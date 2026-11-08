@@ -348,22 +348,21 @@ const {
 .archive-findings { margin: 8px 0 0; padding-left: 18px; color: var(--ink-soft); font-size: 12px; line-height: 1.8; }
 .archive-findings li.blocking .sev { color: var(--bad); }
 .archive-findings .sev { font-weight: 600; margin-right: 4px; }
-@media (max-width: 720px) {
-  .view-title { flex-direction: column; align-items: flex-start; }
-  .review-totals { width: 100%; justify-content: space-between; gap: 12px; }
-  .unit-head { flex-direction: column; align-items: flex-start; padding: 14px; }
-  .unit-actions { width: 100%; }
-  .unit-actions button, .unit-actions select { flex: 1; min-height: 40px; }
-  .rules-bar { flex-direction: column; padding: 14px; }
-  .rules-actions { width: 100%; }
-  .rules-actions > * { flex: 1; }
-  .finding-head { align-items: flex-start; }
-  .finding p { overflow-wrap: anywhere; }
-  .finding h4 { overflow-wrap: anywhere; }
-  .revise-head { flex-direction: column; }
-  .revise-actions { width: 100%; }
-  .revise-actions button { flex: 1; }
-  .history-row { flex-direction: column; }
-  .archive-head { align-items: flex-start; }
-}
+html.shell-mobile .view-title { flex-direction: column; align-items: flex-start; }
+html.shell-mobile .review-totals { width: 100%; justify-content: space-between; gap: 12px; }
+html.shell-mobile .unit-head { flex-direction: column; align-items: flex-start; padding: 14px; }
+html.shell-mobile .unit-actions { width: 100%; }
+html.shell-mobile .unit-actions button, html.shell-mobile .unit-actions select { flex: 1; min-height: 40px; }
+html.shell-mobile .rules-bar { flex-direction: column; padding: 14px; }
+html.shell-mobile .rules-actions { width: 100%; }
+html.shell-mobile .rules-actions > * { flex: 1; }
+html.shell-mobile .finding-head { align-items: flex-start; }
+html.shell-mobile .finding p { overflow-wrap: anywhere; }
+html.shell-mobile .finding h4 { overflow-wrap: anywhere; }
+html.shell-mobile .revise-head { flex-direction: column; }
+html.shell-mobile .revise-actions { width: 100%; }
+html.shell-mobile .revise-actions button { flex: 1; }
+html.shell-mobile .history-row { flex-direction: column; }
+html.shell-mobile .archive-head { align-items: flex-start; }
+
 </style>

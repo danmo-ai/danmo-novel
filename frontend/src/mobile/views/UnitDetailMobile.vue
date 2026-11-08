@@ -180,8 +180,6 @@ function back() {
 .segments button.active { background: white; color: var(--accent); box-shadow: 0 2px 8px rgba(20,35,31,.1); }
 .segment-body { display: grid; gap: 12px; }
 .actions { display: grid; gap: 8px; }
-.actions :deep(.unit-flow-actions) { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
-.actions :deep(.unit-flow-actions button) { width: 100%; min-height: 44px; }
 .hint { margin: 0; color: var(--ink-soft); font-size: 12px; line-height: 1.7; }
 .raw summary { padding: 8px 0; cursor: pointer; color: var(--ink-soft); font-size: 12px; }
 .raw pre { white-space: pre-wrap; font: 12px/1.7 ui-monospace, monospace; color: var(--ink-soft); background: rgba(255,255,255,.55); padding: 12px; border-radius: 10px; max-height: 50dvh; overflow: auto; }

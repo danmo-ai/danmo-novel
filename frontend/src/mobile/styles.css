@@ -39,3 +39,29 @@ textarea { resize: none; }
 .fill-view {
   min-height: calc(var(--vvh, 100dvh) - 210px);
 }
+
+/**
+ * 生产流程条在手机上永远是 2×2 网格，并且不显示箭头。
+ *
+ * 四个按钮 + 三个箭头在 390px 上放不下一行，硬放会把按钮压到读不出字。顺序改由
+ * 阅读方向承担（左上 → 右下），所以箭头没有意义。
+ *
+ * 为什么用 `html.shell-mobile` 而不是 `@media`：这条形态差异来自「跑在哪个壳里」，
+ * 不来自窗口多宽。写成断点会让桌面版窗口一被拖窄就变成手机布局——共享组件
+ * （UnitFlowActions）因此不再自带任何窄屏分支，桌面永远保持箭头流程条。
+ * 需要压过组件自身 scoped 规则的 `[data-v-*]` 优先级，所以带上 html 与标记类。
+ */
+html.shell-mobile .unit-flow-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  width: 100%;
+  gap: 8px;
+}
+html.shell-mobile .unit-flow-actions button {
+  width: 100%;
+  min-width: 0;
+  min-height: var(--tap);
+  padding: 10px 12px;
+  white-space: normal;
+}
+html.shell-mobile .unit-flow-actions .flow-arrow { display: none; }
