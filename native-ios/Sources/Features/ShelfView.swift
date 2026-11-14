@@ -8,21 +8,48 @@ struct ReaderRoute: Hashable {
     let unit: UnitInfo
 }
 
+/// A destination in the single-column (compact) shelf stack.
+enum ShelfRoute: Hashable {
+    case book(String)
+    case reader(ReaderRoute)
+}
+
 struct ShelfView: View {
     @Environment(LocalCoreService.self) private var core
     @Environment(LibraryStore.self) private var library
-    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
 
     @State private var showingNewBook = false
     @State private var isSeeding = false
     @State private var selectedBookID: String?
-    @State private var compactPath = NavigationPath()
-    @State private var detailPath = NavigationPath()
+    @State private var compactPath: [ShelfRoute] = []
+    @State private var detailPath: [ShelfRoute] = []
+    /// Collapses the bookshelf column while someone is reading, so the expanded
+    /// layout becomes "unit catalog | prose" instead of "bookshelf | prose".
+    @State private var columnVisibility: NavigationSplitViewVisibility = .doubleColumn
+    /// Width of the space this view was actually given. Apple's Duo guidance is
+    /// explicit: decide by comparing the width and height of the available
+    /// space, never by size class or device. The inner display is regular width
+    /// even in portrait (669pt), and splitting there squeezed the reading column
+    /// to roughly twelve characters a line.
+    @State private var availableWidth: CGFloat = 0
 
-    private var isRegular: Bool { horizontalSizeClass == .regular }
+    /// A split needs a usable reading column, not just "regular" width:
+    /// 300pt sidebar + 500pt detail + divider. The Duo inner display only
+    /// reaches this in landscape (951pt); inner portrait (669pt) and the outer
+    /// display (466pt) stay single-column.
+    private static let splitMinWidth: CGFloat = 820
+    private var usesSplit: Bool { availableWidth >= Self.splitMinWidth }
 
     var body: some View {
-        columns
+        content
+            // Measure the offered size instead of guessing from the device or
+            // size class. `onGeometryChange` reports layout passes reliably,
+            // unlike a preference that can miss the first one.
+            .onGeometryChange(for: CGFloat.self) { proxy in
+                proxy.size.width
+            } action: { width in
+                availableWidth = width
+            }
             .sheet(isPresented: $showingNewBook) {
                 NewBookView { draft in
                     try await library.createBook(draft)
@@ -31,51 +58,90 @@ struct ShelfView: View {
                 }
             }
             .onChange(of: library.books.map(\.id)) { _, ids in
-                guard isRegular else { return }
+                guard usesSplit else { return }
                 if let selectedBookID, ids.contains(selectedBookID) { return }
                 selectedBookID = ids.first
-                detailPath = NavigationPath()
+                detailPath = []
             }
-            .onChange(of: horizontalSizeClass) { _, sizeClass in
-                if sizeClass == .regular {
-                    selectedBookID = selectedBookID ?? library.books.first?.id
-                    detailPath = NavigationPath()
-                }
+            .onChange(of: selectedBookID) { old, new in
+                // Sidebar selection replaces the detail pane; a reader pushed
+                // for the previous book must not stay on screen for the new one.
+                guard usesSplit, old != new else { return }
+                detailPath = []
+            }
+            .onChange(of: usesSplit) { _, split in
+                handOff(split: split)
+            }
+            .onChange(of: detailPath) { _, path in
+                // Reading takes over the whole width: shelf column away, catalog
+                // and prose side by side.
+                columnVisibility = path.isEmpty ? .doubleColumn : .detailOnly
             }
     }
 
     @ViewBuilder
-    private var columns: some View {
-        if isRegular {
-            HStack(spacing: 0) {
-                NavigationStack {
-                    shelf
-                }
-                .frame(minWidth: 280, idealWidth: 340, maxWidth: 420)
-
-                Divider()
-
-                NavigationStack(path: $detailPath) {
-                    detailRoot
-                        .navigationDestination(for: ReaderRoute.self) { route in
-                            ReaderView(bookID: route.bookID, unit: route.unit)
-                        }
-                }
-                .frame(maxWidth: .infinity)
+    private var content: some View {
+        if usesSplit {
+            // The system split container, not a hand-built HStack: on Duo the
+            // toolbar and tab bar rotate into a vertical rail for the detail
+            // column only, and that only happens inside a real split view.
+            NavigationSplitView(columnVisibility: $columnVisibility) {
+                sidebar
+            } detail: {
+                detailStack
             }
         } else {
-            NavigationStack(path: $compactPath) {
-                shelf
-                    .navigationDestination(for: String.self) { id in
-                        BookDetailView(bookID: id)
-                            // Remember the compact selection so unfolding lands on
-                            // the book being read rather than the first one.
-                            .task(id: id) { selectedBookID = id }
+            compactStack
+        }
+    }
+
+    // MARK: - Split
+
+    private var sidebar: some View {
+        Group {
+            if library.isLoading && library.books.isEmpty {
+                ProgressView("正在打开书架…")
+            } else if library.books.isEmpty {
+                emptyShelf
+            } else {
+                // A split-view sidebar is a *selection* list, not a navigation
+                // list: `List(selection:)` gives the system's row highlight and
+                // the system draws no disclosure chevron here (Mail, Notes and
+                // Files behave the same). `.sidebar` style is what makes taps
+                // select on iOS outside of edit mode.
+                List(selection: $selectedBookID) {
+                    ForEach(library.books) { book in
+                        BookRow(book: book)
+                            .tag(book.id)
+                            .accessibilityHint("打开单元和正文")
+                            .accessibilityIdentifier("book.row.\(book.id)")
                     }
-                    .navigationDestination(for: ReaderRoute.self) { route in
-                        ReaderView(bookID: route.bookID, unit: route.unit)
-                    }
+                }
+                .listStyle(.sidebar)
+                .refreshable { await library.loadBooks() }
             }
+        }
+        .navigationTitle("我的书架")
+        .toolbar { newBookToolbar }
+    }
+
+    private var detailStack: some View {
+        NavigationStack(path: $detailPath) {
+            detailRoot
+                .navigationDestination(for: ShelfRoute.self) { route in
+                    switch route {
+                    case .book(let id):
+                        BookDetailView(bookID: id)
+                    case .reader(let route):
+                        // Expanded width gets the catalog + prose arrangement;
+                        // the compact stack pushes a single-page reader instead.
+                        if #available(iOS 27.1, *) {
+                            ReaderSplitView(bookID: route.bookID, unit: route.unit)
+                        } else {
+                            ReaderView(bookID: route.bookID, unit: route.unit)
+                        }
+                    }
+                }
         }
     }
 
@@ -92,6 +158,48 @@ struct ShelfView: View {
         }
     }
 
+    // MARK: - Compact
+
+    private var compactStack: some View {
+        NavigationStack(path: $compactPath) {
+            Group {
+                if library.isLoading && library.books.isEmpty {
+                    ProgressView("正在打开书架…")
+                } else if library.books.isEmpty {
+                    emptyShelf
+                } else {
+                    // Compact width pushes one screen, so a NavigationLink lets
+                    // the system draw and manage the standard chevron and back
+                    // stack.
+                    List {
+                        ForEach(library.books) { book in
+                            NavigationLink(value: ShelfRoute.book(book.id)) {
+                                BookRow(book: book)
+                            }
+                            .accessibilityHint("打开单元和正文")
+                            .accessibilityIdentifier("book.row.\(book.id)")
+                        }
+                    }
+                    .listStyle(.plain)
+                    .refreshable { await library.loadBooks() }
+                }
+            }
+            .navigationTitle("我的书架")
+            .toolbar { newBookToolbar }
+            .navigationDestination(for: ShelfRoute.self) { route in
+                switch route {
+                case .book(let id):
+                    BookDetailView(bookID: id)
+                case .reader(let route):
+                    // Compact width is one screen: a plain single-page reader.
+                    ReaderView(bookID: route.bookID, unit: route.unit)
+                }
+            }
+        }
+    }
+
+    // MARK: - Shared
+
     @ToolbarContentBuilder
     private var newBookToolbar: some ToolbarContent {
         ToolbarItem(placement: .primaryAction) {
@@ -100,47 +208,6 @@ struct ShelfView: View {
             }
             .disabled(!core.isReady)
         }
-    }
-
-    @ViewBuilder
-    private var shelf: some View {
-        Group {
-            if library.isLoading && library.books.isEmpty {
-                ProgressView("正在打开书架…")
-            } else if library.books.isEmpty {
-                emptyShelf
-            } else {
-                List {
-                    ForEach(library.books) { book in
-                        if isRegular {
-                            // A split-view row is selected, not pushed: the chevron
-                            // has to be drawn explicitly to match platform lists.
-                            Button {
-                                openBook(book.id)
-                            } label: {
-                                BookRow(book: book, showsDisclosure: true)
-                            }
-                            .buttonStyle(.plain)
-                            .listRowBackground(
-                                book.id == selectedBookID ? Color.accentColor.opacity(0.12) : nil
-                            )
-                            .accessibilityHint("打开单元和正文")
-                            .accessibilityIdentifier("book.row.\(book.id)")
-                        } else {
-                            NavigationLink(value: book.id) {
-                                BookRow(book: book, showsDisclosure: false)
-                            }
-                            .accessibilityHint("打开单元和正文")
-                            .accessibilityIdentifier("book.row.\(book.id)")
-                        }
-                    }
-                }
-                .listStyle(.plain)
-                .refreshable { await library.loadBooks() }
-            }
-        }
-        .navigationTitle("我的书架")
-        .toolbar { newBookToolbar }
     }
 
     private var emptyShelf: some View {
@@ -161,6 +228,35 @@ struct ShelfView: View {
         }
     }
 
+    /// Carries the open book and reading position across the split boundary so
+    /// rotating the Duo never drops the reader — the compact stack and the
+    /// detail stack are different containers and cannot share a path.
+    private func handOff(split: Bool) {
+        if split {
+            if case .reader(let route)? = compactPath.last {
+                selectedBookID = route.bookID
+                detailPath = [.reader(route)]
+            } else if case .book(let id)? = compactPath.last {
+                selectedBookID = id
+                detailPath = []
+            } else if selectedBookID == nil {
+                selectedBookID = library.books.first?.id
+                detailPath = []
+            }
+            compactPath = []
+            columnVisibility = detailPath.isEmpty ? .doubleColumn : .detailOnly
+        } else {
+            var path: [ShelfRoute] = []
+            if let bookID = selectedBookID {
+                path.append(.book(bookID))
+                if let last = detailPath.last { path.append(last) }
+            }
+            compactPath = path
+            detailPath = []
+            columnVisibility = .doubleColumn
+        }
+    }
+
     private func seedDemo() async {
         isSeeding = true
         defer { isSeeding = false }
@@ -172,17 +268,16 @@ struct ShelfView: View {
 
     private func openBook(_ id: String) {
         selectedBookID = id
-        if isRegular {
-            detailPath = NavigationPath()
+        if usesSplit {
+            detailPath = []
         } else {
-            compactPath.append(id)
+            compactPath = [.book(id)]
         }
     }
 }
 
 private struct BookRow: View {
     let book: BookSummary
-    var showsDisclosure: Bool = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -213,14 +308,6 @@ private struct BookRow: View {
             }
         }
         .padding(.vertical, 8)
-        .overlay(alignment: .trailing) {
-            if showsDisclosure {
-                Image(systemName: "chevron.forward")
-                    .font(.footnote.weight(.semibold))
-                    .foregroundStyle(.tertiary)
-                    .accessibilityHidden(true)
-            }
-        }
     }
 }
 

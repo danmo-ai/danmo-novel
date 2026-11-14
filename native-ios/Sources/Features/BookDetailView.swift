@@ -87,7 +87,9 @@ struct BookDetailView: View {
                         Section("第 \(group.volume) 卷") {
                             ForEach(group.units) { unit in
                                 if unit.hasProse {
-                                    NavigationLink(value: ReaderRoute(bookID: book.summary.id, unit: unit)) {
+                                    NavigationLink(value: ShelfRoute.reader(
+                                        ReaderRoute(bookID: book.summary.id, unit: unit)
+                                    )) {
                                         UnitRow(unit: unit)
                                     }
                                     .accessibilityIdentifier("unit.row.\(unit.unitId)")

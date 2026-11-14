@@ -27,6 +27,38 @@ final class NativeAppUITests: XCTestCase {
         )
     }
 
+    /// The expanded reading pose splits into catalog + prose. `ArrangementView`
+    /// silently drops the secondary pane when its bounds cannot hold both, and
+    /// the catalog is a selection list, so that degradation strands the user on
+    /// a catalog whose rows do nothing. Revealing the bookshelf narrows the
+    /// detail column exactly that way, so this asserts prose stays reachable.
+    @MainActor
+    func testReadingPoseKeepsProseReachable() throws {
+        let app = XCUIApplication()
+        app.launch()
+        XCUIDevice.shared.orientation = .landscapeLeft
+        defer { XCUIDevice.shared.orientation = .portrait }
+        Thread.sleep(forTimeInterval: 3)
+
+        openSampleBook(in: app)
+        let unit = app.descendants(matching: .any)["unit.row.v01-U1"]
+        XCTAssertTrue(unit.waitForExistence(timeout: 20), "Unit list should load: \(app.debugDescription)")
+        unit.tap()
+
+        let prose = app.staticTexts.matching(
+            NSPredicate(format: "label CONTAINS '雾从防波堤'")).firstMatch
+        XCTAssertTrue(prose.waitForExistence(timeout: 20), "Expanded reading must show prose: \(app.debugDescription)")
+
+        // Reveal the bookshelf, which narrows the detail column.
+        let toggle = app.navigationBars.buttons.matching(
+            NSPredicate(format: "label CONTAINS 'Sidebar'")).firstMatch
+        if toggle.waitForExistence(timeout: 5) { toggle.tap() }
+        Thread.sleep(forTimeInterval: 3)
+
+        XCTAssertTrue(prose.exists, "Prose must stay reachable when the sidebar is revealed: \(app.debugDescription)")
+        XCTAssertTrue(app.buttons["阅读设置"].exists, "Reader controls must survive the narrow detail column")
+    }
+
     /// A fold/resize must not drop the reading position or the reader controls.
     @MainActor
     func testReaderSurvivesRotation() throws {
@@ -68,7 +100,9 @@ final class NativeAppUITests: XCTestCase {
             sample.tap()
             return
         }
-        let demoBook = app.buttons["book.row.demo-fog-harbor"].firstMatch
+        // A sidebar selection row is exposed as a cell, not a button, so query by
+        // identifier rather than element type.
+        let demoBook = app.descendants(matching: .any)["book.row.demo-fog-harbor"].firstMatch
         XCTAssertTrue(demoBook.waitForExistence(timeout: 10), "Shelf should show the sample book: \(app.debugDescription)")
         demoBook.tap()
     }

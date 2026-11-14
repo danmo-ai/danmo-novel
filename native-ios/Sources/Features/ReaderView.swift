@@ -4,6 +4,12 @@ struct ReaderView: View {
     @Environment(LocalCoreService.self) private var core
     let bookID: String
     let unit: UnitInfo
+    /// Standalone (compact-width push) owns the navigation title, because it is
+    /// the only content on screen. As the secondary pane of the reading
+    /// arrangement it must not: the two panes share one navigation bar, and that
+    /// bar sits above the unit catalog, so its title has to name the book, not
+    /// whichever unit happens to be open.
+    var showsNavigationTitle = true
 
     @State private var chapters: [Chapter] = []
     @State private var selectedChapter: Int?
@@ -18,7 +24,7 @@ struct ReaderView: View {
         chapters.first { $0.number == selectedChapter } ?? chapters.first
     }
 
-    var body: some View {
+    private var content: some View {
         Group {
             if let chapter = currentChapter {
                 ScrollView {
@@ -50,11 +56,6 @@ struct ReaderView: View {
                 }
                 .scrollIndicators(.automatic)
                 .background(Color(.systemBackground))
-                .safeAreaInset(edge: .bottom) {
-                    if chapters.count > 1 {
-                        chapterBar(chapter)
-                    }
-                }
             } else if let error {
                 ContentUnavailableView(
                     "正文读取失败",
@@ -65,13 +66,49 @@ struct ReaderView: View {
                 ProgressView("正在打开正文…")
             }
         }
-        .navigationTitle(unit.title)
-        .navigationBarTitleDisplayMode(.inline)
+    }
+
+    var body: some View {
+        Group {
+            if showsNavigationTitle {
+                content
+                    .navigationTitle(unit.title)
+                    .navigationBarTitleDisplayMode(.inline)
+            } else {
+                content
+            }
+        }
         .toolbar {
-            // No custom back button: iOS 27.1+ may render the bar vertically on
-            // Duo, and the system already provides back to the unit list. A
-            // second back affordance would duplicate it.
-            ToolbarItem(placement: .primaryAction) {
+            // Chapter paging is navigation, so it belongs in the system bar
+            // rather than a custom bottom bar: on iPhone Duo the bar lays out
+            // vertically beside the content, which preserves vertical space for
+            // reading. Symbol + title items are what the system moves to the
+            // vertical axis; a text-only item would stay horizontal and split
+            // the bar into two axes.
+            ToolbarItemGroup(placement: .primaryAction) {
+                if let chapter = currentChapter, chapters.count > 1 {
+                    Button {
+                        selectChapter(offset: -1, from: chapter.number)
+                    } label: {
+                        Label("上一章", systemImage: "chevron.up")
+                    }
+                    .disabled(chapter.number == chapters.first?.number)
+
+                    Button {
+                        selectChapter(offset: 1, from: chapter.number)
+                    } label: {
+                        Label("下一章", systemImage: "chevron.down")
+                    }
+                    .disabled(chapter.number == chapters.last?.number)
+
+                    Menu {
+                        ForEach(chapters) { item in
+                            Button("第 \(item.number) 章 · \(item.title)") { setChapter(item.number) }
+                        }
+                    } label: {
+                        Label("第 \(chapter.number) 章，共 \(chapters.count) 章", systemImage: "list.number")
+                    }
+                }
                 Button { showingSettings = true } label: {
                     Label("阅读设置", systemImage: "textformat.size")
                 }
@@ -103,39 +140,6 @@ struct ReaderView: View {
             error = nil
             await load()
         }
-    }
-
-    private func chapterBar(_ chapter: Chapter) -> some View {
-        HStack {
-            Button {
-                selectChapter(offset: -1, from: chapter.number)
-            } label: {
-                Label("上一章", systemImage: "chevron.left")
-            }
-            .disabled(chapter.number == chapters.first?.number)
-
-            Spacer()
-
-            Menu {
-                ForEach(chapters) { item in
-                    Button("第 \(item.number) 章 · \(item.title)") { setChapter(item.number) }
-                }
-            } label: {
-                Text("\(chapter.number) / \(chapters.count) 章")
-                    .font(.subheadline)
-            }
-
-            Spacer()
-
-            Button {
-                selectChapter(offset: 1, from: chapter.number)
-            } label: {
-                Label("下一章", systemImage: "chevron.right")
-            }
-            .disabled(chapter.number == chapters.last?.number)
-        }
-        .padding()
-        .background(.bar)
     }
 
     private func load() async {

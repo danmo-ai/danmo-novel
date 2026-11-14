@@ -16,7 +16,12 @@ struct DanmoNovelApp: App {
             RootView()
                 .environment(core)
                 .environment(library)
-                .tint(.indigo)
+                // No custom tint. A hardcoded accent (this used to be .indigo)
+                // overrides the system accent everywhere — controls, links,
+                // progress, the selected tab — and ignores the user's own tint
+                // choice in Settings > Accessibility. A brand colour, if we ever
+                // want one, belongs in an AccentColor asset so it still adapts to
+                // dark mode and to Increase Contrast.
                 .task { core.start() }
         }
     }
