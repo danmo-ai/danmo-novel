@@ -1,19 +1,12 @@
 import { isTauriRuntime, waitForBackend } from '@/shared/utils/desktop'
-import { httpTransport, nativeTransport, setTransport } from './transport'
 
+/**
+ * The desktop webview talks to the Go sidecar over HTTP on 127.0.0.1:7804.
+ * The sidecar is spawned by the Tauri shell, so a first launch may still be
+ * binding the port when the webview mounts; wait for health before rendering.
+ */
 export async function initCore(): Promise<void> {
   if (!isTauriRuntime()) return
-  const { invoke } = await import('@tauri-apps/api/core')
-  const info = await Promise.race([
-    invoke<{ transport: 'ffi' | 'http'; apiBase?: string }>('plugin:localcore|bootstrap'),
-    new Promise<never>((_, reject) => window.setTimeout(() => reject(new Error('本地内核初始化超时，请重新启动应用')), 15_000)),
-  ])
-  if (info.transport === 'ffi') {
-    setTransport(nativeTransport)
-    return
-  }
-  if (info.apiBase) window.__DANMO_API_BASE__ = info.apiBase
-  setTransport(httpTransport)
   if (!(await waitForBackend())) {
     throw new Error('本地内核启动超时，请重新打开应用')
   }

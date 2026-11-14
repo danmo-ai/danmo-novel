@@ -11,7 +11,7 @@ export DQ_BACKEND_PORT
 export DQ_FRONTEND_PORT
 
 .PHONY: help backend dev start stop frontend-install frontend-dev frontend-build \
-	frontend-build-mobile dev-desktop test build build-sidecar clean set-release-secrets \
+	dev-desktop test build build-sidecar clean set-release-secrets \
 	pack-prereqs pack-macos-desktop pack-linux-desktop pack-windows-desktop \
 	mobile-core pack-ios pack-android
 
@@ -22,6 +22,8 @@ help:
 	@echo "  make test             go test ./..."
 	@echo "  make build            frontend + server"
 	@echo "  make pack-macos-desktop | pack-linux-desktop | pack-windows-desktop"
+	@echo "  make mobile-core      iOS/Android gomobile 内核"
+	@echo "  make pack-ios | pack-android                 原生 SwiftUI / Compose"
 	@echo "  make set-release-secrets                    写入发布 secrets（证书从钥匙串导出）"
 
 dev start:
@@ -48,10 +50,6 @@ frontend-dev: frontend-install
 
 frontend-build:
 	cd $(FRONTEND_DIR) && npm install && npm run build
-
-# 移动端是独立的 Vue 入口，产物在 out/frontend/mobile；桌面包不会带上它。
-frontend-build-mobile:
-	cd $(FRONTEND_DIR) && npm install && npm run build:mobile
 
 build-sidecar:
 	@chmod +x scripts/*.sh
@@ -85,11 +83,11 @@ mobile-core:
 	@chmod +x scripts/build_go_mobile.sh
 	@./scripts/build_go_mobile.sh
 
-pack-ios: pack-prereqs
+pack-ios:
 	@chmod +x scripts/*.sh
 	@./scripts/pack_mobile.sh ios
 
-pack-android: pack-prereqs
+pack-android:
 	@chmod +x scripts/*.sh
 	@./scripts/pack_mobile.sh android
 

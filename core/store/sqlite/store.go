@@ -163,6 +163,32 @@ func (s *Store) UpsertBook(ctx context.Context, id, root, title, revision string
 	return err
 }
 
+// ReplaceBooks resets the development-time embedded workspace registry. It is
+// only called by mobile.Start when an old container path is detected; desktop
+// imports and custom library paths never use this method.
+func (s *Store) ReplaceBooks(ctx context.Context, books []domain.BookSummary) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `DELETE FROM books`); err != nil {
+		return err
+	}
+	for _, book := range books {
+		readOnly := 0
+		if book.ReadOnly {
+			readOnly = 1
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO books(id, root_path, title, read_only, revision, imported_at) VALUES(?,?,?,?,?,?)`, book.ID, book.RootPath, book.Title, readOnly, "", time.Now().UTC().Format(time.RFC3339)); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
 func (s *Store) ListBooks(ctx context.Context) ([]domain.BookSummary, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT id, root_path, title, read_only, revision FROM books ORDER BY imported_at DESC`)
 	if err != nil {

@@ -1,7 +1,7 @@
-import { parseResponse, transport } from './transport'
+import { httpTransport, parseResponse } from './transport'
 
 async function request<T>(path: string, method = 'GET', body?: unknown): Promise<T> {
-  const response = await transport().request(
+  const response = await httpTransport.request(
     method,
     path,
     body == null ? undefined : JSON.stringify(body),

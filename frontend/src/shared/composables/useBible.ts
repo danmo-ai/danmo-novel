@@ -1,8 +1,8 @@
 /**
  * 设定页（Story Bible）的视图模型：文档清单、人物、身份时间线、结构化解析。
  *
- * 解析函数（Markdown / 状态 YAML / 锁词）本身是纯函数，移动端要渲染同一份内容，
- * 所以它们属于这里而不是组件。壳层只决定目录怎么摆、详情怎么进。
+ * 解析函数（Markdown / 状态 YAML / 锁词）本身是纯函数，所以它们属于这里而不是
+ * 组件；组件只决定目录怎么摆、详情怎么进。
  */
 import { computed, ref, watch } from 'vue'
 import { useAppStore } from '@/shared/stores/app'
@@ -365,7 +365,7 @@ export function useBible(opts: {
     gateIcon, startEdit, save, scaffoldMissing,
     startIdentityEdit, saveIdentity, closeIdentity, promoteCast,
     requestRewrite, requestIdentityRewrite,
-    // 供移动端复用的纯函数
+    // 供组件复用的纯函数
     parseMarkdown, parseState, parseLockedTerms, cleanInline,
   }
 }

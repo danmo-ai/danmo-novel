@@ -1,9 +1,8 @@
 /**
  * 审校页的全部视图模型：按单元分组的清单、勾选、章节筛选、历史归档。
  *
- * 桌面（ReviewWorkspace.vue）与移动端共用。这里只产出「该显示什么、能点什么」，
- * 不产出任何按钮文案以外的布局；emit 的那几个动作通过 opts 回调传出去，
- * 让每个壳自己决定点击后要不要换页。
+ * 这里只产出「该显示什么、能点什么」，不产出任何按钮文案以外的布局；
+ * emit 的那几个动作通过 opts 回调传出去，由 ReviewWorkspace 决定点击后要不要换页。
  */
 import { computed, onMounted, reactive, ref, watch, type Ref } from 'vue'
 import { api } from '@/shared/api/client'
@@ -16,7 +15,7 @@ export type ReviewRow = ReviewFinding & { candidateId: string; unitId?: string }
 
 export function useReview(opts: {
   selectedUnit: Ref<UnitInfo | null>
-  /** 只看某个单元（移动端单元详情页）；不传 = 全书。 */
+  /** 只看某个单元；不传 = 全书。 */
   onlyUnit?: Ref<string | undefined>
   busy?: Ref<boolean | undefined>
   readOnly?: Ref<boolean | undefined>

@@ -15,11 +15,13 @@ import (
 var current struct {
 	sync.Mutex
 	core *serve.Server
+	home string
 }
 
 type result struct {
 	OK    bool   `json:"ok"`
 	Error string `json:"error,omitempty"`
+	Home  string `json:"home,omitempty"`
 }
 
 func reply(err error) string {
@@ -31,19 +33,34 @@ func reply(err error) string {
 }
 
 // Start prepares the local database, library and API handler. No TCP listener
-// is opened on mobile; API calls go through Request.
+// is opened on mobile; API calls go through Request. Re-starting an existing
+// core is idempotent and reports its actual home so a host ViewModel cannot
+// mistake a previous sandbox for its own.
 func Start(home string) string {
 	current.Lock()
 	defer current.Unlock()
+	if current.core != nil && current.home == home {
+		raw, _ := json.Marshal(result{OK: true, Home: current.home})
+		return string(raw)
+	}
 	if current.core != nil {
-		return `{"ok":true}`
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		err := current.core.Stop(ctx)
+		cancel()
+		if err != nil {
+			return reply(err)
+		}
+		current.core = nil
+		current.home = ""
 	}
 	core, err := serve.New(serve.Options{Home: home, DynamicPort: true})
 	if err != nil {
 		return reply(err)
 	}
 	current.core = core
-	return `{"ok":true}`
+	current.home = home
+	raw, _ := json.Marshal(result{OK: true, Home: home})
+	return string(raw)
 }
 
 // Request runs one HTTP-contract request in-process. The response is a JSON
@@ -62,6 +79,7 @@ func Stop() string {
 	current.Lock()
 	core := current.core
 	current.core = nil
+	current.home = ""
 	current.Unlock()
 	if core == nil {
 		return `{"ok":true}`

@@ -1,9 +1,0 @@
-{
-  "build": {
-    "frontendDist": "../../out/frontend/mobile"
-  },
-  "bundle": {
-    "externalBin": [],
-    "createUpdaterArtifacts": false
-  }
-}

@@ -11,7 +11,7 @@ import type { BookSnapshot } from '@/shared/types'
  * 为什么需要它：应用的全部生成能力都要用户自己的模型 API Key。审核员没有 Key，
  * 空书架 + 一排点不动的按钮就是 App Store 4.2 说的「功能不完整」。
  *
- * 两个壳（桌面书架 / 手机书架）共用这一个调用，所以放在 api/ 而不是 mobile/。
+ * 桌面书架与示例书本读取共用这一个调用，所以放在 api/ 而不是视图层。
  */
 export async function seedSampleBook(): Promise<{ id: string; created: boolean }> {
   const res = await api.post<{ created: boolean; book: BookSnapshot }>('/api/books/demo')

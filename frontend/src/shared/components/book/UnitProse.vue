@@ -6,7 +6,7 @@ const props = defineProps<{
   unit: UnitInfo
   raw: string
   canWrite: boolean
-  /** 连续阅读：按章连续渲染，不再一次只看一章。移动端更像读书。 */
+  /** 连续阅读：按章连续渲染，不再一次只看一章。 */
   continuous?: boolean
 }>()
 const emit = defineEmits<{ edit: [chapter: number, title: string, raw: string] }>()
@@ -272,25 +272,5 @@ function scrollToChapter(chapter: number) {
 .empty { color: var(--ink-soft); padding: 24px; }
 .continuous { display: grid; gap: 18px; }
 .continuous .chapter-card { scroll-margin-top: 8px; }
-html.shell-mobile .prose-view { padding: 16px 12px 20px; gap: 16px; min-width: 0; }
-html.shell-mobile .prose-head { display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; align-items: stretch; }
-html.shell-mobile .prose-head > div:first-child { min-width: 0; }
-html.shell-mobile .prose-head h3 { font-size: 22px; overflow-wrap: anywhere; }
-html.shell-mobile .prose-actions { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; width: 100%; max-width: none; }
-html.shell-mobile .production-actions { display: block; width: 100%; min-width: 0; }
-html.shell-mobile .chapter-tabs { gap: 8px; padding: 2px 0 8px; scrollbar-width: none; scroll-snap-type: x proximity; overscroll-behavior-inline: contain; }
-html.shell-mobile .chapter-tabs::-webkit-scrollbar { display: none; }
-html.shell-mobile .chapter-tabs button { min-height: 52px; padding: 8px 14px; scroll-snap-align: start; }
-html.shell-mobile .chapter-card { border-radius: 12px; }
-html.shell-mobile .chapter-title-row { padding: 14px 16px; gap: 10px; align-items: flex-start; }
-html.shell-mobile .chapter-title-row h2 { font-size: 19px; min-width: 0; }
-html.shell-mobile .copy-chapter { min-height: 44px; padding: 6px 10px; font-size: 12px; }
-html.shell-mobile .chapter-body { max-height: none; padding: 20px 18px; overflow: visible; }
-html.shell-mobile .chapter-body p { font-size: 17px; line-height: 1.95; }
-html.shell-mobile .split-mark { gap: 8px; }
-html.shell-mobile .split-mark small { font-size: 10px; line-height: 1.7; }
-html.shell-mobile .split-line { flex: 1 1 8px; min-width: 8px; }
-html.shell-mobile .chapter-foot { padding: 12px 16px; flex-wrap: wrap; gap: 8px; }
-html.shell-mobile .chapter-foot button { min-height: 44px; }
 
 </style>

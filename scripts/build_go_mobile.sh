@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Build the Go core for gomobile (xcframework / aar) and drop it into the
-# localcore plugin, which is what the native side links against.
+# Build the Go core for gomobile (xcframework / aar). The native iOS and
+# Android apps link these artifacts directly from out/mobile.
 #
 # gomobile needs two tools beyond the Go compiler: `gomobile` itself and
 # `gobind`. Both come from golang.org/x/mobile, which is pinned in go.mod so a
@@ -16,6 +16,14 @@ GOMOBILE="$GOBIN_DIR/gomobile"
 TARGETS="${1:-ios,android}"
 export DEVELOPER_DIR="${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Developer}"
 export CGO_ENABLED=1
+# A JDK with javac is required by gobind. Search standard macOS JDK locations
+# before asking for a Homebrew JDK (an IDE's JRE alone is not sufficient).
+if ! javac -version >/dev/null 2>&1; then
+  for candidate in /Library/Java/JavaVirtualMachines/*/Contents/Home "$HOME/Library/Java/JavaVirtualMachines"/*/Contents/Home /Applications/Android\ Studio.app/Contents/jbr/Contents/Home; do
+    if [[ -x "$candidate/bin/javac" ]]; then export JAVA_HOME="$candidate"; break; fi
+  done
+fi
+if [[ -n "${JAVA_HOME:-}" ]]; then export PATH="$JAVA_HOME/bin:$PATH"; fi
 
 # Android paths differ between a laptop (Homebrew) and CI (ANDROID_HOME preset
 # by setup-android, which only exists at runtime). Resolve both instead of
@@ -53,9 +61,6 @@ case ",$TARGETS," in
     # Go or Xcode version fails the link with a confusing SDK error.
     rm -rf "$OUT_DIR/DanmoNovel.xcframework"
     "$GOMOBILE" bind -v -target=ios -o "$OUT_DIR/DanmoNovel.xcframework" ./mobile
-    mkdir -p "$ROOT_DIR/desktop/plugins/localcore/ios/Frameworks"
-    rm -rf "$ROOT_DIR/desktop/plugins/localcore/ios/Frameworks/DanmoNovel.xcframework"
-    cp -R "$OUT_DIR/DanmoNovel.xcframework" "$ROOT_DIR/desktop/plugins/localcore/ios/Frameworks/"
     ;;
 esac
 case ",$TARGETS," in
@@ -70,8 +75,6 @@ case ",$TARGETS," in
     fi
     rm -f "$OUT_DIR/danmo-novel.aar"
     "$GOMOBILE" bind -v -target=android -androidapi 23 -o "$OUT_DIR/danmo-novel.aar" ./mobile
-    mkdir -p "$ROOT_DIR/desktop/plugins/localcore/android/libs"
-    cp "$OUT_DIR/danmo-novel.aar" "$ROOT_DIR/desktop/plugins/localcore/android/libs/"
     ;;
 esac
 

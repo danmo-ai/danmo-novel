@@ -183,16 +183,5 @@ h1 { margin: 8px 0 8px; font-family: var(--font-prose); font-size: clamp(28px, 3
   .expand { position: absolute; right: 16px; }
   .run-record { position: relative; }
 }
-html.shell-mobile .page-head { align-items: flex-start; flex-direction: column; }
-html.shell-mobile .summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-html.shell-mobile .summary { padding: 16px; }
-html.shell-mobile .summary strong { font-size: 20px; overflow-wrap: anywhere; }
-html.shell-mobile .filters { display: grid; grid-template-columns: 1fr; }
-html.shell-mobile .filters input { min-width: 0; width: 100%; }
-html.shell-mobile .filters select, html.shell-mobile .filters button { width: 100%; }
-html.shell-mobile .run-row { grid-template-columns: 1fr 1fr; padding: 14px; }
-html.shell-mobile .model { grid-column: 1 / -1; overflow-wrap: anywhere; }
-html.shell-mobile .run-details { padding: 14px; }
-html.shell-mobile .run-details table { min-width: 620px; }
 
 </style>

@@ -5,10 +5,6 @@ export interface TransportResponse {
   body: string
 }
 
-export interface Transport {
-  request(method: string, path: string, body?: string): Promise<TransportResponse>
-}
-
 export class ApiError extends Error {
   status: number
   data: unknown
@@ -35,30 +31,10 @@ export function parseResponse(response: TransportResponse): any {
   return data
 }
 
-export const httpTransport: Transport = {
-  async request(method, path, body) {
+export const httpTransport = {
+  async request(method: string, path: string, body?: string): Promise<TransportResponse> {
     const headers: Record<string, string> = { 'Content-Type': 'application/json' }
     const res = await fetch(apiBaseUrl() + path, { method, headers, body })
     return { status: res.status, body: await res.text() }
   },
-}
-
-/** The native plugin calls the Go core directly; no loopback server is needed. */
-export const nativeTransport: Transport = {
-  async request(method, path, body) {
-    const { invoke } = await import('@tauri-apps/api/core')
-    return invoke<TransportResponse>('plugin:localcore|request', {
-      request: { method, path, body: body ?? '' },
-    })
-  },
-}
-
-let active: Transport = httpTransport
-
-export function setTransport(transport: Transport) {
-  active = transport
-}
-
-export function transport(): Transport {
-  return active
 }

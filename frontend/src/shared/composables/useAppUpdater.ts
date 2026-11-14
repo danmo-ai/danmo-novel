@@ -1,7 +1,7 @@
 import { computed, ref } from 'vue'
 import type { Update } from '@tauri-apps/plugin-updater'
 import { api } from '@/shared/api/client'
-import { hasUpdater, isTauriRuntime } from '@/shared/utils/desktop'
+import { isTauriRuntime } from '@/shared/utils/desktop'
 
 export type UpdaterStatus =
   | 'idle'
@@ -70,8 +70,8 @@ export async function checkForUpdates(options?: { silent?: boolean }): Promise<b
   const silent = options?.silent ?? false
   await ensureVersion()
 
-  // 移动外壳与浏览器都没有 updater：build 时就已知，不再靠 UA 嗅探。
-  if (!hasUpdater()) {
+  // 浏览器里没有 updater；只有 Tauri 桌面外壳才有自升级。
+  if (!isTauriRuntime()) {
     status.value = 'idle'
     availableVersion.value = ''
     updateNotes.value = ''
@@ -113,7 +113,7 @@ export async function checkForUpdates(options?: { silent?: boolean }): Promise<b
 }
 
 export function startSilentUpdateCheck(delayMs = 2500): void {
-  if (!hasUpdater() || silentCheckStarted) return
+  if (!isTauriRuntime() || silentCheckStarted) return
   silentCheckStarted = true
   window.setTimeout(() => {
     void checkForUpdates({ silent: true })
@@ -121,7 +121,7 @@ export function startSilentUpdateCheck(delayMs = 2500): void {
 }
 
 export async function downloadAndInstallUpdate(): Promise<void> {
-  if (!hasUpdater()) {
+  if (!isTauriRuntime()) {
     throw new Error('Updates are only available in the desktop app')
   }
   if (!pendingUpdate) {
@@ -178,9 +178,9 @@ export function useAppUpdater() {
       status.value === 'downloading' ||
       status.value === 'installing',
   )
-  const canCheck = computed(() => hasUpdater() && !isBusy.value)
+  const canCheck = computed(() => isTauriRuntime() && !isBusy.value)
   const canInstall = computed(
-    () => hasUpdater() && status.value === 'available' && !!pendingUpdate,
+    () => isTauriRuntime() && status.value === 'available' && !!pendingUpdate,
   )
 
   return {
@@ -195,7 +195,7 @@ export function useAppUpdater() {
     isBusy,
     canCheck,
     canInstall,
-    isDesktop: hasUpdater,
+    isDesktop: isTauriRuntime,
     initAppVersion,
     checkForUpdates,
     downloadAndInstallUpdate,

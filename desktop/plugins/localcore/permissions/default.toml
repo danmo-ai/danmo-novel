@@ -1,5 +1,0 @@
-"$schema" = "schemas/schema.json"
-
-[default]
-description = "Start and call the on-device local core"
-permissions = ["allow-core-bootstrap", "allow-core-request"]

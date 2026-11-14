@@ -480,18 +480,5 @@ function confirm() {
 .dlg-instruction textarea { width: 100%; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; font-size: 13px; resize: vertical; background: rgba(255,255,255,.85); }
 .dlg-actions { display: flex; justify-content: flex-end; gap: 10px; padding: 14px 24px 20px; }
 
-html.shell-mobile .modal-mask { padding: 0; place-items: stretch; }
-html.shell-mobile .run-dialog { width: 100%; height: 100dvh; max-height: none; border-radius: 0; }
-html.shell-mobile .dlg-head { padding: 16px 16px 12px; gap: 12px; }
-html.shell-mobile .dlg-head h3 { font-size: 20px; }
-html.shell-mobile .dlg-close { min-width: 44px; min-height: 44px; display: grid; place-items: center; }
-html.shell-mobile .dlg-meta { gap: 12px; padding: 0 16px 12px; }
-html.shell-mobile .dlg-context, html.shell-mobile .dlg-instruction { padding-left: 16px; padding-right: 16px; }
-html.shell-mobile .dlg-body { overscroll-behavior: contain; }
-html.shell-mobile .dlg-actions { flex-shrink: 0; padding: 12px 16px max(12px, env(safe-area-inset-bottom)); background: var(--paper); border-top: 1px solid var(--line); }
-html.shell-mobile .dlg-actions button { flex: 1; min-height: 44px; }
-html.shell-mobile .dlg-risk, html.shell-mobile .dlg-scope { margin-left: 16px; margin-right: 16px; }
-html.shell-mobile .preserve-toggle, html.shell-mobile .knowledge-toggle { padding-left: 16px; padding-right: 16px; }
-html.shell-mobile .preserve-list, html.shell-mobile .knowledge-list, html.shell-mobile .knowledge-scope, html.shell-mobile .knowledge-auto { padding-left: 16px; padding-right: 16px; }
 
 </style>

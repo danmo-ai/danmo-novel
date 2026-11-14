@@ -658,22 +658,5 @@ async function saveReviewSettings() {
 .mc-switch { display: flex; align-items: center; gap: 8px; }
 .mc-switch input { width: auto; }
 .mc-delete { margin-top: 8px; color: var(--bad); background: none; border: 1px solid var(--bad); border-radius: 10px; padding: 6px 14px; cursor: pointer; font-size: 13px; }
-html.shell-mobile .settings-hero { padding: 24px 4px 18px; }
-html.shell-mobile .tab-bar { flex-wrap: wrap; gap: 4px 12px; border-bottom: none; }
-html.shell-mobile .tab-bar button { flex: 0 0 auto; padding: 10px 12px; min-height: 44px; border: 1px solid transparent; border-radius: 10px; margin-bottom: 0; }
-html.shell-mobile .tab-bar button.active, html.shell-mobile .tab-bar button.active:hover:not(:disabled) { border-color: rgba(15,107,92,.28); background: rgba(15,107,92,.1); color: var(--accent); font-weight: 600; }
-html.shell-mobile .block { padding: 16px; }
-html.shell-mobile .provider-row, html.shell-mobile .model-row { flex-wrap: wrap; }
-html.shell-mobile .model-row > span:first-child { flex: 1 1 100%; word-break: break-all; }
-html.shell-mobile .assign-row { grid-template-columns: minmax(0, 1fr); gap: 8px; }
-html.shell-mobile .assign-controls { grid-template-columns: minmax(0, 1fr); }
-html.shell-mobile .assign-controls select { text-overflow: clip; font-size: 13px; }
-html.shell-mobile .assign-hint { margin-left: 0; }
-html.shell-mobile .model-edit-row { grid-template-columns: minmax(0, 1fr) 96px 30px; }
-html.shell-mobile .modal-mask { padding: max(12px, env(safe-area-inset-top)) 12px max(12px, env(safe-area-inset-bottom)); }
-html.shell-mobile .modal { width: 100%; max-width: 100%; min-width: 0; max-height: calc(100dvh - max(12px, env(safe-area-inset-top)) - max(12px, env(safe-area-inset-bottom))); border-radius: 14px; padding: 18px 16px; overflow-x: hidden; }
-html.shell-mobile .modal > * { min-width: 0; }
-html.shell-mobile .modal-actions { position: sticky; bottom: -18px; margin: 4px -16px -18px; padding: 12px 16px max(12px, env(safe-area-inset-bottom)); background: var(--paper); border-top: 1px solid var(--line); }
-html.shell-mobile .modal-actions button { flex: 1; min-width: 0; }
 
 </style>

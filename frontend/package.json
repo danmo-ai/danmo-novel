@@ -5,9 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "dev:mobile": "vite --mode mobile",
     "build": "vue-tsc --noEmit && vite build",
-    "build:mobile": "vue-tsc --noEmit && vite build --mode mobile",
     "preview": "vite preview",
     "typecheck": "vue-tsc --noEmit"
   },

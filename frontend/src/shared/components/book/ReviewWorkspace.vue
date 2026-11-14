@@ -1,7 +1,7 @@
 <script setup lang="ts">
 /**
  * 桌面审校面板 = 共享视图模型 + 桌面布局。
- * 分组/勾选/筛选/归档都在 useReview（移动端同一份）。
+ * 分组/勾选/筛选/归档都在 useReview。
  */
 import { toRef } from 'vue'
 import { isProseFixable, isUnfinishedFinding, VERDICT_LABEL } from '@/shared/utils/reviewState'
@@ -348,21 +348,5 @@ const {
 .archive-findings { margin: 8px 0 0; padding-left: 18px; color: var(--ink-soft); font-size: 12px; line-height: 1.8; }
 .archive-findings li.blocking .sev { color: var(--bad); }
 .archive-findings .sev { font-weight: 600; margin-right: 4px; }
-html.shell-mobile .view-title { flex-direction: column; align-items: flex-start; }
-html.shell-mobile .review-totals { width: 100%; justify-content: space-between; gap: 12px; }
-html.shell-mobile .unit-head { flex-direction: column; align-items: flex-start; padding: 14px; }
-html.shell-mobile .unit-actions { width: 100%; }
-html.shell-mobile .unit-actions button, html.shell-mobile .unit-actions select { flex: 1; min-height: 40px; }
-html.shell-mobile .rules-bar { flex-direction: column; padding: 14px; }
-html.shell-mobile .rules-actions { width: 100%; }
-html.shell-mobile .rules-actions > * { flex: 1; }
-html.shell-mobile .finding-head { align-items: flex-start; }
-html.shell-mobile .finding p { overflow-wrap: anywhere; }
-html.shell-mobile .finding h4 { overflow-wrap: anywhere; }
-html.shell-mobile .revise-head { flex-direction: column; }
-html.shell-mobile .revise-actions { width: 100%; }
-html.shell-mobile .revise-actions button { flex: 1; }
-html.shell-mobile .history-row { flex-direction: column; }
-html.shell-mobile .archive-head { align-items: flex-start; }
 
 </style>

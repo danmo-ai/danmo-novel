@@ -119,7 +119,7 @@ make pack-macos-desktop RELEASE_VERSION=0.1.0
 
 ## 技术栈
 
-Go（后端与流水线）· Vue 3 + Vite（前端）· SQLite（配置与运行记录）· Tauri（桌面壳）
+Go（后端与流水线）· Vue 3 + Vite（桌面前端）· SQLite（配置与运行记录）· Tauri（桌面壳）· SwiftUI / Compose（原生手机端）
 
 ```text
 core/

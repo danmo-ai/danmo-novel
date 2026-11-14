@@ -2,8 +2,8 @@
 /**
  * 桌面书工作台 = 共享逻辑 + 桌面布局。
  *
- * 所有数据与动作都在 useBookWorkspace 里（移动端同一份），这里只留「桌面上怎么排」。
- * 新增业务规则请写进 composable，不要写在这个文件：写在这里的规则移动端拿不到。
+ * 所有数据与动作都在 useBookWorkspace 里，这里只留「桌面上怎么排」。
+ * 新增业务规则请写进 composable，不要写在这个文件。
  */
 import { computed, ref } from 'vue'
 import { useRoute } from 'vue-router'
@@ -24,7 +24,7 @@ import { callCacheText, hitRateText } from '@/shared/utils/tokenStats'
 
 const route = useRoute()
 const bookId = computed(() => route.params.id as string)
-// 桌面用顶部 Tab 切换面板；移动端把它解释成路由层级，语义一致。
+// 顶部 Tab 切换面板；面板内的导航意图保持在 composable 里。
 const view = ref<WorkspaceView>('write')
 
 const {

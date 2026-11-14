@@ -75,6 +75,11 @@ func Load() (*Manager, error) {
 	if m.settings.LibraryRoot == "" {
 		m.settings.LibraryRoot = runtimepaths.LibraryRoot()
 	}
+	// The embedded development workspace always uses the current Home. There
+	// is no legacy absolute-path migration or external library compatibility.
+	if os.Getenv("NOVEL_HOME") != "" {
+		m.settings.LibraryRoot = runtimepaths.LibraryRoot()
+	}
 	if len(m.settings.DefaultModels) == 0 {
 		m.settings.DefaultModels = llmconfig.BuiltInDefaultModels()
 	}

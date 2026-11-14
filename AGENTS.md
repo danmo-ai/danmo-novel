@@ -2,7 +2,7 @@
 
 ## What this is
 
-Danmo Novel — controlled AI novel production workbench. Go backend + Vue 3 frontend. No Agent Loop: fixed task contracts, bounded LLM calls, candidate-accept workflow.
+Danmo Novel — controlled AI novel production workbench. Go backend + Vue 3 desktop frontend; native SwiftUI/Compose mobile apps. No Agent Loop: fixed task contracts, bounded LLM calls, candidate-accept workflow.
 
 | Item | Location |
 |------|----------|

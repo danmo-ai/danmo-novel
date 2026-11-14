@@ -463,6 +463,12 @@ func registerBooks(api *gin.RouterGroup, app *App) {
 			}
 		}
 		out := gin.H{"book": snap, "primary": gin.H{"kind": kind, "unitId": unit, "volume": vol}}
+		// ?view=list is a navigation projection applied after SelectPrimaryAction,
+		// which reads Files/StateRaw. The unit list only needs the summary and unit
+		// metadata; a 100+ unit book is otherwise 3–4 MB and stalls the transition.
+		if c.Query("view") == "list" {
+			out["book"] = books.WithListingView(snap)
+		}
 		// 连续性状态摘要：作者一眼能看出"状态账建到哪了"，缺失时提示先定稿一个单元。
 		if states, serr := books.LoadState(root); serr == nil {
 			out["continuity"] = books.SummarizeState(states)

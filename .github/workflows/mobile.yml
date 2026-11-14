@@ -1,4 +1,4 @@
-name: Mobile builds
+name: Native mobile builds
 
 on:
   push:
@@ -7,31 +7,20 @@ on:
 
 env:
   GO_VERSION: '1.26'
-  NODE_VERSION: '20'
   REPO_DIR: app
 
 jobs:
   ios:
-    name: iOS local core and app
+    name: SwiftUI app and Go core
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          path: ${{ env.REPO_DIR }}
+        with: { path: ${{ env.REPO_DIR }} }
       - uses: actions/setup-go@v5
         with:
           go-version: ${{ env.GO_VERSION }}
           cache-dependency-path: ${{ env.REPO_DIR }}/go.sum
-      - uses: actions/setup-node@v4
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: aarch64-apple-ios, aarch64-apple-ios-sim, x86_64-apple-ios
-      # gomobile itself is installed by build_go_mobile.sh at the version go.mod
-      # pins, so only the Xcode-side helpers are needed here.
-      - run: brew install xcodegen cocoapods libimobiledevice
-      # 有 iOS 证书就签真机/TestFlight，没有就落到模拟器包（脚本里明确区分）。
+      - run: brew install xcodegen
       - name: Import iOS signing
         env:
           IOS_CERTIFICATE: ${{ secrets.IOS_CERTIFICATE }}
@@ -40,74 +29,41 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: ./scripts/ci_import_ios_signing.sh
         working-directory: ${{ env.REPO_DIR }}
-      - name: Set release version
+      - name: Build native SwiftUI app
         working-directory: ${{ env.REPO_DIR }}
-        run: |
-          # 和桌面发布同一口径：tag → 版本号，注入 tauri.conf.json，iOS 的
-          # CFBundleShortVersionString 由此而来。pack_mobile.sh 构建后还原文件。
-          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
-            echo "RELEASE_VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
-          else
-            echo "RELEASE_VERSION=$(git describe --tags --always --dirty)" >> "$GITHUB_ENV"
-          fi
-      - run: ./scripts/pack_mobile.sh ios
-        working-directory: ${{ env.REPO_DIR }}
+        run: ./scripts/pack_mobile.sh ios
         env:
-          # TestFlight 用 release-testing；App Store 用 app-store-connect。
-          IOS_EXPORT_METHOD: ${{ vars.IOS_EXPORT_METHOD || 'debugging' }}
+          RELEASE_VERSION: ${{ github.ref_name }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          IOS_EXPORT_METHOD: ${{ vars.IOS_EXPORT_METHOD || 'release-testing' }}
       - uses: actions/upload-artifact@v4
         with:
-          name: danmo-novel-ios
-          # 没有签名密钥时产出的是模拟器包，所以两种产物都收：有 .ipa 收 .ipa，
-          # 没有就收 .app（可直接 simctl install 验证）。
-          path: |
-            ${{ env.REPO_DIR }}/out/mobile/*.xcframework/**
-            ${{ env.REPO_DIR }}/desktop/src-tauri/gen/apple/build/**/*.ipa
-            ${{ env.REPO_DIR }}/desktop/src-tauri/gen/apple/build/**/*.app/**
+          name: danmo-novel-native-ios
+          path: ${{ env.REPO_DIR }}/out/mobile/native/*
           if-no-files-found: ignore
 
   android:
-    name: Android local core and app
+    name: Compose app and Go core
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          path: ${{ env.REPO_DIR }}
+        with: { path: ${{ env.REPO_DIR }} }
       - uses: actions/setup-go@v5
         with:
           go-version: ${{ env.GO_VERSION }}
           cache-dependency-path: ${{ env.REPO_DIR }}/go.sum
-      - uses: actions/setup-node@v4
-        with:
-          node-version: ${{ env.NODE_VERSION }}
       - uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: '21'
-      # v3 tried to install the retired `tools` package and aborted; v4 knows
-      # cmdline-tools no longer ships it and accepts the SDK licences itself.
+        with: { distribution: temurin, java-version: '21' }
       - uses: android-actions/setup-android@v4
-      - run: sdkmanager --install 'ndk;29.0.14206865' 'platforms;android-35' 'build-tools;35.0.0'
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: aarch64-linux-android, armv7-linux-androideabi, x86_64-linux-android
-      - name: Set release version
+      - run: sdkmanager --install 'ndk;29.0.14206865' 'platforms;android-36' 'build-tools;36.0.0'
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Build native Compose app
         working-directory: ${{ env.REPO_DIR }}
-        run: |
-          # 和桌面发布同一口径：tag → 版本号，注入 tauri.conf.json，iOS 的
-          # CFBundleShortVersionString 由此而来。pack_mobile.sh 构建后还原文件。
-          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
-            echo "RELEASE_VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
-          else
-            echo "RELEASE_VERSION=$(git describe --tags --always --dirty)" >> "$GITHUB_ENV"
-          fi
-      - run: ./scripts/pack_mobile.sh android
-        working-directory: ${{ env.REPO_DIR }}
+        run: ./scripts/pack_mobile.sh android
       - uses: actions/upload-artifact@v4
         with:
-          name: danmo-novel-android
+          name: danmo-novel-native-android
           path: |
-            ${{ env.REPO_DIR }}/out/mobile/*.aar
-            ${{ env.REPO_DIR }}/desktop/src-tauri/gen/android/app/build/outputs/**/*.apk
-            ${{ env.REPO_DIR }}/desktop/src-tauri/gen/android/app/build/outputs/**/*.aab
+            ${{ env.REPO_DIR }}/native-android/app/build/outputs/apk/**/*.apk
+            ${{ env.REPO_DIR }}/native-android/app/build/outputs/bundle/**/*.aab
           if-no-files-found: ignore

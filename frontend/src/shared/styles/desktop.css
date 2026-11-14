@@ -1,9 +1,7 @@
 /**
  * 桌面/浏览器壳的基础样式。
  *
- * 只放「桌面才有意义」的规则。手机有自己的一套壳（src/mobile/），不再靠这里的
- * 断点把桌面布局压窄，所以这个文件里没有 @media——需要窄屏适配的组件属于
- * 两个壳共用的那一层（ProjectSetup / UnitProse / ReviewWorkspace 等），
- * 它们的窄屏规则写在组件自己身上。
+ * 只放「桌面才有意义」的规则。需要窄屏适配的组件（ProjectSetup / UnitProse /
+ * ReviewWorkspace 等）把规则写在组件自己身上，这里不再兜一层全局断点。
  */
 .app-main { min-width: 0; }

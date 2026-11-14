@@ -1,10 +1,9 @@
 /**
  * 书工作台的全部数据与动作。
  *
- * 桌面（BookView.vue）和移动端（mobile/views/*）共用这一份：两套壳只负责决定
- * 「什么时候、以什么布局展示」，不再各自复述一次运行、候选、账本的处理规则。
- * 任何在这里出现的东西都必须与布局无关——需要 onClick 里改导航的，通过传入的
- * `view` ref 表达意图，具体怎么呈现由壳自己解释。
+ * BookView.vue 只负责决定「什么时候、以什么布局展示」，不再各自复述一次运行、
+ * 候选、账本的处理规则。任何在这里出现的东西都必须与布局无关——需要 onClick 里
+ * 改导航的，通过传入的 `view` ref 表达意图，具体怎么呈现由视图自己解释。
  */
 import { computed, onMounted, onUnmounted, ref, watch, type Ref } from 'vue'
 import { useAppStore } from '@/shared/stores/app'

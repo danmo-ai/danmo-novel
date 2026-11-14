@@ -1,7 +1,7 @@
 <script setup lang="ts">
 /**
  * 桌面设定面板 = 共享视图模型 + 桌面布局。
- * 文档清单、结构化解析、身份时间线都在 useBible（移动端同一份）。
+ * 文档清单、结构化解析、身份时间线都在 useBible。
  */
 import RelationGraph from '@/shared/components/book/RelationGraph.vue'
 import { useBible } from '@/shared/composables/useBible'

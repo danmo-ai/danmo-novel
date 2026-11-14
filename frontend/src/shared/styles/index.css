@@ -1,8 +1,7 @@
 /**
  * 桌面/浏览器入口的样式汇总。
  *
- * 拆成两个文件是为了让移动端（src/mobile/styles.css）只拿 tokens，不带桌面的
- * 页面边距与断点规则。两套壳各自导入，谁也不继承谁的布局假设。
+ * tokens 只放设计令牌与最底层元素样式，desktop 负责页面边距、断点与布局。
  */
 @import './tokens.css';
 @import './desktop.css';

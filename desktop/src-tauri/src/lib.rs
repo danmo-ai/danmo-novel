@@ -488,10 +488,8 @@ fn open_external(url: String) -> Result<(), String> {
     open::that(&url).map_err(|e| format!("failed to open: {e}"))
 }
 
-#[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        .plugin(tauri_plugin_localcore::init())
         .plugin(tauri_plugin_process::init())
         .on_page_load(|window, payload| {
             if matches!(payload.event(), tauri::webview::PageLoadEvent::Finished) {
@@ -501,7 +499,6 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![open_external])
         .setup(|app| {
             handle_first_launch(&app.handle());
-            #[cfg(not(any(target_os = "ios", target_os = "android")))]
             if let Err(e) = spawn_backend(&app.handle()) {
                 eprintln!("WARNING: backend sidecar failed to start: {e}");
                 eprintln!("The app will run without backend API. Start it manually if needed.");
@@ -512,7 +509,6 @@ pub fn run() {
         .expect("error while building tauri application")
         .run(|app_handle, event| match event {
             tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit => {
-                #[cfg(not(any(target_os = "ios", target_os = "android")))]
                 shutdown_sidecar(&app_handle);
             }
             _ => {}

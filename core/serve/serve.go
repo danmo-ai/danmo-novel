@@ -43,11 +43,11 @@ type Server struct {
 	host    string
 	port    int
 
-	mu        sync.Mutex
-	listener  net.Listener
-	http      *http.Server
-	serveErr  chan error
-	stopping  bool
+	mu       sync.Mutex
+	listener net.Listener
+	http     *http.Server
+	serveErr chan error
+	stopping bool
 }
 
 // New constructs a core without opening a network listener. Handler may be used
@@ -67,6 +67,14 @@ func New(opts Options) (*Server, error) {
 	db, err := sqlite.Open(runtimepaths.DBPath())
 	if err != nil {
 		return nil, err
+	}
+	// Development-time mobile workspace: no legacy absolute paths or implicit
+	// directory adoption. Only books in this exact Home are registered.
+	if opts.Home != "" {
+		if err := resetEmbeddedLibrary(context.Background(), db, home); err != nil {
+			_ = db.Close()
+			return nil, err
+		}
 	}
 	models := llmconfig.NewModelRegistry()
 	models.SetModels(settings.Get().DefaultModels)
@@ -102,6 +110,20 @@ func New(opts Options) (*Server, error) {
 		}
 	}
 	return &Server{app: app, handler: httpapi.NewRouter(app), home: home, host: host, port: port}, nil
+}
+
+func resetEmbeddedLibrary(ctx context.Context, db *sqlite.Store, home string) error {
+	registered, err := db.ListBooks(ctx)
+	if err != nil {
+		return err
+	}
+	libraryRoot := filepath.Join(home, "library", "novel")
+	for _, book := range registered {
+		if filepath.Dir(book.RootPath) != libraryRoot {
+			return db.ReplaceBooks(ctx, nil)
+		}
+	}
+	return nil
 }
 
 func (s *Server) Handler() http.Handler { return s.handler }

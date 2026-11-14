@@ -4,12 +4,13 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
 func TestInProcessCoreAndSQLiteRoundTrip(t *testing.T) {
 	home := t.TempDir()
-	if got := Start(home); got != `{"ok":true}` {
+	if got := Start(home); !strings.Contains(got, `"ok":true`) || !strings.Contains(got, `"home":`) {
 		t.Fatalf("start: %s", got)
 	}
 	defer Stop()
@@ -34,7 +35,42 @@ func TestInProcessCoreAndSQLiteRoundTrip(t *testing.T) {
 	if got := Stop(); got != `{"ok":true}` {
 		t.Fatalf("stop: %s", got)
 	}
-	if got := Start(filepath.Join(home, "restart")); got != `{"ok":true}` {
+	if got := Start(filepath.Join(home, "restart")); !strings.Contains(got, `"ok":true`) {
 		t.Fatalf("restart: %s", got)
+	}
+}
+
+func TestStartIsIdempotentAndReportsActualHome(t *testing.T) {
+	home := t.TempDir()
+	if got := Start(home); !strings.Contains(got, `"home":`) {
+		t.Fatalf("start: %s", got)
+	}
+	defer Stop()
+	response := Start(home)
+	var started result
+	if err := json.Unmarshal([]byte(response), &started); err != nil {
+		t.Fatal(err)
+	}
+	if !started.OK || started.Home != home {
+		t.Fatalf("reused core reported wrong home: %s", response)
+	}
+}
+
+func TestStartDifferentHomeDoesNotReuseLibrary(t *testing.T) {
+	first := t.TempDir()
+	if got := Start(first); !strings.Contains(got, `"ok":true`) {
+		t.Fatal(got)
+	}
+	defer Stop()
+	if got := Request("POST", "/api/books/demo", "{}", ""); !strings.Contains(got, `"status":200`) {
+		t.Fatal(got)
+	}
+	second := t.TempDir()
+	if got := Start(second); !strings.Contains(got, `"home":`) {
+		t.Fatal(got)
+	}
+	response := Request("GET", "/api/books", "", "")
+	if !strings.Contains(response, `"body":"[]"`) {
+		t.Fatalf("second home inherited first library: %s", response)
 	}
 }
