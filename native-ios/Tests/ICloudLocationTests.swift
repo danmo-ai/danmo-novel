@@ -9,9 +9,6 @@ final class ICloudLocationTests: XCTestCase {
         // under the container name, so no extra app folder is nested inside it.
         XCTAssertEqual(location.syncDir.path, "/tmp/cloud-container/Documents")
         XCTAssertEqual(location.library.path, "/tmp/cloud-container/Documents/library")
-        XCTAssertEqual(location.environment["NOVEL_LIBRARY"], location.library.path)
-        XCTAssertEqual(location.environment["NOVEL_SYNC_DIR"], location.syncDir.path)
-        XCTAssertEqual(location.environment.count, 2, "only the library and sync dir are shared; the database stays local")
     }
 
     func testFallsBackWhenNoContainer() {

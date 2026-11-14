@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
 	"sync"
 	"time"
 
@@ -30,6 +31,28 @@ func reply(err error) string {
 	}
 	raw, _ := json.Marshal(result{Error: err.Error()})
 	return string(raw)
+}
+
+// SetPaths hands the core the shared workspace the host resolved. Call it
+// before Start.
+//
+// It exists because the host cannot do this itself: Go snapshots the process
+// environment when its runtime starts, so a libc setenv from Swift or Kotlin
+// afterwards is invisible to os.Getenv. The iOS app resolves its ubiquity
+// container — reachable only through FileManager — and this call is the one way
+// to tell the core about it.
+func SetPaths(libraryRoot, syncDir string) string {
+	if libraryRoot != "" {
+		if err := os.Setenv("NOVEL_LIBRARY", libraryRoot); err != nil {
+			return reply(err)
+		}
+	}
+	if syncDir != "" {
+		if err := os.Setenv("NOVEL_SYNC_DIR", syncDir); err != nil {
+			return reply(err)
+		}
+	}
+	return `{"ok":true}`
 }
 
 // Start prepares the local database, library and API handler. No TCP listener

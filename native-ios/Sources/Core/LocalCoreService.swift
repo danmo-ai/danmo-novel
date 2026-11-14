@@ -2,18 +2,12 @@ import Foundation
 import DanmoNovel
 
 /// Paths the app reads and writes through iCloud Documents.
+///
+/// The Go core receives these through `DanmonovelSetPaths`; SQLite and logs
+/// deliberately stay in the app-private home.
 struct SyncLocation: Equatable {
     let syncDir: URL
     let library: URL
-
-    /// Environment the Go core reads for the library and the shared settings
-    /// folder. SQLite and logs deliberately stay in the app-private home.
-    var environment: [String: String] {
-        [
-            "NOVEL_LIBRARY": library.path,
-            "NOVEL_SYNC_DIR": syncDir.path,
-        ]
-    }
 }
 
 enum ICloudLocation {
@@ -31,10 +25,8 @@ enum ICloudLocation {
     /// Pure mapping from a container URL. Kept separate from `resolve()` so the
     /// layout is testable without an entitled device.
     ///
-    /// The container's Documents folder is what iCloud Drive shows under
-    /// NSUbiquitousContainerName ("DanmoNovel"), so it already is the shared
-    /// root: `iCloud Drive/DanmoNovel`. macOS reaches the same directory as
-    /// `CloudDocs/DanmoNovel` and derives its paths from there.
+    /// The container's Documents folder is the shared root; macOS resolves the
+    /// same directory as `iCloud~com~danmo~novel/Documents`.
     static func syncLocation(containerURL: URL?) -> SyncLocation? {
         guard let containerURL else { return nil }
         let syncDir = containerURL.appending(path: "Documents", directoryHint: .isDirectory)
@@ -105,8 +97,11 @@ final class LocalCoreService: @unchecked Sendable {
         if let location {
             try? FileManager.default.createDirectory(at: location.library, withIntermediateDirectories: true)
             try? FileManager.default.createDirectory(at: location.syncDir, withIntermediateDirectories: true)
-            for (key, value) in location.environment { setenv(key, value, 1) }
-            await materializeLibrary(at: location.library)
+            // Handed over through the Go binding, not setenv: Go snapshots the
+            // environment when its runtime starts, so a libc setenv here would
+            // be invisible to the core and it would silently read its sandbox.
+            _ = DanmonovelSetPaths(location.library.path, location.syncDir.path)
+            await materializeSharedRoot(at: location.syncDir)
             await MainActor.run {
                 self.syncEnabled = true
                 self.syncPath = location.syncDir.path
@@ -131,31 +126,67 @@ final class LocalCoreService: @unchecked Sendable {
         Task { @MainActor in self.isReady = true }
     }
 
-    /// iCloud keeps files as placeholders until something asks for them. The Go
-    /// core reads book files directly and has no NSFileCoordinator bridge, so
-    /// request every book file before starting and give the daemon a bounded
-    /// window to deliver them. Timing out is not an error: startup continues and
+    /// iCloud keeps files as placeholders until something asks for them, and a
+    /// placeholder is a hidden `<name>.icloud` entry: the real path does not
+    /// exist, so `FileManager.enumerator` (which skips hidden files) never sees
+    /// it and `os.ReadFile` reports "no such file".
+    ///
+    /// That is not merely a slow first launch. A settings merge that cannot see
+    /// `model-settings.json` treats this device as the only writer, and a book
+    /// scan sees an empty shelf. So every file under the shared root is resolved
+    /// to its real URL and requested before the core starts.
+    ///
+    /// Timing out is not an error: startup continues with whatever is local and
     /// the next launch retries.
-    private func materializeLibrary(at library: URL) async {
+    private func materializeSharedRoot(at root: URL) async {
         let fileManager = FileManager.default
-        let keys: Set<URLResourceKey> = [.isDirectoryKey, .ubiquitousItemDownloadingStatusKey]
-        let deadline = Date().addingTimeInterval(15)
+        let deadline = Date().addingTimeInterval(20)
         var requested = Set<URL>()
         while true {
-            var pending = 0
-            if let walker = fileManager.enumerator(at: library, includingPropertiesForKeys: Array(keys)) {
-                for case let url as URL in walker {
-                    guard let values = try? url.resourceValues(forKeys: keys), values.isDirectory != true else { continue }
-                    guard values.ubiquitousItemDownloadingStatus != .current else { continue }
+            let pending = await pendingDownloads(under: root, requested: &requested)
+            if pending == 0 || Date() >= deadline { return }
+            try? await Task.sleep(nanoseconds: 500_000_000)
+        }
+    }
+
+    /// Requests every undownloaded file under `root`, including placeholders,
+    /// and returns how many are still pending.
+    private func pendingDownloads(under root: URL, requested: inout Set<URL>) async -> Int {
+        let fileManager = FileManager.default
+        var pending = 0
+        var stack = [root]
+        while let dir = stack.popLast() {
+            let entries = (try? fileManager.contentsOfDirectory(
+                at: dir,
+                includingPropertiesForKeys: [.isDirectoryKey, .ubiquitousItemDownloadingStatusKey],
+                options: []
+            )) ?? []
+            for entry in entries {
+                let name = entry.lastPathComponent
+                // `.book.md.icloud` stands for `book.md`, which does not exist
+                // until the download finishes.
+                if name.hasPrefix("."), name.hasSuffix(".icloud") {
+                    let real = dir.appending(path: String(name.dropFirst().dropLast(".icloud".count)))
                     pending += 1
-                    if requested.insert(url).inserted {
-                        try? fileManager.startDownloadingUbiquitousItem(at: url)
+                    if requested.insert(real).inserted {
+                        try? fileManager.startDownloadingUbiquitousItem(at: real)
+                    }
+                    continue
+                }
+                let values = try? entry.resourceValues(forKeys: [.isDirectoryKey, .ubiquitousItemDownloadingStatusKey])
+                if values?.isDirectory == true {
+                    stack.append(entry)
+                    continue
+                }
+                if values?.ubiquitousItemDownloadingStatus != .current {
+                    pending += 1
+                    if requested.insert(entry).inserted {
+                        try? fileManager.startDownloadingUbiquitousItem(at: entry)
                     }
                 }
             }
-            if pending == 0 || Date() >= deadline { return }
-            try? await Task.sleep(nanoseconds: 400_000_000)
         }
+        return pending
     }
 
     private func waitUntilReady() async throws {

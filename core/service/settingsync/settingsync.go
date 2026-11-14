@@ -215,6 +215,15 @@ func (s *Service) Push(ctx context.Context) error {
 	if !s.Enabled() {
 		return nil
 	}
+	// A snapshot that exists but cannot be read yet (iCloud placeholder) must
+	// not be replaced by this device's state: pushing would erase the other
+	// device's providers with whatever this one happens to know. The next pull
+	// or the next launch writes instead, once the file is readable.
+	if s.remotePresent() {
+		if _, err := s.read(); err != nil {
+			return fmt.Errorf("shared snapshot is present but unreadable, refusing to overwrite: %w", err)
+		}
+	}
 	providers, err := s.llm.GetAll(ctx)
 	if err != nil {
 		return err
@@ -294,6 +303,12 @@ func (s *Service) Sync(ctx context.Context) (bool, error) {
 
 func (s *Service) path() string { return filepath.Join(s.dir, FileName) }
 
+// placeholderPath is where iCloud parks an undownloaded file: the real name gets
+// an `.icloud` suffix. Reading the real name then fails with ENOENT, which is
+// indistinguishable from "no snapshot yet" — and treating it as absent would
+// make this device the only writer and push its state over the other device's.
+func (s *Service) placeholderPath() string { return s.path() + ".icloud" }
+
 func (s *Service) read() (Snapshot, error) {
 	var snap Snapshot
 	raw, err := os.ReadFile(s.path())
@@ -304,6 +319,18 @@ func (s *Service) read() (Snapshot, error) {
 		return snap, fmt.Errorf("decode %s: %w", FileName, err)
 	}
 	return snap, nil
+}
+
+// remotePresent reports whether a snapshot exists on the other side, including
+// the undownloaded-placeholder form.
+func (s *Service) remotePresent() bool {
+	if _, err := os.Stat(s.path()); err == nil {
+		return true
+	}
+	if _, err := os.Stat(s.placeholderPath()); err == nil {
+		return true
+	}
+	return false
 }
 
 // write is a temp-file rename so a half-written snapshot is never observed by

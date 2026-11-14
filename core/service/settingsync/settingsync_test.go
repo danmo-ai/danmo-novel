@@ -300,3 +300,32 @@ func TestDisabledServiceIsANoop(t *testing.T) {
 		t.Fatalf("status=%+v want disabled", st)
 	}
 }
+
+// iCloud parks an undownloaded file as `<name>.icloud`. Reading the real name
+// fails with ENOENT, which looks like "no snapshot yet"; treating that as absent
+// would let this device push its own state over the other device's.
+func TestPushRefusesToOverwriteUndownloadedPlaceholder(t *testing.T) {
+	f := newFixture(t)
+	// A snapshot this device cannot read, but which exists on the other side.
+	raw := `{"version":1,"providers":[{"id":"llm-other","provider":"openai","name":"other","updatedAt":"2026-11-14T00:00:00Z"}],"review":{}}`
+	placeholder := filepath.Join(f.dir, settingsync.FileName+".icloud")
+	if err := os.WriteFile(placeholder, []byte(raw), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f.addProvider(t, "openai", "local-key")
+
+	if err := f.svc.Push(context.Background()); err == nil {
+		t.Fatal("push must refuse when the shared snapshot exists but cannot be read")
+	}
+	// The placeholder still holds the other device's data, untouched.
+	got, err := os.ReadFile(placeholder)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != raw {
+		t.Fatalf("placeholder was overwritten: %s", got)
+	}
+	if _, err := os.Stat(filepath.Join(f.dir, settingsync.FileName)); !os.IsNotExist(err) {
+		t.Fatal("push created a snapshot next to the placeholder")
+	}
+}

@@ -88,13 +88,40 @@ after the iOS app has opened its library once on the same account. Until then
 the app keeps its local library rather than writing into a directory that would
 never sync; Settings shows iCloud as not enabled.
 
-`LocalCoreService` resolves the ubiquity container before starting the Go core
-and injects `NOVEL_LIBRARY` and `NOVEL_SYNC_DIR`, because an iOS app sandbox
-cannot see `~/Library/Mobile Documents`. That injection is the one place a host
-supplies the path. The Go side has no other platform branches: it scans the
-library on every start (`books.ScanLibrary`), reconciles the SQLite registry
+The iOS side gets the container because Xcode's automatic signing provisions it:
+with the entitlements file present and a team configured, `xcodebuild
+-allowProvisioningUpdates` enables iCloud Documents on the App ID
+(`com.danmo.novel`), creates `iCloud.com.danmo.novel`, and issues a profile
+carrying `com.apple.developer.icloud-container-identifiers` /
+`ubiquity-container-identifiers`. Nothing needs to be clicked in the developer
+portal. Verify a build with:
+
+```bash
+security cms -D -i <app>/embedded.mobileprovision | rg icloud
+```
+
+`LocalCoreService` resolves the ubiquity container before starting the Go core,
+because an iOS app sandbox cannot see `~/Library/Mobile Documents`. It hands both
+paths over through `DanmonovelSetPaths`, not `setenv`: Go snapshots the process
+environment when its runtime starts, so a libc `setenv` from Swift afterwards is
+invisible to `os.Getenv` and the core silently falls back to its own sandbox.
+That binding call is the one place a host supplies the path. The Go side has no
+other platform branches: it scans the library on every start
+(`books.ScanLibrary`), reconciles the SQLite registry
 (`books.ReconcileRegistry`), and merges `model-settings.json`
 (`core/service/settingsync`).
+
+Before the core starts, the whole shared root is resolved for download. iCloud
+stores an undownloaded file as a hidden `<name>.icloud` entry, so the real path
+does not exist and `FileManager.enumerator` — which skips hidden files — never
+sees it. Two failures follow from that, and both were observed on device:
+`model-settings.json` looked absent, so the device pushed its empty provider list
+over the Mac's; and books on the other device looked missing. The app now walks
+the directory with hidden entries included, maps each placeholder back to its
+real URL, and requests the download (bounded at 20 s). As a second guard,
+`settingsync.Push` refuses to write when a snapshot exists but cannot be read, so
+an undownloaded file can never be overwritten — that mistake cost the Mac's
+provider list once during development.
 
 What syncs:
 
