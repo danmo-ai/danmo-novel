@@ -19,6 +19,15 @@ struct SyncLocation: Equatable {
 enum ICloudLocation {
     static let containerIdentifier = "iCloud.com.danmo.novel"
 
+    /// Whether this process should connect to the account's iCloud container.
+    ///
+    /// A host that supplies its own home is an isolated workspace — unit tests,
+    /// the embedded core, a scratch run. It must never reach into the real
+    /// iCloud library even when the build is entitled and someone is signed in;
+    /// otherwise `make test` on a device would write into the author's books.
+    /// This mirrors the Go side, where only the default home owns iCloud.
+    static func shouldResolve(injectedHome: URL?) -> Bool { injectedHome == nil }
+
     /// Pure mapping from a container URL. Kept separate from `resolve()` so the
     /// layout is testable without an entitled device.
     ///
@@ -91,7 +100,8 @@ final class LocalCoreService: @unchecked Sendable {
         // The library is shared; SQLite is not. `home` above stays the process
         // home for the database and logs, while the Go core receives the iCloud
         // library through NOVEL_LIBRARY.
-        let location = await ICloudLocation.resolve()
+        let isolated = !ICloudLocation.shouldResolve(injectedHome: self.home)
+        let location = isolated ? nil : await ICloudLocation.resolve()
         if let location {
             try? FileManager.default.createDirectory(at: location.library, withIntermediateDirectories: true)
             try? FileManager.default.createDirectory(at: location.syncDir, withIntermediateDirectories: true)
@@ -106,7 +116,9 @@ final class LocalCoreService: @unchecked Sendable {
             await MainActor.run {
                 self.syncEnabled = false
                 self.syncPath = nil
-                self.syncUnavailableReason = "iCloud 不可用（未登录或该构建未带 iCloud 能力）"
+                self.syncUnavailableReason = isolated
+                    ? "独立工作区：不连接 iCloud"
+                    : "iCloud 不可用（未登录或该构建未带 iCloud 能力）"
             }
         }
 

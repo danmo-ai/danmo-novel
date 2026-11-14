@@ -27,4 +27,27 @@ final class ICloudLocationTests: XCTestCase {
         XCTAssertNil(status.lastPushedAt)
         XCTAssertNil(status.changed)
     }
+
+    // A host that passes its own home is an isolated workspace. It must not
+    // connect to iCloud even on an entitled, signed-in build, or a test run
+    // would write into the author's real book library.
+    func testInjectedHomeNeverResolvesICloud() {
+        XCTAssertFalse(ICloudLocation.shouldResolve(injectedHome: URL(fileURLWithPath: "/tmp/scratch")))
+        XCTAssertTrue(ICloudLocation.shouldResolve(injectedHome: nil))
+    }
+
+    func testIsolatedCoreStaysOffICloud() async throws {
+        let home = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: home) }
+        let core = LocalCoreService(home: home)
+        core.start()
+        for _ in 0..<100 where !core.isReady {
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        XCTAssertTrue(core.isReady, core.error ?? "core did not start")
+        XCTAssertFalse(core.syncEnabled, "an injected home must not use iCloud")
+        XCTAssertNil(core.syncPath)
+        core.stop()
+    }
 }
