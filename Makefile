@@ -13,7 +13,7 @@ export DQ_FRONTEND_PORT
 .PHONY: help backend dev start stop frontend-install frontend-dev frontend-build \
 	dev-desktop test build build-sidecar clean set-release-secrets \
 	pack-prereqs pack-macos-desktop pack-linux-desktop pack-windows-desktop \
-	mobile-core pack-ios pack-android
+	mobile-core pack-ios pack-android app-icon
 
 help:
 	@echo "Danmo Novel"
@@ -24,6 +24,7 @@ help:
 	@echo "  make pack-macos-desktop | pack-linux-desktop | pack-windows-desktop"
 	@echo "  make mobile-core      iOS/Android gomobile 内核"
 	@echo "  make pack-ios | pack-android                 原生 SwiftUI / Compose"
+	@echo "  make app-icon                               重新生成 iOS/Android/桌面 图标"
 	@echo "  make set-release-secrets                    写入发布 secrets（证书从钥匙串导出）"
 
 dev start:
@@ -90,6 +91,10 @@ pack-ios:
 pack-android:
 	@chmod +x scripts/*.sh
 	@./scripts/pack_mobile.sh android
+
+# 图标唯一来源是脚本；iOS/Android/桌面 三套资源都由它生成。
+app-icon:
+	python3 scripts/make_app_icon.py
 
 # 写入发布 secrets（证书从钥匙串导出，无需 p12）：make set-release-secrets
 set-release-secrets:

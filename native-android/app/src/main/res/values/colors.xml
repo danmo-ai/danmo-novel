@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Same ink ground as the iOS icon, so the two apps match on a home screen. -->
+    <color name="ic_launcher_background">#3A1620</color>
+</resources>
