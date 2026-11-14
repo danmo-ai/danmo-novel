@@ -96,8 +96,26 @@ make pack-macos-desktop RELEASE_VERSION=0.1.0
 
 | 位置 | 内容 |
 | --- | --- |
-| `~/.danmo-novel/novel.db` | 提供商配置、任务、候选、链 |
-| `~/.danmo-novel/library/novel/<book-id>/` | 书籍本体（Markdown / YAML） |
+| `~/.danmo-novel/novel.db` | 提供商配置、任务、候选 |
+| `~/Library/Mobile Documents/iCloud~com~danmo~novel/Documents/library/novel/<book-id>/` | 书籍本体（Markdown / YAML，macOS 与 iOS 共用） |
+| `~/Library/Mobile Documents/iCloud~com~danmo~novel/Documents/model-settings.json` | 模型设置共享快照（不含 API Key） |
+| `~/.danmo-novel/library/novel/<book-id>/` | 非 macOS 系统的书籍本体，以及首次启用 iCloud 前留下的存量 |
+
+按系统区分，不按宿主区分：macOS 一律读写上面的 iCloud 容器，Windows/Linux 用
+本机目录。路径只在 Go 内核解析一次，因此打包后的 App、`make dev`、`make dev-desktop`
+与 `go run` 在同一台 Mac 上读的是同一个书库与 `model-settings.json`。
+`novel.db`（任务、候选、审校历史）始终留在本机，避免两台设备同时写一个 SQLite 文件；
+API Key 不同步，每台设备各填一次。
+
+设置 → 书籍目录 可以把书库改到任意目录（`PUT /api/settings/library-root`）。只有
+用户的选择会被保存（`customLibraryRoot`），生效路径每次启动重新计算，所以 macOS
+在 iCloud 目录出现后会自动切过去。确认更改会把当前目录下所有书籍与知识文档
+**移动**到新目录，然后重建注册表；目标目录已有同名书籍时拒绝操作。留空即恢复
+系统默认目录。启用 iCloud 后的第一次启动也走同一套移动逻辑，把
+`~/.danmo-novel/library` 里已有的书一次性搬进容器。桌面版没有 iCloud
+entitlement，只有在 iCloud 已把容器目录生成到本机后才使用它（通常先在 iPhone 上
+打开一次 App），否则继续用本机书库。详见
+[docs/native-mobile.md](docs/native-mobile.md#icloud-sharing-ios--macos)。
 
 书籍是磁盘上的 Markdown + YAML，SQLite 只存配置与运行记录：
 
@@ -139,6 +157,7 @@ core/
 - [创作与重写流程、模型输入输出](docs/novel-production-workflows.md)
 - [标准书籍模板与迁移占位符](docs/novel-book-templates.md)
 - [桌面打包与自动更新](docs/desktop-release.md)
+- [原生移动端与 iPhone Duo 规范](docs/native-mobile.md)
 
 ## 开发
 

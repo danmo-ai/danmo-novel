@@ -6,6 +6,8 @@ struct SettingsView: View {
     @State private var isLoading = false
     @State private var editingProvider: Provider?
     @State private var error: String?
+    @State private var sync: SyncStatus?
+    @State private var syncing = false
 
     var body: some View {
         NavigationStack {
@@ -35,8 +37,33 @@ struct SettingsView: View {
                 } footer: {
                     Text("密钥仅写入本机工作区，不会出现在页面或日志中。模型调用只连接你配置的服务。")
                 }
+                Section {
+                    LabeledContent("书库", value: core.syncEnabled ? "iCloud 云盘" : "本机")
+                    if let dir = sync?.libraryRoot ?? sync?.syncDir, !dir.isEmpty {
+                        Text(dir)
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(2)
+                            .truncationMode(.middle)
+                    }
+                    LabeledContent("模型设置", value: core.syncEnabled ? "已共享" : "仅本机")
+                    if let pulled = sync?.lastPulledAt, let label = syncLabel(pulled) {
+                        LabeledContent("上次同步", value: label)
+                    }
+                    Button {
+                        Task { await syncNow() }
+                    } label: {
+                        Label(syncing ? "正在同步…" : "立即同步", systemImage: "arrow.triangle.2.circlepath")
+                    }
+                    .disabled(syncing || sync?.enabled != true)
+                } header: {
+                    Text("iCloud 同步")
+                } footer: {
+                    Text(core.syncUnavailableReason
+                         ?? "书籍以文件形式保存在 iCloud 云盘，iPhone 与 Mac 读写同一份。模型提供商、模型列表与阶段绑定会同步；API Key 只留在本机，每台设备各填一次。")
+                }
                 Section("数据与隐私") {
-                    LabeledContent("书稿存储", value: "本机")
+                    LabeledContent("书稿存储", value: core.syncEnabled ? "iCloud 云盘" : "本机")
                     LabeledContent("账户", value: "无需注册")
                     LabeledContent("跟踪", value: "无")
                 }
@@ -63,8 +90,28 @@ struct SettingsView: View {
     private func load() async {
         isLoading = true
         defer { isLoading = false }
-        do { providers = try await NovelAPIClient(core: core).providers() }
+        let api = NovelAPIClient(core: core)
+        do { providers = try await api.providers() }
         catch { self.error = error.localizedDescription }
+        sync = try? await api.syncStatus()
+    }
+
+    /// Pull then push: the same order the core uses at startup, so a manual sync
+    /// both receives the other device's edits and publishes this device's.
+    private func syncNow() async {
+        syncing = true
+        defer { syncing = false }
+        let api = NovelAPIClient(core: core)
+        do {
+            _ = try await api.syncPull()
+            sync = try await api.syncPush()
+            providers = try await api.providers()
+        } catch { self.error = error.localizedDescription }
+    }
+
+    private func syncLabel(_ raw: String) -> String? {
+        guard let date = ISO8601DateFormatter().date(from: raw) else { return nil }
+        return date.formatted(date: .abbreviated, time: .shortened)
     }
 }
 

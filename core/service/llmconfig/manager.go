@@ -143,6 +143,44 @@ func (m *Manager) Delete(ctx context.Context, id string) error {
 	return nil
 }
 
+// ApplyRemote writes providers that came from another device.
+//
+// The API key is never part of a synced snapshot, so each provider keeps the
+// key this device already stored. Matching by id first and by provider+name
+// second covers a provider that was renamed on the other device before ids were
+// stable. Remote entries intentionally do not go through Upsert: Upsert derives
+// the id from the name and would fork renamed providers into new rows.
+func (m *Manager) ApplyRemote(ctx context.Context, cfgs []domain.LLMProviderConfig) error {
+	m.ensureCache(ctx)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, cfg := range cfgs {
+		if cfg.ID == "" {
+			continue
+		}
+		key := ""
+		if existing, ok := m.cache[cfg.ID]; ok {
+			key = existing.APIKey
+		} else {
+			for _, existing := range m.cache {
+				if existing.Provider == cfg.Provider && existing.Name == cfg.Name {
+					key = existing.APIKey
+					break
+				}
+			}
+		}
+		cfg.APIKey = key
+		if err := m.store.Upsert(ctx, cfg); err != nil {
+			return err
+		}
+		if m.cache == nil {
+			m.cache = make(map[string]domain.LLMProviderConfig)
+		}
+		m.cache[cfg.ID] = cfg
+	}
+	return nil
+}
+
 func (m *Manager) ListModels(ctx context.Context) []domain.LLMModel {
 	m.ensureCache(ctx)
 	m.mu.RLock()

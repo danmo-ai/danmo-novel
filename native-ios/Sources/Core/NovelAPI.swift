@@ -143,9 +143,33 @@ extension NovelAPIClient {
     func runs() async throws -> [RunRecord] {
         try await get([RunRecord].self, path: "/api/runs")
     }
+
+    func syncStatus() async throws -> SyncStatus {
+        try await get(SyncStatus.self, path: "/api/sync/status")
+    }
+
+    func syncPull() async throws -> SyncStatus {
+        try await post(SyncStatus.self, path: "/api/sync/pull", body: EmptyBody())
+    }
+
+    func syncPush() async throws -> SyncStatus {
+        try await post(SyncStatus.self, path: "/api/sync/push", body: EmptyBody())
+    }
 }
 
 struct EmptyBody: Encodable {}
+
+/// /api/sync/status and the manual pull/push responses. Absent fields are
+/// omitted by the Go handlers, so everything optional.
+struct SyncStatus: Decodable {
+    let enabled: Bool
+    let syncDir: String?
+    let libraryRoot: String?
+    let lastPulledAt: String?
+    let lastPushedAt: String?
+    let ok: Bool?
+    let changed: Bool?
+}
 
 extension String {
     var apiPathComponent: String {

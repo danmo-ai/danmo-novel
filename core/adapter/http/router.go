@@ -1,8 +1,10 @@
 package httpapi
 
 import (
+	"context"
 	"fmt"
 	"io/fs"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -14,10 +16,12 @@ import (
 	"github.com/danmo-ai/danmo-novel/core/config"
 	"github.com/danmo-ai/danmo-novel/core/domain"
 	"github.com/danmo-ai/danmo-novel/core/port"
+	"github.com/danmo-ai/danmo-novel/core/runtimepaths"
 	"github.com/danmo-ai/danmo-novel/core/service/books"
 	"github.com/danmo-ai/danmo-novel/core/service/knowledge"
 	"github.com/danmo-ai/danmo-novel/core/service/llmconfig"
 	"github.com/danmo-ai/danmo-novel/core/service/runs"
+	"github.com/danmo-ai/danmo-novel/core/service/settingsync"
 	"github.com/danmo-ai/danmo-novel/core/store/sqlite"
 	"github.com/danmo-ai/danmo-novel/core/version"
 	"github.com/gin-gonic/gin"
@@ -30,7 +34,10 @@ type App struct {
 	Models   *llmconfig.ModelRegistry
 	LLM      port.LLMProvider
 	Runs     *runs.Service
-	WebRoot  string
+	// Sync shares model settings through the iCloud folder. Optional: a nil
+	// service (or one with Enabled=false) means this device syncs nothing.
+	Sync    *settingsync.Service
+	WebRoot string
 }
 
 func NewRouter(app *App) *gin.Engine {
@@ -46,6 +53,67 @@ func NewRouter(app *App) *gin.Engine {
 			c.JSON(http.StatusOK, gin.H{"version": version.Version, "app": "danmo-novel"})
 		})
 		api.GET("/settings", func(c *gin.Context) { c.JSON(200, app.Settings.Get()) })
+		// Books are a directory the author owns. Changing it moves the files —
+		// moving is the only option that cannot leave two half-libraries behind,
+		// and it keeps the path in one place so the API never has to merge.
+		api.PUT("/settings/library-root", func(c *gin.Context) {
+			var body struct {
+				Path string `json:"path"`
+			}
+			if err := c.BindJSON(&body); err != nil {
+				c.JSON(400, gin.H{"error": err.Error()})
+				return
+			}
+			current := app.Settings.Get().LibraryRoot
+			target, err := resolveLibraryTarget(body.Path)
+			if err != nil {
+				c.JSON(400, gin.H{"error": err.Error()})
+				return
+			}
+			if filepath.Clean(target) == filepath.Clean(current) {
+				c.JSON(200, gin.H{"ok": true, "libraryRoot": current, "moved": 0, "knowledge": 0})
+				return
+			}
+			conflicts, err := books.LibraryConflicts(current, target)
+			if err != nil {
+				c.JSON(400, gin.H{"error": err.Error()})
+				return
+			}
+			if len(conflicts) > 0 {
+				// Refuse rather than merge: two books with one id would silently
+				// interleave their chapters.
+				c.JSON(409, gin.H{
+					"error":     "目标目录已存在同名的书，请先处理这些书：" + strings.Join(conflicts, "、"),
+					"conflicts": conflicts,
+				})
+				return
+			}
+			report, err := books.MoveLibrary(current, target)
+			if err != nil {
+				// Files may be partially moved; the settings still point at the
+				// old root, and re-running the request finishes the job.
+				c.JSON(500, gin.H{"error": err.Error(), "moved": report.Books})
+				return
+			}
+			custom := ""
+			if filepath.Clean(target) != filepath.Clean(runtimepaths.DefaultLibraryRoot()) {
+				custom = target
+			}
+			if err := app.Settings.SetLibraryRoot(custom); err != nil {
+				c.JSON(500, gin.H{"error": err.Error()})
+				return
+			}
+			if err := books.ReconcileRegistry(c.Request.Context(), app.Store, target); err != nil {
+				c.JSON(500, gin.H{"error": err.Error()})
+				return
+			}
+			c.JSON(200, gin.H{
+				"ok":          true,
+				"libraryRoot": app.Settings.Get().LibraryRoot,
+				"moved":       report.Books,
+				"knowledge":   report.Knowledge,
+			})
+		})
 		api.GET("/knowledge", func(c *gin.Context) {
 			docs, err := knowledge.List(app.Settings.Get().LibraryRoot)
 			if err != nil {
@@ -145,6 +213,7 @@ func NewRouter(app *App) *gin.Engine {
 				return
 			}
 			_ = app.Settings.Update(func(s *config.Settings) { s.ModelAssignments = body.Assignments })
+			app.pushSync(c.Request.Context())
 			c.JSON(200, app.Settings.Get())
 		})
 		// 审校固定按章；设置只控制并行度与轮数。
@@ -170,8 +239,10 @@ func NewRouter(app *App) *gin.Engine {
 					s.Review.Rounds = clampInt(body.Rounds, 1, 5)
 				}
 			})
+			app.pushSync(c.Request.Context())
 			c.JSON(200, app.Settings.Get())
 		})
+		registerSync(api, app)
 		registerLLM(api, app)
 		registerBooks(api, app)
 		registerRuns(api, app)
@@ -230,6 +301,78 @@ func cors() gin.HandlerFunc {
 	}
 }
 
+// pushSync mirrors a settings mutation into the shared snapshot immediately.
+//
+// A failure is logged, not returned: the local edit already succeeded, and
+// failing the request because iCloud is briefly offline would lose it. The
+// next launch or "sync now" pushes again.
+func (app *App) pushSync(ctx context.Context) {
+	if app.Sync == nil || !app.Sync.Enabled() {
+		return
+	}
+	if err := app.Sync.Push(ctx); err != nil {
+		log.Printf("warning: push model settings: %v", err)
+	}
+}
+
+// registerSync exposes the shared model settings state and the manual triggers.
+// Book files need no endpoints: they are shared directly by the filesystem.
+func registerSync(api *gin.RouterGroup, app *App) {
+	statusJSON := func() gin.H {
+		settings := app.Settings.Get()
+		out := gin.H{
+			"enabled":            false,
+			"libraryRoot":        settings.LibraryRoot,
+			"defaultLibraryRoot": runtimepaths.DefaultLibraryRoot(),
+			"customLibraryRoot":  settings.CustomLibraryRoot,
+		}
+		if app.Sync != nil {
+			st := app.Sync.Status()
+			out["enabled"] = st.Enabled
+			out["syncDir"] = st.SyncDir
+			out["lastPulledAt"] = st.LastPulledAt
+			out["lastPushedAt"] = st.LastPushedAt
+		}
+		return out
+	}
+	api.GET("/sync/status", func(c *gin.Context) {
+		c.JSON(200, statusJSON())
+	})
+	api.POST("/sync/pull", func(c *gin.Context) {
+		if app.Sync == nil || !app.Sync.Enabled() {
+			c.JSON(200, statusJSON())
+			return
+		}
+		changed, err := app.Sync.Pull(c.Request.Context())
+		if err != nil {
+			c.JSON(500, gin.H{"error": err.Error()})
+			return
+		}
+		// Providers from the other device may reference models this process has
+		// not seen; the registry decides effort levels and vision support.
+		if app.Models != nil {
+			app.Models.SetModels(app.Settings.Get().DefaultModels)
+		}
+		out := statusJSON()
+		out["ok"] = true
+		out["changed"] = changed
+		c.JSON(200, out)
+	})
+	api.POST("/sync/push", func(c *gin.Context) {
+		if app.Sync == nil || !app.Sync.Enabled() {
+			c.JSON(200, statusJSON())
+			return
+		}
+		if err := app.Sync.Push(c.Request.Context()); err != nil {
+			c.JSON(500, gin.H{"error": err.Error()})
+			return
+		}
+		out := statusJSON()
+		out["ok"] = true
+		c.JSON(200, out)
+	})
+}
+
 func registerLLM(api *gin.RouterGroup, app *App) {
 	api.GET("/llm/presets", func(c *gin.Context) { c.JSON(200, app.LLMMgr.Presets()) })
 	api.GET("/llm/configs", func(c *gin.Context) {
@@ -255,6 +398,7 @@ func registerLLM(api *gin.RouterGroup, app *App) {
 			c.JSON(400, gin.H{"error": err.Error()})
 			return
 		}
+		app.pushSync(c.Request.Context())
 		c.JSON(200, cfg.Public())
 	})
 	api.PUT("/llm/configs/:id", func(c *gin.Context) {
@@ -274,6 +418,7 @@ func registerLLM(api *gin.RouterGroup, app *App) {
 			c.JSON(400, gin.H{"error": err.Error()})
 			return
 		}
+		app.pushSync(c.Request.Context())
 		c.JSON(200, cfg.Public())
 	})
 	api.DELETE("/llm/configs/:id", func(c *gin.Context) {
@@ -281,6 +426,8 @@ func registerLLM(api *gin.RouterGroup, app *App) {
 			c.JSON(400, gin.H{"error": err.Error()})
 			return
 		}
+		app.Sync.MarkDeleted(c.Param("id"))
+		app.pushSync(c.Request.Context())
 		c.JSON(200, gin.H{"ok": true})
 	})
 	api.GET("/llm/models", func(c *gin.Context) { c.JSON(200, app.LLMMgr.ListModels(c.Request.Context())) })
@@ -311,6 +458,7 @@ func registerLLM(api *gin.RouterGroup, app *App) {
 		if app.Models != nil {
 			app.Models.SetModels(models)
 		}
+		app.pushSync(c.Request.Context())
 		c.JSON(200, gin.H{"models": models})
 	})
 	api.POST("/model-configs/refresh", func(c *gin.Context) {
@@ -322,6 +470,7 @@ func registerLLM(api *gin.RouterGroup, app *App) {
 		if app.Models != nil {
 			app.Models.SetModels(builtin)
 		}
+		app.pushSync(c.Request.Context())
 		c.JSON(200, gin.H{"models": builtin})
 	})
 	api.POST("/llm/configs/fetch-models", func(c *gin.Context) {
@@ -343,6 +492,7 @@ func registerLLM(api *gin.RouterGroup, app *App) {
 			c.JSON(400, gin.H{"error": err.Error()})
 			return
 		}
+		app.pushSync(c.Request.Context())
 		c.JSON(200, gin.H{"models": models})
 	})
 	api.PATCH("/llm/configs/:id/models/:modelName", func(c *gin.Context) {
@@ -358,6 +508,7 @@ func registerLLM(api *gin.RouterGroup, app *App) {
 			c.JSON(400, gin.H{"error": err.Error()})
 			return
 		}
+		app.pushSync(c.Request.Context())
 		c.JSON(200, cfg.Public())
 	})
 	api.POST("/llm/test", func(c *gin.Context) {
@@ -382,6 +533,28 @@ func registerLLM(api *gin.RouterGroup, app *App) {
 		}
 		c.JSON(200, out)
 	})
+}
+
+// resolveLibraryTarget normalizes the author's input for the book directory.
+//
+// An empty path means "go back to the platform default" (iCloud on macOS), which
+// is the only way to undo a custom choice without typing the container path.
+func resolveLibraryTarget(raw string) (string, error) {
+	path := strings.TrimSpace(raw)
+	if path == "" {
+		return runtimepaths.DefaultLibraryRoot(), nil
+	}
+	if path == "~" || strings.HasPrefix(path, "~/") {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", err
+		}
+		path = filepath.Join(home, strings.TrimPrefix(strings.TrimPrefix(path, "~"), "/"))
+	}
+	if !filepath.IsAbs(path) {
+		return "", fmt.Errorf("请输入绝对路径，例如 /Users/you/Documents/danmo-books")
+	}
+	return filepath.Clean(path), nil
 }
 
 func registerBooks(api *gin.RouterGroup, app *App) {

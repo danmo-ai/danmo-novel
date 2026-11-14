@@ -21,8 +21,10 @@ Danmo Novel — controlled AI novel production workbench. Go backend + Vue 3 des
 | Frontend | `frontend/` (Vue 3, desktop only) |
 | Desktop (Tauri) | `desktop/` |
 | Native mobile | `native-ios/` (SwiftUI) · `native-android/` (Compose) |
+| Mobile spec / Duo rules | `docs/native-mobile.md` (layout checklist, measured Duo numbers, test matrix) |
 | Gomobile binding | `mobile/` (xcframework / aar for native apps) |
 | Home | `~/.danmo-novel/` (`NOVEL_HOME`) |
+| Shared (iCloud) | `model-settings.json` in the container · `NOVEL_SYNC_DIR` overrides |
 | Dev ports | API 7804 · UI 5804 |
 | Release CI | `.github/workflows/release.yml` |
 
@@ -34,9 +36,10 @@ Danmo Novel — controlled AI novel production workbench. Go backend + Vue 3 des
 4. **No silent provider fallback.**
 5. **API never returns API key plaintext.** Blank key on edit = keep.
 6. **Status flow:** `proposed → accepted → drafted → reviewed`.
-7. **Books are Markdown/YAML on disk; SQLite holds configs/runs/candidates.**
+7. **Books are Markdown/YAML on disk; SQLite holds configs/runs/candidates.** The library directory defaults by system (`runtimepaths.DefaultLibraryRoot`: iCloud container on macOS, `~/.danmo-novel/library` elsewhere) and can be changed in Settings, which moves every book. `model-settings.json` lives in the shared folder (`NOVEL_SYNC_DIR`); `novel.db` stays per device and is never shared.
 8. **REST API changes ship with mobile.** Any REST API change must update the affected mobile code (`native-ios/`, `native-android/`) in the same change.
 9. **iOS is the mobile baseline.** New mobile features go out as an iOS test build first; once settled, Android replicates the iOS version.
+10. **Duo layout follows `docs/native-mobile.md`.** That file is the binding checklist for iPhone Duo: adapt by offered width (not orientation, not size class, not idiom), use system containers (`NavigationSplitView` / `ArrangementView`) instead of hand-built `HStack` columns, and keep bars system-owned. Read it before touching shelf, unit list or reader layout.
 
 ## Commands
 

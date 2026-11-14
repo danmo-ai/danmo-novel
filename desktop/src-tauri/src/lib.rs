@@ -140,8 +140,10 @@ fn external_backend_requested() -> bool {
 fn spawn_backend(app: &AppHandle) -> Result<(), String> {
     let home = novel_home(app)?;
     fs::create_dir_all(&home).map_err(|e| format!("failed to create ~/.danmo-novel: {e}"))?;
-    let work_dir = home.join("library");
-    fs::create_dir_all(&work_dir).map_err(|e| format!("failed to create library dir: {e}"))?;
+    // ~/.danmo-novel holds the database and logs. Books are resolved by the Go
+    // core (iCloud on macOS, the local home elsewhere), so this shell passes no
+    // library path at all — the packaged app and `make dev` then read the same
+    // directory by construction.
     let _ = fs::create_dir_all(home.join("config"));
 
     let log_path = home.join("backend.log");
@@ -193,7 +195,6 @@ fn spawn_backend(app: &AppHandle) -> Result<(), String> {
             "NOVEL_DB_PATH",
             home.join("novel.db").to_string_lossy().as_ref(),
         )
-        .env("NOVEL_LIBRARY", work_dir.to_string_lossy().as_ref())
         .stdout(std::process::Stdio::from(log_file))
         .stderr(std::process::Stdio::from(log_err));
     #[cfg(unix)]
@@ -488,6 +489,13 @@ fn open_external(url: String) -> Result<(), String> {
     open::that(&url).map_err(|e| format!("failed to open: {e}"))
 }
 
+/// Open a folder in Finder. Takes the path the backend reports so the UI never
+/// has to guess where the library or the shared settings folder lives.
+#[tauri::command]
+fn open_sync_folder(path: String) -> Result<(), String> {
+    open::that(&path).map_err(|e| format!("failed to open: {e}"))
+}
+
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_process::init())
@@ -496,7 +504,7 @@ pub fn run() {
                 let _ = window.window().show();
             }
         })
-        .invoke_handler(tauri::generate_handler![open_external])
+        .invoke_handler(tauri::generate_handler![open_external, open_sync_folder])
         .setup(|app| {
             handle_first_launch(&app.handle());
             if let Err(e) = spawn_backend(&app.handle()) {

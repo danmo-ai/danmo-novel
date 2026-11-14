@@ -4,6 +4,7 @@ import { useRoute } from 'vue-router'
 import { useAppStore } from '@/shared/stores/app'
 import { api } from '@/shared/api/client'
 import { useAppUpdater } from '@/shared/composables/useAppUpdater'
+import { isTauriRuntime } from '@/shared/utils/desktop'
 import type { ModelConfig } from '@/shared/types'
 
 const store = useAppStore()
@@ -73,9 +74,9 @@ async function onInstallUpdate() {
   }
 }
 
-type Tab = 'version' | 'providers' | 'stages' | 'modelConfig'
+type Tab = 'version' | 'providers' | 'stages' | 'modelConfig' | 'sync'
 const route = useRoute()
-const tabs: Tab[] = ['version', 'providers', 'stages', 'modelConfig']
+const tabs: Tab[] = ['version', 'providers', 'stages', 'modelConfig', 'sync']
 const routeTab = route.query.tab
 const activeTab = ref<Tab>(tabs.includes(routeTab as Tab) ? routeTab as Tab : 'providers')
 const showForm = ref(false)
@@ -218,8 +219,66 @@ function effortsForModel(base: string) {
 }
 
 onMounted(async () => {
-  await Promise.all([store.loadLLM(), initAppVersion(), loadModelConfig(), loadReviewSettings()])
+  await Promise.all([store.loadLLM(), initAppVersion(), loadModelConfig(), loadReviewSettings(), loadSyncStatus()])
 })
+
+// ---- Book directory + iCloud sync ----
+// The backend owns the move and the merge; this tab reports state and triggers.
+const syncStatus = ref<any>(null)
+const syncBusy = ref(false)
+const directoryEditing = ref(false)
+const directoryDraft = ref('')
+const directoryBusy = ref(false)
+
+async function loadSyncStatus() {
+  try { syncStatus.value = await api.get<any>('/api/sync/status') } catch { syncStatus.value = null }
+}
+function syncTime(value?: string) {
+  if (!value) return '—'
+  const d = new Date(value)
+  return Number.isNaN(d.getTime()) ? value : d.toLocaleString()
+}
+function openDirectoryEditor() {
+  directoryDraft.value = syncStatus.value?.libraryRoot || ''
+  directoryEditing.value = true
+}
+/**
+ * Confirm a directory change. The server moves every book and knowledge article
+ * before it records the new path, so a failure leaves the old library intact and
+ * the same request can simply be retried.
+ */
+async function confirmDirectory() {
+  directoryBusy.value = true
+  try {
+    const res = await api.put<any>('/api/settings/library-root', { path: directoryDraft.value.trim() })
+    directoryEditing.value = false
+    await Promise.all([loadSyncStatus(), store.loadBooks(), store.loadLLM()])
+    const moved = Number(res?.moved || 0) + Number(res?.knowledge || 0)
+    store.note(moved > 0 ? `已移动 ${moved} 项到新目录` : '书籍目录已更新')
+  } catch (e) { store.fail(e) } finally { directoryBusy.value = false }
+}
+async function resetDirectory() {
+  directoryDraft.value = ''
+  await confirmDirectory()
+}
+async function syncNow() {
+  syncBusy.value = true
+  try {
+    await api.post('/api/sync/pull')
+    syncStatus.value = await api.post<any>('/api/sync/push')
+    await store.loadLLM()
+    store.note('模型设置已同步')
+  } catch (e) { store.fail(e) } finally { syncBusy.value = false }
+}
+async function openSyncFolder(path?: string) {
+  const target = path || syncStatus.value?.syncDir
+  if (!target || !isTauriRuntime()) return
+  try {
+    // Loaded lazily so the browser build never imports the Tauri bridge.
+    const { invoke } = await import('@tauri-apps/api/core')
+    await invoke('open_sync_folder', { path: target })
+  } catch (e) { store.fail(e) }
+}
 
 function openNew(preset?: any) {
   editingId.value = ''
@@ -333,6 +392,7 @@ async function saveReviewSettings() {
       <button :class="{ active: activeTab === 'providers' }" @click="activeTab = 'providers'">提供商</button>
       <button :class="{ active: activeTab === 'stages' }" @click="activeTab = 'stages'">创作阶段</button>
       <button :class="{ active: activeTab === 'modelConfig' }" @click="activeTab = 'modelConfig'">模型参数</button>
+      <button :class="{ active: activeTab === 'sync' }" @click="activeTab = 'sync'">书籍目录</button>
     </nav>
 
     <!-- ===== Version Tab ===== -->
@@ -538,6 +598,72 @@ async function saveReviewSettings() {
             <button @click="showAddModelDialog = false">取消</button>
             <button class="primary" @click="confirmAddModel">添加</button>
           </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===== Book directory + iCloud sync ===== -->
+    <div v-else-if="activeTab === 'sync'" class="tab-content">
+      <section class="panel block">
+        <header class="block-head">
+          <h2>书籍目录</h2>
+          <div class="row-actions">
+            <button v-if="syncStatus?.customLibraryRoot" @click="resetDirectory" :disabled="directoryBusy">恢复默认</button>
+            <button v-if="isDesktop() && syncStatus?.libraryRoot" @click="openSyncFolder(syncStatus.libraryRoot)">在访达中打开</button>
+            <button class="primary" @click="openDirectoryEditor" :disabled="directoryBusy">更改目录</button>
+          </div>
+        </header>
+        <p class="muted" style="word-break:break-all">{{ syncStatus?.libraryRoot || '读取中…' }}</p>
+        <p class="muted" style="margin-top:10px">
+          {{ syncStatus?.customLibraryRoot
+            ? '当前使用自定义目录。'
+            : '当前使用系统默认目录：macOS 为 iCloud 云盘中的 DanmoNovel，其他系统为 ~/.danmo-novel/library。' }}
+          更改目录会把现有书籍与知识文档整体移动到新位置。
+        </p>
+      </section>
+
+      <section class="panel block">
+        <header class="block-head">
+          <h2>模型设置同步</h2>
+          <button class="primary" :disabled="syncBusy || !syncStatus?.enabled" @click="syncNow">
+            {{ syncBusy ? '同步中…' : '立即同步' }}
+          </button>
+        </header>
+        <div class="version-row">
+          <span class="version-value">{{ syncStatus?.enabled ? '已启用' : '未启用' }}</span>
+          <span class="muted">
+            {{ syncStatus?.enabled ? '提供商与模型设置通过 iCloud 云盘共享' : '仅本机' }}
+          </span>
+        </div>
+        <p v-if="syncStatus?.syncDir" class="muted" style="margin-top:10px; word-break:break-all">
+          共享目录：{{ syncStatus.syncDir }}
+        </p>
+        <p v-if="syncStatus?.enabled" class="muted" style="margin-top:10px">
+          上次拉取 {{ syncTime(syncStatus.lastPulledAt) }} · 上次写入 {{ syncTime(syncStatus.lastPushedAt) }}
+        </p>
+        <p class="muted" style="margin-top:12px">
+          提供商、模型列表与阶段绑定会同步；API Key 只保存在本机，每台设备各填一次。
+          运行记录、候选与审校历史仍按设备保存；两端同时改同一章时以最后写入为准。
+        </p>
+      </section>
+    </div>
+
+    <!-- ===== Book directory editor ===== -->
+    <div v-if="directoryEditing" class="modal-mask" @click.self="directoryEditing = false">
+      <div class="modal panel">
+        <h2>更改书籍目录</h2>
+        <label>目录路径
+          <input v-model="directoryDraft" placeholder="/Users/you/Documents/danmo-books" />
+        </label>
+        <p class="muted" style="margin-top:10px">
+          确认后会把当前目录下的所有书籍、知识文档移动到该位置。目标目录里已有同名书籍时会拒绝操作。
+          留空表示恢复系统默认目录。
+        </p>
+        <div class="modal-actions">
+          <button @click="directoryEditing = false">取消</button>
+          <button class="primary" :disabled="directoryBusy" @click="confirmDirectory">
+            {{ directoryBusy ? '移动中…' : '确认并移动' }}
+          </button>
         </div>
       </div>
     </div>

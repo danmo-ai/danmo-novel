@@ -23,8 +23,10 @@ import (
 	adaptermcp "github.com/danmo-ai/danmo-novel/core/adapter/mcp"
 	"github.com/danmo-ai/danmo-novel/core/config"
 	"github.com/danmo-ai/danmo-novel/core/runtimepaths"
+	"github.com/danmo-ai/danmo-novel/core/service/books"
 	"github.com/danmo-ai/danmo-novel/core/service/llmconfig"
 	"github.com/danmo-ai/danmo-novel/core/service/runs"
+	"github.com/danmo-ai/danmo-novel/core/service/settingsync"
 	"github.com/danmo-ai/danmo-novel/core/store/sqlite"
 )
 
@@ -68,13 +70,12 @@ func New(opts Options) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
-	// Development-time mobile workspace: no legacy absolute paths or implicit
-	// directory adoption. Only books in this exact Home are registered.
-	if opts.Home != "" {
-		if err := resetEmbeddedLibrary(context.Background(), db, home); err != nil {
-			_ = db.Close()
-			return nil, err
-		}
+	// Always re-read the on-disk library. It may live in iCloud and be changed
+	// by another device, so the registry's stored absolute paths are never
+	// authoritative — on desktop as well as in the embedded workspace.
+	if err := reconcileLibrary(context.Background(), db, settings, home); err != nil {
+		_ = db.Close()
+		return nil, err
 	}
 	models := llmconfig.NewModelRegistry()
 	models.SetModels(settings.Get().DefaultModels)
@@ -89,6 +90,21 @@ func New(opts Options) (*Server, error) {
 		log.Printf("recovered %d interrupted run(s) from previous process", n)
 	}
 	app := &httpapi.App{Settings: settings, Store: db, LLMMgr: llmMgr, Models: models, LLM: provider, Runs: runSvc}
+	// Model settings follow the books into the shared folder when the host app
+	// provides one. Pull first so this device sees the other device's changes,
+	// then push so the snapshot always reflects a state this app started from.
+	syncSvc := settingsync.New(runtimepaths.SyncDir(), llmMgr, settings)
+	app.Sync = syncSvc
+	if syncSvc.Enabled() {
+		syncCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		if _, err := syncSvc.Sync(syncCtx); err != nil {
+			log.Printf("warning: model settings sync: %v", err)
+		}
+		cancel()
+		// A pulled settings block may carry a different model catalog; the
+		// registry was built before the merge, so re-seed it.
+		models.SetModels(settings.Get().DefaultModels)
+	}
 	host := opts.Host
 	if host == "" {
 		host = first(os.Getenv("DQ_HTTP_HOST"), "127.0.0.1")
@@ -112,18 +128,27 @@ func New(opts Options) (*Server, error) {
 	return &Server{app: app, handler: httpapi.NewRouter(app), home: home, host: host, port: port}, nil
 }
 
-func resetEmbeddedLibrary(ctx context.Context, db *sqlite.Store, home string) error {
-	registered, err := db.ListBooks(ctx)
-	if err != nil {
-		return err
-	}
-	libraryRoot := filepath.Join(home, "library", "novel")
-	for _, book := range registered {
-		if filepath.Dir(book.RootPath) != libraryRoot {
-			return db.ReplaceBooks(ctx, nil)
+// reconcileLibrary makes the SQLite registry match the books on disk.
+//
+// When the platform default moved (macOS adopting iCloud once the container
+// exists) books left in the local home are relocated first, so the author's
+// existing shelf follows the new default instead of looking empty. The move is
+// the same one the "change book directory" setting uses: idempotent, never
+// overwriting, so a partially migrated library is finished on the next launch.
+func reconcileLibrary(ctx context.Context, db *sqlite.Store, settings *config.Manager, home string) error {
+	libraryRoot := settings.Get().LibraryRoot
+	localRoot := filepath.Join(home, "library")
+	if filepath.Clean(libraryRoot) != filepath.Clean(localRoot) {
+		if report, err := books.MoveLibrary(localRoot, libraryRoot); err != nil {
+			// A container that cannot be written must not stop startup; the
+			// remaining books stay local and the move retries next launch.
+			log.Printf("warning: move local books into %s: %v", libraryRoot, err)
+		} else if report.Books > 0 || report.Knowledge > 0 {
+			log.Printf("moved %d book(s) and %d knowledge article(s) into %s",
+				report.Books, report.Knowledge, libraryRoot)
 		}
 	}
-	return nil
+	return books.ReconcileRegistry(ctx, db, libraryRoot)
 }
 
 func (s *Server) Handler() http.Handler { return s.handler }

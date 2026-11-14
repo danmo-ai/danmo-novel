@@ -52,17 +52,40 @@ func DBPath() string {
 	return filepath.Join(Home(), "novel.db")
 }
 
-func LibraryRoot() string {
+// DefaultLibraryRoot is where books live when the author has not chosen a
+// directory: macOS uses the app's iCloud container, other systems the local
+// home. The choice is by system, not by host, so the packaged app, `make dev`
+// and a bare `go run` on one Mac read the same books.
+//
+// NOVEL_LIBRARY is the one host override: iOS passes its ubiquity container,
+// which lives inside the app sandbox and cannot be found here.
+func DefaultLibraryRoot() string {
 	if v := os.Getenv("NOVEL_LIBRARY"); v != "" {
 		return v
+	}
+	if dir := iCloudDocumentsDir(); dir != "" {
+		return filepath.Join(dir, "library")
 	}
 	return filepath.Join(Home(), "library")
 }
 
 func SettingsPath() string { return filepath.Join(Home(), "config", "settings.json") }
 
+// SyncDir is the folder the model settings snapshot lives in: next to the books
+// in iCloud on macOS, empty where there is no shared folder.
+func SyncDir() string {
+	if v := os.Getenv("NOVEL_SYNC_DIR"); v != "" {
+		return v
+	}
+	return iCloudDocumentsDir()
+}
+
 func EnsureDirs() error {
-	for _, p := range []string{Home(), filepath.Join(Home(), "config"), LibraryRoot()} {
+	paths := []string{Home(), filepath.Join(Home(), "config"), DefaultLibraryRoot()}
+	if dir := SyncDir(); dir != "" {
+		paths = append(paths, dir)
+	}
+	for _, p := range paths {
 		if err := os.MkdirAll(p, 0o755); err != nil {
 			return err
 		}
