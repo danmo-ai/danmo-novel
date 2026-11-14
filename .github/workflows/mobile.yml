@@ -15,7 +15,8 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
-        with: { path: ${{ env.REPO_DIR }} }
+        with:
+          path: ${{ env.REPO_DIR }}
       - uses: actions/setup-go@v5
         with:
           go-version: ${{ env.GO_VERSION }}
@@ -47,13 +48,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with: { path: ${{ env.REPO_DIR }} }
+        with:
+          path: ${{ env.REPO_DIR }}
       - uses: actions/setup-go@v5
         with:
           go-version: ${{ env.GO_VERSION }}
           cache-dependency-path: ${{ env.REPO_DIR }}/go.sum
       - uses: actions/setup-java@v4
-        with: { distribution: temurin, java-version: '21' }
+        with:
+          distribution: temurin
+          java-version: '21'
       - uses: android-actions/setup-android@v4
       - run: sdkmanager --install 'ndk;29.0.14206865' 'platforms;android-36' 'build-tools;36.0.0'
       - uses: gradle/actions/setup-gradle@v4
