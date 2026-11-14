@@ -18,8 +18,10 @@ Danmo Novel — controlled AI novel production workbench. Go backend + Vue 3 fro
 | Gates | `core/service/gates/` |
 | Runs/accept | `core/service/runs/` |
 | SQLite | `core/store/sqlite/` |
-| Frontend | `frontend/` |
+| Frontend | `frontend/` (Vue 3, desktop only) |
 | Desktop (Tauri) | `desktop/` |
+| Native mobile | `native-ios/` (SwiftUI) · `native-android/` (Compose) |
+| Gomobile binding | `mobile/` (xcframework / aar for native apps) |
 | Home | `~/.danmo-novel/` (`NOVEL_HOME`) |
 | Dev ports | API 7804 · UI 5804 |
 | Release CI | `.github/workflows/release.yml` |
@@ -33,6 +35,8 @@ Danmo Novel — controlled AI novel production workbench. Go backend + Vue 3 fro
 5. **API never returns API key plaintext.** Blank key on edit = keep.
 6. **Status flow:** `proposed → accepted → drafted → reviewed`.
 7. **Books are Markdown/YAML on disk; SQLite holds configs/runs/candidates.**
+8. **REST API changes ship with mobile.** Any REST API change must update the affected mobile code (`native-ios/`, `native-android/`) in the same change.
+9. **iOS is the mobile baseline.** New mobile features go out as an iOS test build first; once settled, Android replicates the iOS version.
 
 ## Commands
 
@@ -42,6 +46,7 @@ make dev-desktop         # backend + Tauri webview
 make test
 make build
 make pack-macos-desktop  # also pack-linux-desktop / pack-windows-desktop
+make pack-ios / pack-android # native SwiftUI / Compose + in-process Go REST
 ```
 
 ## Reused assets
