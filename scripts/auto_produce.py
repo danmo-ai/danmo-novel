@@ -48,6 +48,12 @@ from urllib.parse import quote
 
 # Finding ids that mean "this chapter was not reviewed", not "this is a defect".
 UNFINISHED_FINDINGS = {"review-truncated", "review-incomplete"}
+# 阿里云内容审核（data_inspection_failed）会把罪案正文的暴力细节判成
+# 「Input text data may contain inappropriate content」而整章 400。它既不是
+# 网络抖动也不是真的写失败，单独识别出来，日志里说清楚原因，别让作者以为
+# 是正文写坏了。默认仍按原模型重试；确实要换模型时用 --content-fallback-model。
+CONTENT_BLOCK_NEEDLES = ("data_inspection_failed", "inappropriate content",
+                         "content moderation", "content_policy")
 TERMINAL_RUN = {"succeeded", "failed", "cancelled", "waiting_accept", "rejected", "expired"}
 RUNNING_RUN = {"pending", "running"}
 
@@ -291,6 +297,7 @@ class Driver:
         # 仍然没配额，脚本就判定失败，而它本该继续按 240s/480s 等下去。
         attempts = max(self.args.stage_retries, self.args.net_retries) + 1
         last = None
+        switched_model = False
         for i in range(1, attempts + 1):
             try:
                 run = self.start_run(kind, unit_id, **extra)
@@ -337,6 +344,17 @@ class Driver:
                 self.event("run_net_retry", kind=kind, unit=unit_id, attempt=i, error=err)
                 time.sleep(wait)
                 continue
+            # 内容审核拦截：默认只按原模型重试，不擅自换模型（换模型会绕开
+            # 作者配好的质量档位）。确实需要换模型时才显式传 --content-fallback-model。
+            if (self.is_content_block(err) and self.args.content_fallback_model
+                    and not switched_model and "modelId" not in extra):
+                switched_model = True
+                extra = dict(extra)
+                extra["modelId"] = self.args.content_fallback_model
+                self.note(f"  内容审核拦截，改用 {self.args.content_fallback_model} 重试：{err[:160]}")
+                self.event("run_content_fallback", kind=kind, unit=unit_id, error=err)
+                time.sleep(2)
+                continue
             if i < attempts:
                 self.note(f"  {kind} 第 {i} 次失败，重试：{err[:200]}")
                 self.event("run_retry", kind=kind, unit=unit_id, attempt=i, error=err)
@@ -345,6 +363,11 @@ class Driver:
             self.note(f"  {kind} 失败：{err[:500]}")
             return last
         return last or {}
+
+    @staticmethod
+    def is_content_block(msg: str) -> bool:
+        lowered = msg.lower()
+        return any(n in lowered for n in CONTENT_BLOCK_NEEDLES)
 
     @staticmethod
     def is_network_error(msg: str) -> bool:
@@ -1408,6 +1431,8 @@ def main() -> int:
                     help="允许在上一单元还没有正文时跳写本单元（会写出接不上上文的正文）")
     ap.add_argument("--no-repair", action="store_true",
                     help="跳过开工前的卷纲/身份数据体检（体检会自动修正写错单元的身份转换）")
+    ap.add_argument("--content-fallback-model", default="",
+                    help="撞到内容审核（data_inspection_failed）时改用的模型；留空则只按原模型重试，不换模型")
     ap.add_argument("--redo", action="store_true",
                     help="对已定稿单元重跑 审校→修订→定稿（修复缺陷后重跑受影响单元用）")
     ap.add_argument("--rewrite", action="store_true",
