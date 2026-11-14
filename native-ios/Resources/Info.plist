@@ -27,8 +27,12 @@
 	<dict>
 		<key>iCloud.com.danmo.novel</key>
 		<dict>
-			<!-- Not a public document scope: the folder is this app's workspace,
-			     not something Files should advertise to everyone. -->
+			<!-- Not public: this folder is the app's workspace, not a place to
+			     browse from iCloud Drive. It is reached through Settings →
+			     书籍目录 → 在访达中打开. macOS does not list iOS-only app
+			     containers in iCloud Drive either way, so making it public would
+			     expose the library in the Files app without making Finder show
+			     it. -->
 			<key>NSUbiquitousContainerIsDocumentScopePublic</key>
 			<false/>
 			<key>NSUbiquitousContainerName</key>
