@@ -193,6 +193,10 @@ onMounted(async () => {
   // 已有正文时默认优化：这是「重写正文」最常见的意图（改这一稿，不是另写一稿）。
   if (canRefine.value) rewriteMode.value = 'refine'
   await loadPreview()
+  // 重新立项的「保留精修文件」与立项候选预览要读 canon/总纲：按需补面板文件。
+  if (isReinit.value || props.spec.kind === 'plan') {
+    await store.loadBookFiles(props.spec.bookId).catch(() => {})
+  }
   try {
     knowledgeDocs.value = (await api.get<any[]>('/api/knowledge')) || []
   } catch { /* 知识库为空或不可读时忽略 */ }

@@ -11,10 +11,7 @@ import { useBookWorkspace, type WorkspaceView } from '@/shared/composables/useBo
 import OutlineWorkspace from '@/shared/components/book/OutlineWorkspace.vue'
 import BibleWorkspace from '@/shared/components/book/BibleWorkspace.vue'
 import ProjectSetup from '@/shared/components/book/ProjectSetup.vue'
-import ReviewWorkspace from '@/shared/components/book/ReviewWorkspace.vue'
-import ChapterDiff from '@/shared/components/book/ChapterDiff.vue'
-import PlanCandidateDiff from '@/shared/components/book/PlanCandidateDiff.vue'
-import StructuredOutline from '@/shared/components/book/StructuredOutline.vue'
+import TaskList from '@/shared/components/book/TaskList.vue'
 import UnitProse from '@/shared/components/book/UnitProse.vue'
 import UnitContract from '@/shared/components/book/UnitContract.vue'
 import UnitFlowActions from '@/shared/components/book/UnitFlowActions.vue'
@@ -32,12 +29,11 @@ const {
   selectedUnit, editorPath, editorContent, saving, busy, runDrawer,
   editingProse, editingOutline,
   confirmSpec, confirmTitle,
-  listedCandidates, isProseUnit, showSetupTab, volumeGroups, primaryInfo,
-  stageLabels, statusText, chapterText,
-  unverifiedEvidence, runCacheOf, toggleVolume, isCollapsed,
+  pendingTaskCount, pendingTasksOf, isProseUnit, showSetupTab, volumeGroups, primaryInfo,
+  statusText,
+  runCacheOf, toggleVolume, isCollapsed,
   saveFile, beginChapterEdit, cancelChapterEdit, saveChapterEdit, saveOutlineField,
   reviewStructure, repairStructure, start, startIdea, startRewrite, startPlan,
-  planCandidateFiles, planModeLabel, candidateTarget, candidateStructure, planCastPreview,
   confirmRun, primaryAction, runUnitAction, accept, reviseFindings,
   focusUnit, rejectUnitFindings, retrySplitReview, reject, enableWrite, defaultModelFor,
 } = useBookWorkspace({ bookId, view })
@@ -67,7 +63,9 @@ const {
       <button role="tab" :aria-selected="view === 'write'" :class="{ active: view === 'write' }" @click="view = 'write'">写作</button>
       <button role="tab" :aria-selected="view === 'outline'" :class="{ active: view === 'outline' }" @click="view = 'outline'">大纲</button>
       <button role="tab" :aria-selected="view === 'bible'" :class="{ active: view === 'bible' }" @click="view = 'bible'">设定</button>
-      <button role="tab" :aria-selected="view === 'review'" :class="{ active: view === 'review' }" @click="view = 'review'">审校</button>
+      <button role="tab" :aria-selected="view === 'tasks'" :class="{ active: view === 'tasks' }" @click="view = 'tasks'">
+        任务<span v-if="pendingTaskCount" class="tab-badge">{{ pendingTaskCount }}</span>
+      </button>
     </div>
 
     <div class="workspace" :class="`view-${view}`">
@@ -88,6 +86,9 @@ const {
               <span class="unit-main">
                 <span class="unit-line"><span class="unit-id">{{ u.unitId }}</span><span class="unit-status" :data-status="u.status">{{ statusText[u.status] || u.status }}</span></span>
                 <span class="unit-title">{{ u.title || '未完成单元合同' }}</span>
+                <span v-if="pendingTasksOf(u.unitId).length" class="unit-pending">
+                  {{ pendingTasksOf(u.unitId).length }} 项待确认
+                </span>
               </span>
             </button>
           </template>
@@ -123,17 +124,16 @@ const {
         @open-unit="selectedUnit = $event; view = 'write'"
         @rewrite="startRewrite"
       />
-      <ReviewWorkspace
-        v-else-if="view === 'review'"
-        :selected-unit="selectedUnit"
+      <TaskList
+        v-else-if="view === 'tasks'"
         :busy="busy"
-        :read-only="store.currentBook.summary.readOnly"
+        @accept="accept"
+        @reject="reject"
+        @repair="repairStructure"
         @revise="reviseFindings"
         @retry-split="retrySplitReview"
-        @focus-unit="focusUnit"
         @reject-unit="rejectUnitFindings"
-        @accept="accept"
-        @reject-candidate="reject"
+        @open-unit="(id) => { focusUnit(id); view = 'write' }"
       />
       <section v-else class="editor-panel panel">
         <template v-if="isProseUnit && selectedUnit">
@@ -218,87 +218,7 @@ const {
 
     </div>
 
-    <section v-if="listedCandidates.length" class="candidates">
-      <h2>待审候选</h2>
-      <!--
-        只列「接受后会写文件」的候选。审校清单不在这里：它不写正文，唯一归属地是
-        审校页。修订候选在审校页按单元就地展开 diff（清单区切换成当前这一步），
-        所以这里只在其他页面列它，避免同一份 diff 在页面首尾各出现一次。
-        也不放"另有 N 条审校结论"的跳转提示——那既不能处理问题，又让人以为清单
-        丢了一份，属于噪音；整块为空时直接不渲染。
-      -->
-      <article v-for="c in listedCandidates" :key="c.id" class="candidate panel">
-        <header>
-          <div>
-            <strong>{{ c.kind === 'plan' ? planModeLabel(c.mode) : (c.kind === 'write' && c.baseChapters?.length ? '正文 · 原文优化' : (stageLabels[c.kind] || c.kind)) }} · {{ candidateTarget(c) }}</strong>
-            <span class="muted"> · {{ new Date(c.createdAt).toLocaleString() }}</span>
-          </div>
-          <div>
-            <button v-if="c.kind === 'structure_review' && c.findings?.some((f) => f.severity === 'blocking')" class="primary" @click="repairStructure(c)">按问题修复</button>
-            <button @click="reject(c)">拒绝</button>
-            <button class="primary" @click="accept(c)">{{ c.kind === 'revise' ? '确认落盘' : '接受' }}</button>
-          </div>
-        </header>
-        <p v-if="c.kind === 'structure_review'" class="muted">结构编辑只审查父级继承、因果、兑现和状态。按问题修复会生成新的文档候选，接受后才会写回 Markdown。</p>
-        <!-- 修订候选：先看 diff 再落盘，接受不能是盲签。 -->
-        <template v-else-if="c.kind === 'revise'">
-          <p class="muted">下面是相对现有正文的改动。确认无误后点「确认落盘」覆盖正文，这次修订即告完成；落盘后旧正文清单按版本归档，不再把已勾选等同于已修复；需要时请按新正文重新审校。</p>
-          <ChapterDiff :base="c.baseChapters" :revised="c.chapters || []" />
-        </template>
-        <template v-else-if="c.kind === 'finalize' && c.actualChapters?.length">
-          <p class="muted">逐章核对实际正文；只有作者接受后，以下结果才进入连续性账本。</p>
-          <!-- 回证未命中不是错误：引文抄错字形不等于迁移错了。但必须让作者看见，
-               否则他会以为每条迁移都对照过正文。 -->
-          <p v-if="unverifiedEvidence(c).length" class="warn-text">
-            有 {{ unverifiedEvidence(c).length }} 条状态迁移的回证在本章正文里找不到（下面标出）。接受时会记入定稿日志；
-            请对照正文确认 from → to 是否成立，不确定就先不接受。
-          </p>
-          <details v-for="ch in c.actualChapters" :key="ch.chapter" open>
-            <summary>第 {{ ch.chapter }} 章 · {{ ch.summary }}</summary>
-            <ul class="plan-files">
-              <li v-for="d in ch.stateDeltas || []" :key="`${d.stem}-${d.field}-${d.evidence}`">{{ d.stem }} · {{ d.field }}：{{ d.from }} → {{ d.to }}（{{ d.evidence }}）</li>
-              <li v-if="ch.plant?.length">实际埋下：{{ ch.plant.join('、') }}</li>
-              <li v-if="ch.payoff?.length">实际回收：{{ ch.payoff.join('、') }}</li>
-            </ul>
-          </details>
-        </template>
-        <!-- 优化模式的重写候选同样先看 diff：作者要判断的是"优化了什么"。 -->
-        <template v-else-if="c.kind === 'write' && c.baseChapters?.length">
-          <p class="muted">下面是相对原稿的改动。接受后才会覆盖正文；若几乎没改、或改得像重写，候选里会有提示，可据此换「重新生成」或改走审校后的自动修复。</p>
-          <ChapterDiff :base="c.baseChapters" :revised="c.chapters || []" />
-        </template>
-        <pre v-else-if="c.chapters" class="candidate-prose">{{ chapterText(c) }}</pre>
-        <pre v-else-if="c.unitOutlines" class="candidate-prose">{{ JSON.stringify(c.unitOutlines, null, 2) }}</pre>
-        <template v-else-if="c.kind === 'idea'">
-          <p class="muted">自由格式的创意提案：接受后只写 outline/idea.md，不写总纲、设定或人物。</p>
-          <pre class="candidate-prose">{{ c.replacement }}</pre>
-        </template>
-        <pre v-else-if="c.replacement" class="candidate-prose">{{ c.replacement }}</pre>
-        <div v-else-if="c.planMarkdown || c.planSettings" class="plan-candidate">
-          <p class="plan-mode"><strong>{{ planModeLabel(c.mode) }}</strong><span class="muted"> · 接受后写入 {{ planCandidateFiles(c).length }} 个文件</span></p>
-          <template v-if="c.mode === 'volume'">
-            <details v-if="c.planMarkdown?.volume_outline" open><summary>卷纲 · {{ c.volumeId }}</summary><StructuredOutline v-if="candidateStructure(c, 'volume') && !candidateStructure(c, 'volume')!.legacy" :document="candidateStructure(c, 'volume')!" compact read-only /><pre v-else class="candidate-prose">{{ c.planMarkdown.volume_outline }}</pre></details>
-            <p class="muted">只写当前卷纲，并播种索引中尚不存在的单元；总纲/设定/人物/正文不变。</p>
-          </template>
-          <template v-else>
-            <details v-if="c.planMarkdown?.book_outline" open><summary>总纲</summary><StructuredOutline v-if="candidateStructure(c, 'book') && !candidateStructure(c, 'book')!.legacy" :document="candidateStructure(c, 'book')!" compact read-only /><pre v-else class="candidate-prose">{{ c.planMarkdown.book_outline }}</pre></details>
-            <details v-if="c.planSettings && Object.keys(c.planSettings).length"><summary>设定 · {{ Object.keys(c.planSettings).length }} 项</summary>
-              <ul class="plan-files"><li v-for="p in Object.keys(c.planSettings)" :key="p">{{ p }}</li></ul>
-            </details>
-            <details v-if="c.planMarkdown?.cast_json"><summary>人物</summary><pre class="candidate-prose">{{ planCastPreview(c) }}</pre></details>
-            <p class="muted">立项只写总纲派生设定与人物；不写卷纲、不播种单元。</p>
-          </template>
-          <p v-if="(c as any).preservePaths?.length" class="muted">保留不覆盖：{{ ((c as any).preservePaths as string[]).join('、') }}</p>
-          <details open><summary>变更预览（相对当前 canon）</summary><PlanCandidateDiff :candidate="c" :files="store.currentBook?.files || {}" /></details>
-          <details><summary>将覆盖的文件（已排除保留项）</summary><ul class="plan-files"><li v-for="p in planCandidateFiles(c)" :key="p">{{ p }}</li></ul></details>
-        </div>
-        <div v-if="c.findings?.length" class="candidate-findings">
-          <div v-for="f in c.findings.slice(0, 6)" :key="f.id" class="finding" :class="f.severity">
-            {{ f.title }} <span v-if="f.evidence">· {{ f.evidence }}</span>
-          </div>
-        </div>
-      </article>
-    </section>
+    <!-- 候选不再挂在页尾：所有结果确认都在任务页，与操作记录同列。 -->
 
     <RunConfirmDialog v-if="confirmSpec" :spec="confirmSpec" :title="confirmTitle"
       :model-label="defaultModelFor(confirmSpec.kind === 'plan' || confirmSpec.kind === 'rewrite_entity' ? 'plan' : confirmSpec.kind)"
@@ -343,6 +263,9 @@ h1 { font-family: var(--font-prose); margin: 6px 0 0; font-size: 30px; line-heig
 .tabs button { border: none; background: transparent; color: var(--ink-soft); padding: 8px 22px; border-radius: 9px; font-weight: 600; }
 .tabs button:hover:not(:disabled) { background: rgba(255,255,255,.7); color: var(--ink); }
 .tabs button.active { background: white; color: var(--accent); box-shadow: 0 2px 8px rgba(20,35,31,.1); }
+.tab-badge { margin-left: 6px; padding: 0 6px; border-radius: 999px; background: var(--accent); color: #fff; font-size: 10px; }
+/* 待确认层与已落盘状态分开显示：状态是事实，待确认是叠加的待办。 */
+.unit-pending { font-size: 10px; color: var(--accent); font-weight: 600; }
 
 /* ---- 三栏工作区 ---- */
 .workspace { display: grid; grid-template-columns: 236px minmax(0, 1fr); gap: 18px; align-items: start; }

@@ -53,12 +53,14 @@ export function useBible(opts: {
   const summaries = computed(() => Object.keys(book.value?.files || {}).filter((p) => /^continuity\/summaries\/[^/]+\.md$/.test(p)).sort())
   const commits = computed(() => Object.keys(book.value?.files || {}).filter((p) => /^continuity\/commits\/[^/]+\.md$/.test(p)).sort())
 
+  // files 在骨架期为 undefined（include=files 第二层才带）：必须 `?.files?.[…]`，
+  // 否则骨架期抛 TypeError 打断整棵渲染树，设定/大纲/任务全部空白。
   const docs = computed(() => definitions.map((d) => ({
     ...d,
-    raw: d.path.includes('#open-loops') ? openLoops(book.value?.files[d.path.split('#')[0]] || '')
-      : d.path.includes('#relations') ? relations(book.value?.files[d.path.split('#')[0]] || '')
-        : book.value?.files[d.path] || '',
-    exists: Boolean(book.value?.files[d.path.split('#')[0]]),
+    raw: d.path.includes('#open-loops') ? openLoops(book.value?.files?.[d.path.split('#')[0]] || '')
+      : d.path.includes('#relations') ? relations(book.value?.files?.[d.path.split('#')[0]] || '')
+        : book.value?.files?.[d.path] || '',
+    exists: Boolean(book.value?.files?.[d.path.split('#')[0]]),
   })))
 
   const dynamicDocs = computed<RuntimeDoc[]>(() => [...summaries.value, ...commits.value].map((path) => ({
@@ -67,7 +69,7 @@ export function useBible(opts: {
     group: '连续性账本',
     description: path.includes('/summaries/') ? '逐章事件、状态变化、伏笔与钩子；续写只读上一章摘要' : '单元定稿执行日志：门禁、字数、锁词、修订；不默认给模型',
     usage: path.includes('/summaries/') ? '正文 · 审校 · 定稿回写' : '回溯排查（不进上下文）',
-    raw: book.value?.files[path] || '', exists: true,
+    raw: book.value?.files?.[path] || '', exists: true,
   })))
 
   const allDocs = computed(() => [...docs.value, ...dynamicDocs.value])
@@ -251,7 +253,7 @@ export function useBible(opts: {
     }
     return blocks
   })
-  const stateView = computed(() => parseState(book.value?.stateRaw || book.value?.files['novel-state.yaml'] || ''))
+  const stateView = computed(() => parseState(book.value?.stateRaw || book.value?.files?.['novel-state.yaml'] || ''))
   const lockedView = computed(() => parseLockedTerms(currentRaw.value))
   function gateIcon(v: string) {
     return v === 'pass' ? '✓ 通过' : v === 'fail' ? '✗ 未过' : '○ 未知'

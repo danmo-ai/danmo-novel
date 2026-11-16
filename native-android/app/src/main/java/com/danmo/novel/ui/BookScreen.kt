@@ -43,12 +43,14 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.danmo.novel.R
 import com.danmo.novel.data.Chapter
 import com.danmo.novel.data.parseChapters
 
@@ -69,15 +71,21 @@ fun BookScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text(book?.summary?.title ?: "书籍", maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                title = {
+                    Text(
+                        book?.summary?.title ?: stringResource(R.string.book_fallback_title),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回书架")
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = stringResource(R.string.book_back_to_shelf))
                     }
                 },
                 actions = {
                     IconButton(onClick = { viewModel.loadBook(bookId) }) {
-                        Icon(Icons.Default.Refresh, contentDescription = "刷新书籍")
+                        Icon(Icons.Default.Refresh, contentDescription = stringResource(R.string.book_refresh))
                     }
                 },
             )
@@ -86,16 +94,34 @@ fun BookScreen(
         Column(Modifier.fillMaxSize().padding(contentPadding)) {
             if (loading) LinearProgressIndicator(Modifier.fillMaxWidth())
             when {
-                book == null && !loading -> EmptyState("尚未载入书籍", "重试") { viewModel.loadBook(bookId) }
+                book == null && !loading -> EmptyState(
+                    message = stringResource(R.string.book_not_loaded),
+                    action = stringResource(R.string.action_retry),
+                ) { viewModel.loadBook(bookId) }
                 book == null -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
-                book.units.isEmpty() -> EmptyState("这本书还没有写作单元", "刷新") { viewModel.loadBook(bookId) }
+                book.units.isEmpty() -> EmptyState(
+                    message = stringResource(R.string.book_no_units),
+                    action = stringResource(R.string.action_refresh),
+                ) { viewModel.loadBook(bookId) }
                 else -> LazyColumn(
                     modifier = Modifier.fillMaxSize(),
                     contentPadding = PaddingValues(bottom = 24.dp),
                 ) {
                     item {
                         Text(
-                            "${book.summary.genre.ifEmpty { "未分类" }} · ${book.units.size} 个单元${if (book.summary.readOnly) " · 只读" else ""}",
+                            if (book.summary.readOnly) {
+                                stringResource(
+                                    R.string.book_meta_read_only,
+                                    book.summary.genre.ifEmpty { stringResource(R.string.genre_unknown) },
+                                    book.units.size,
+                                )
+                            } else {
+                                stringResource(
+                                    R.string.book_meta,
+                                    book.summary.genre.ifEmpty { stringResource(R.string.genre_unknown) },
+                                    book.units.size,
+                                )
+                            },
                             modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -104,7 +130,7 @@ fun BookScreen(
                     book.units.groupBy { it.volume }.forEach { (volume, units) ->
                         item(key = "volume-$volume") {
                             Text(
-                                "第 ${volume} 卷",
+                                stringResource(R.string.book_volume_title, volume),
                                 modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp),
                                 style = MaterialTheme.typography.titleSmall,
                                 color = MaterialTheme.colorScheme.primary,
@@ -121,11 +147,22 @@ fun BookScreen(
                                     )
                                 },
                                 supportingContent = {
-                                    Text("${unit.unitId} · 第 ${unit.chapterFrom}–${unit.chapterTo} 章 · ${unit.statusTitle}")
+                                    Text(
+                                        stringResource(
+                                            R.string.unit_meta,
+                                            unit.unitId,
+                                            unit.chapterFrom,
+                                            unit.chapterTo,
+                                            unit.statusTitle,
+                                        ),
+                                    )
                                 },
                                 trailingContent = {
                                     if (unit.hasProse) {
-                                        Icon(Icons.AutoMirrored.Filled.MenuBook, contentDescription = "阅读正文")
+                                        Icon(
+                                            Icons.AutoMirrored.Filled.MenuBook,
+                                            contentDescription = stringResource(R.string.book_open_prose),
+                                        )
                                     }
                                 },
                                 modifier = Modifier.clickable(enabled = unit.hasProse) { onOpenUnit(unit.unitId) },
@@ -150,10 +187,13 @@ fun UnitReaderScreen(
     val unit by viewModel.readerUnit.collectAsStateWithLifecycle()
     val file by viewModel.readerFile.collectAsStateWithLifecycle()
     val loading by viewModel.readerLoading.collectAsStateWithLifecycle()
-    val chapters = remember(file?.content) {
+    val bodyFallbackTitle = stringResource(R.string.reader_body_fallback_title)
+    val chapters = remember(file?.content, bodyFallbackTitle) {
         val parsed = file?.content?.let(::parseChapters).orEmpty()
         if (parsed.isNotEmpty()) parsed
-        else file?.content?.takeIf { it.isNotBlank() }?.let { listOf(Chapter(0, "正文", it.trim())) }.orEmpty()
+        else file?.content?.takeIf { it.isNotBlank() }
+            ?.let { listOf(Chapter(0, bodyFallbackTitle, it.trim())) }
+            .orEmpty()
     }
     var selectedIndex by rememberSaveable(bookId, unitId, file?.path) { mutableIntStateOf(0) }
     val currentIndex = selectedIndex.coerceIn(0, (chapters.size - 1).coerceAtLeast(0))
@@ -174,7 +214,10 @@ fun UnitReaderScreen(
                 },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回单元列表")
+                        Icon(
+                            Icons.AutoMirrored.Filled.ArrowBack,
+                            contentDescription = stringResource(R.string.reader_back_to_units),
+                        )
                     }
                 },
             )
@@ -184,7 +227,10 @@ fun UnitReaderScreen(
             if (loading) LinearProgressIndicator(Modifier.fillMaxWidth())
             when {
                 chapters.isEmpty() && loading -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
-                chapters.isEmpty() -> EmptyState("这个单元还没有可阅读的正文", "重试") { viewModel.loadUnit(bookId, unitId) }
+                chapters.isEmpty() -> EmptyState(
+                    message = stringResource(R.string.reader_empty),
+                    action = stringResource(R.string.action_retry),
+                ) { viewModel.loadUnit(bookId, unitId) }
                 else -> {
                     if (chapters.size > 1) {
                         LazyRow(
@@ -195,7 +241,7 @@ fun UnitReaderScreen(
                                 FilterChip(
                                     selected = currentIndex == index,
                                     onClick = { selectedIndex = index },
-                                    label = { Text("第 ${chapter.number} 章") },
+                                    label = { Text(stringResource(R.string.reader_chapter_chip, chapter.number)) },
                                 )
                             }
                         }
@@ -207,10 +253,17 @@ fun UnitReaderScreen(
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         IconButton(enabled = currentIndex > 0, onClick = { selectedIndex = currentIndex - 1 }) {
-                            Icon(Icons.AutoMirrored.Filled.KeyboardArrowLeft, contentDescription = "上一章")
+                            Icon(
+                                Icons.AutoMirrored.Filled.KeyboardArrowLeft,
+                                contentDescription = stringResource(R.string.reader_previous_chapter),
+                            )
                         }
                         Text(
-                            if (chapter.number > 0) "第 ${chapter.number} 章 ${chapter.title}".trim() else chapter.title,
+                            if (chapter.number > 0) {
+                                stringResource(R.string.reader_chapter_title, chapter.number, chapter.title).trim()
+                            } else {
+                                chapter.title
+                            },
                             modifier = Modifier.weight(1f).padding(horizontal = 4.dp),
                             style = MaterialTheme.typography.titleMedium,
                             maxLines = 2,
@@ -220,7 +273,10 @@ fun UnitReaderScreen(
                             enabled = currentIndex < chapters.lastIndex,
                             onClick = { selectedIndex = currentIndex + 1 },
                         ) {
-                            Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = "下一章")
+                            Icon(
+                                Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                                contentDescription = stringResource(R.string.reader_next_chapter),
+                            )
                         }
                     }
                     SelectionContainer(
@@ -231,7 +287,7 @@ fun UnitReaderScreen(
                             .padding(horizontal = 24.dp, vertical = 16.dp),
                     ) {
                         Text(
-                            chapter.body.ifBlank { "本章没有正文。" },
+                            chapter.body.ifBlank { stringResource(R.string.reader_empty_chapter) },
                             style = MaterialTheme.typography.bodyLarge.copy(fontSize = 18.sp, lineHeight = 30.sp),
                         )
                     }

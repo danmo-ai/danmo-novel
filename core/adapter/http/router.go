@@ -636,12 +636,17 @@ func registerBooks(api *gin.RouterGroup, app *App) {
 			}
 		}
 		out := gin.H{"book": snap, "primary": gin.H{"kind": kind, "unitId": unit, "volume": vol}}
-		// ?view=list is a navigation projection applied after SelectPrimaryAction,
-		// which reads Files/StateRaw. The unit list only needs the summary and unit
-		// metadata; a 100+ unit book is otherwise 3–4 MB and stalls the transition.
-		if c.Query("view") == "list" {
-			out["book"] = books.WithListingView(snap)
+		// The book endpoint is slim-only: the default response is the navigation
+		// skeleton (summary + unit metadata, no raw text). ?include=files adds
+		// back exactly the documents the outline/bible panels render. There is
+		// no full-snapshot response — prose and unit raws are fetched one file
+		// at a time through GET /books/:id/file. Projections are applied after
+		// SelectPrimaryAction, which reads Files/StateRaw.
+		projected := books.WithListingView(snap)
+		if c.Query("include") == "files" {
+			projected = books.WithPanelDocuments(projected, snap)
 		}
+		out["book"] = projected
 		// 连续性状态摘要：作者一眼能看出"状态账建到哪了"，缺失时提示先定稿一个单元。
 		if states, serr := books.LoadState(root); serr == nil {
 			out["continuity"] = books.SummarizeState(states)
@@ -1061,7 +1066,7 @@ func registerRuns(api *gin.RouterGroup, app *App) {
 			c.JSON(500, gin.H{"error": err.Error()})
 			return
 		}
-		c.JSON(200, list)
+		c.JSON(200, projectRunList(c, list))
 	})
 	api.GET("/runs/:id", func(c *gin.Context) {
 		run, err := app.Store.GetRun(c.Request.Context(), c.Param("id"))
@@ -1077,7 +1082,7 @@ func registerRuns(api *gin.RouterGroup, app *App) {
 			c.JSON(500, gin.H{"error": err.Error()})
 			return
 		}
-		c.JSON(200, list)
+		c.JSON(200, projectRunList(c, list))
 	})
 	api.POST("/runs/:id/cancel", func(c *gin.Context) {
 		if err := app.Runs.Cancel(c.Request.Context(), c.Param("id")); err != nil {
@@ -1100,7 +1105,10 @@ func registerRuns(api *gin.RouterGroup, app *App) {
 			c.JSON(500, gin.H{"error": err.Error()})
 			return
 		}
-		c.JSON(200, list)
+		// Slim-only: metadata + findings + Has* flags, no bulk payloads. The
+		// review panel renders from the list; a card fetches its detail from
+		// GET /candidates/:id only when expanded.
+		c.JSON(200, runs.SummarizeCandidates(list))
 	})
 	// 已终结候选（含「接受归档」的审校清单）：只读回看，不参与任何流程判断。
 	api.GET("/books/:id/candidates/history", func(c *gin.Context) {
@@ -1109,6 +1117,16 @@ func registerRuns(api *gin.RouterGroup, app *App) {
 		if err != nil {
 			c.JSON(500, gin.H{"error": err.Error()})
 			return
+		}
+		// ?kind=review：审校历史区只回看审校清单，不必把其他终结候选也传下去。
+		if kind := c.Query("kind"); kind != "" {
+			filtered := make([]domain.Candidate, 0, len(list))
+			for _, cand := range list {
+				if string(cand.Kind) == kind {
+					filtered = append(filtered, cand)
+				}
+			}
+			list = filtered
 		}
 		// 审校候选把被审正文复制进了 chapters；历史列表只回看结论，顺手剥掉以免响应过大。
 		for i := range list {
@@ -1141,6 +1159,26 @@ func registerRuns(api *gin.RouterGroup, app *App) {
 		}
 		c.JSON(200, gin.H{"ok": true})
 	})
+}
+
+// projectRunList is the slim run list shared by /runs and /books/:id/runs:
+// each run is projected to its precomputed totals (no per-call records), and
+// ?limit/?offset page through the store's result. The full per-call detail is
+// only available from GET /runs/:id.
+func projectRunList(c *gin.Context, list []domain.Run) []runs.SummaryView {
+	limit, _ := strconv.Atoi(c.Query("limit"))
+	offset, _ := strconv.Atoi(c.Query("offset"))
+	if offset > 0 {
+		if offset >= len(list) {
+			list = []domain.Run{}
+		} else {
+			list = list[offset:]
+		}
+	}
+	if limit > 0 && limit < len(list) {
+		list = list[:limit]
+	}
+	return runs.SummarizeAll(list)
 }
 
 // nonNil keeps JSON shape stable: an untagged article serializes as [].

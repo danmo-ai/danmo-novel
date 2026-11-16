@@ -117,7 +117,7 @@ struct ReaderSplitView: View {
         if book != nil {
             List(selection: $currentUnitID) {
                 ForEach(volumeGroups, id: \.volume) { group in
-                    Section("第 \(group.volume) 卷") {
+                    Section(Copy.volumeTitle(group.volume)) {
                         ForEach(group.units) { item in
                             if item.hasProse {
                                 CatalogRow(unit: item, isCurrent: item.unitId == selectedUnitID)
@@ -130,7 +130,7 @@ struct ReaderSplitView: View {
                                 // missing prose file.
                                 CatalogRow(unit: item, isCurrent: false)
                                     .foregroundStyle(.secondary)
-                                    .accessibilityHint("正文尚未写作，暂不可阅读")
+                                    .accessibilityHint(Copy.readerUnwrittenHint)
                                     .accessibilityIdentifier("catalog.row.\(item.unitId)")
                             }
                         }
@@ -140,7 +140,7 @@ struct ReaderSplitView: View {
             .listStyle(.sidebar)
         } else if let error {
             ContentUnavailableView(
-                "暂时打不开这本书",
+                Copy.bookUnavailable,
                 systemImage: "book.closed",
                 description: Text(error)
             )
@@ -157,7 +157,7 @@ private struct CatalogRow: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(unit.title.isEmpty ? "未命名单元" : unit.title)
+            Text(unit.title.isEmpty ? Copy.unitUnnamed : unit.title)
                 .font(.subheadline.weight(isCurrent ? .semibold : .regular))
                 .lineLimit(2)
             HStack(spacing: 6) {
@@ -166,7 +166,7 @@ private struct CatalogRow: View {
                 Text(unit.statusTitle)
                     .font(.caption2)
                     .foregroundStyle(unit.hasProse
-                        ? (unit.status == "reviewed" ? Color.green : Color.orange)
+                        ? (unit.isFinished ? Color.green : Color.orange)
                         : Color.secondary)
             }
             .foregroundStyle(.secondary)

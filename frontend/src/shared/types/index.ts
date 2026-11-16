@@ -130,6 +130,13 @@ export interface Candidate {
   canonChanges?: any[]
   createdAt: string
   acceptedAt?: string
+  /** 精简列表标记：详情端点才携带对应正文。完整候选上为 undefined。 */
+  hasChapters?: boolean
+  hasBaseChapters?: boolean
+  hasPlan?: boolean
+  hasReplacement?: boolean
+  hasOutlines?: boolean
+  hasActual?: boolean
 }
 
 export interface CallRecord {
@@ -160,12 +167,19 @@ export interface Run {
   policy: { maxCalls: number; maxOutputTokens: number; timeoutSec: number; allowOneRepair: boolean }
   modelId: string
   callsUsed: number
-  calls: CallRecord[]
+  /** 精简列表不下发逐调用明细；详情端点才有。 */
+  calls?: CallRecord[]
   candidateId?: string
   contextSummary?: string[]
   error?: string
   warnings?: string[]
   createdAt: string
+  /** 精简列表的预聚合汇总（由服务端从 calls 算好）。 */
+  inputTokens?: number
+  outputTokens?: number
+  durationMs?: number
+  cacheRead?: number
+  cacheCreation?: number
 }
 export interface ProviderPublic {
   id: string

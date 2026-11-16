@@ -2,13 +2,13 @@
 
 The shipping phone UI is native: **SwiftUI** on iOS and **Kotlin / Jetpack
 Compose** on Android. Vue is desktop-only; neither native app embeds a WebView
-or the Vue bundle.
+or the Vue bundle. There is no WebView fallback.
 
 Both apps call the same Go REST handlers as desktop. `mobile.Start` initializes
-the local database and book library in the application sandbox. Requests use
-`danmo://local/api/...` through `URLProtocol` / an OkHttp interceptor, which
-executes the handler in-process. No loopback TCP port or unauthenticated local
-server is exposed.
+the local database and book library in the application sandbox. Requests go to
+a fake local host (`danmo://local/api/…` on iOS, `http://danmo.local/…` on
+Android) and are fulfilled in-process by `URLProtocol` / an OkHttp interceptor.
+No loopback TCP port or unauthenticated local server is exposed.
 
 ## Native projects
 
@@ -16,29 +16,174 @@ server is exposed.
 |---|---|---|
 | Project | `native-ios/project.yml` | `native-android/` |
 | UI | SwiftUI, iOS 17+ | Compose / Material 3, Android 8+ |
-| Navigation | `TabView`, `NavigationStack` | Navigation Compose, predictive system back |
+| Navigation | `TabView`, `NavigationStack` / `NavigationSplitView` | Navigation Compose, predictive system back |
 | Local core | `DanmoNovel.xcframework` | `danmo-novel.aar` |
 | REST transport | `URLSession` + `LocalCoreURLProtocol` | OkHttp + local interceptor |
 | Storage | iCloud Documents + Application Support | App-private files |
 
-iOS layout files, so a Duo change lands in the right place:
+### Platform scope
+
+iOS is the mobile baseline (AGENTS.md rule 9) and carries the full desktop book
+workspace (below). Android is still the reading-oriented slice — shelf,
+new-book sheet, sample book, unit list, prose reader, provider settings, run
+log — single-column everywhere. It reads the default slim responses fine
+(`ignoreUnknownKeys`, only the fields it renders), but has no workspace panels,
+no task page and no generation flow yet; those land as ports of the settled iOS
+version, starting with `ShelfScreen.kt` / `BookScreen.kt`.
+
+### iOS layout files, so a Duo change lands in the right place
 
 | File | Owns |
 |---|---|
-| `Sources/Features/ShelfView.swift` | The only top-level navigator: `NavigationSplitView` at ≥ 820pt, `NavigationStack` below it, `ShelfRoute`, cross-pose hand-off, `columnVisibility` |
-| `Sources/Features/BookDetailView.swift` | Book summary, volume grouping, unit list; no `NavigationStack` of its own |
+| `Sources/Features/ShelfView.swift` | The only top-level navigator: `NavigationSplitView` at ≥ 820pt, `NavigationStack` below it, `ShelfRoute` (`book`/`unit`/`reader`), cross-pose hand-off, `columnVisibility` |
+| `Sources/Features/BookDetailView.swift` | The book workspace shell: primary banner + 写作/大纲/设定/任务 panels; no `NavigationStack` of its own |
+| `Sources/Features/UnitWorkView.swift` | One unit's production surface: flow actions, contract, prose, manual editing |
 | `Sources/Features/ReaderSplitView.swift` | Expanded reading pose: unit catalog + prose via `ArrangementView` (iOS 27.1+ only) |
 | `Sources/Features/ReaderView.swift` | Prose rendering, chapter paging toolbar; used both standalone and as the arrangement's secondary pane |
-| `Sources/Core/NovelAPI.swift` | `URLSession` over the in-process core; `?view=list` projection for shelf and unit lists |
+| `Sources/Core/BookWorkspaceStore.swift` | Per-book data + actions (runs, candidates, polling, accept/reject, saves); `WorkspaceRegistry` shares one store per open book |
+| `Sources/Core/NovelAPI.swift` | `URLSession` over the in-process core; slim-only book/run/candidate responses + `include=files` panel tier |
 
-Android is still single-column everywhere. When the iOS expanded layout is
-settled, the same split lands in `ShelfScreen.kt` / `BookScreen.kt`.
+## iOS book workspace
 
-The first native vertical slice includes the shelf, new-book sheet, bundled
-sample book, unit list, prose reader, provider settings, and run history.
-Candidate diffs/acceptance, generation confirmation, structured setup, prose
-editing, and review workflows remain to be ported; there is no WebView
-fallback.
+The desktop workspace, ported surface by surface:
+
+- **Book workspace** (`BookDetailView`): a primary next-step banner plus four
+  panels — 写作 (unit list → unit work), 大纲 (structured book/volume outlines),
+  设定 (story bible), 任务 (the single confirmation surface). One
+  `BookWorkspaceStore` per open book (`WorkspaceRegistry`) holds the skeleton,
+  candidates, runs and the polling loop; pushed unit/reader destinations share
+  it instead of refetching.
+- **Unit work** (`UnitWorkView`): the four-step production flow
+  (细纲 → 正文 → 审校 → 定稿), the parsed unit contract (`UnitContractView`),
+  continuous prose with per-chapter copy/edit and the display-only split hint,
+  and manual outline/chapter editing. The immersive reader is one tap away
+  (阅读正文).
+- **Run confirmation** (`RunConfirmSheet`): the same guarantees as desktop —
+  context preview from `/api/runs/preview`, call budget, rewrite mode
+  (fresh/refine), per-stage/genre reference-knowledge picker, append
+  instruction, and the write-boundary note before any call. Live progress with
+  per-call token/cache rows and cancel (`RunProgressSheet`).
+- **Task page** (`TaskListView` + `TaskConfirmCard`): the book's only
+  confirmation surface — see "Task page" below.
+- **Outline** (`OutlinePanelView`): structured rendering with minimal
+  server-side field patches (`PATCH outline-field`), structure review, volume
+  plan generation and raw-MD editing.
+- **Bible** (`BiblePanelView`): grouped docs, cast cards with the identity
+  timeline (append/update/close, promote), the author-secrets gate, structured
+  state/locked-term views, the relation graph, editing and entity rewrite.
+- **Knowledge** (`KnowledgeView`): categorized/filtered list, structured
+  reading, local-copy editing with stage/genre tags, built-in restore.
+- **Settings** (`SettingsView`): providers (presets, fetch-models, per-model
+  dialect, connectivity test), stage model assignments with effort, review
+  rounds/concurrency, the per-model catalog, book directory and iCloud sync.
+- **Logs** (`RunListView`): filterable run history with token/cache summaries
+  and per-call detail; running runs can be cancelled.
+
+**Deferred (desktop-only for now):** the concept-collision / project-setup
+flow — free idea expansion (`kind=idea`) and structured planning
+(`kind=plan, mode=init/reinit`). The primary banner reports this instead of
+offering it; volume-plan generation (`mode=volume`) and the whole
+outline→write→review→finalize production chain are fully available. The
+new-book form still collects the full creative seed into `outline/idea.md`.
+
+## Task page: one confirmation surface
+
+LLM calls are minutes-long (measured: prose 470s, review 1328s, revise 308s), so
+the author does not wait on a unit page. They kick off work, leave, and come
+back asking "what is waiting for me". The task page answers that: it fuses the
+candidate inbox with the operation log into one timeline.
+
+| Surface | Responsibility | Confirms |
+|---|---|---|
+| Task page (in book) | needsAction + running + history | everything |
+| Unit page | read contract/prose, start generation, manual edit, read | nothing |
+| Outline / Bible | read and edit documents | nothing |
+| Logs (app level) | cross-book cost and troubleshooting | nothing |
+
+`TaskItem` (`Sources/Core/TaskItem.swift`, mirrored by
+`frontend/src/shared/utils/taskItems.ts`) is a pure client-side join of runs and
+candidates — **no new endpoint**. The slim run list carries `candidateId` and
+the slim candidate list carries `runId`; the store already fetches both.
+
+- Sections: `needsAction` (candidate open), `running`, `closed`. Inbox is
+  oldest-first, history newest-first.
+- A failed run produced no candidate but still gets a row: failure is no longer
+  invisible.
+- Orphan candidates (run outside the list's limit window) stay in the inbox.
+- A unit's review list stays open while its revise runs — `blockingRun`
+  deliberately allows the pair because the list *is* the revise's input. Those
+  two rows fold into one, with the revise as the active item, so the inbox still
+  reads as one thing per unit. The backend's per-unit lock
+  (`ListActiveRuns`) guarantees at most one pending decision per unit.
+
+Every kind is confirmed with the same card shell
+(`kind · target · time · model` → summary → preview → reject / primary); only the
+preview renderer and the primary verb change:
+
+| kind | Preview | Primary |
+|---|---|---|
+| outline | contract view of the candidate (not JSON) | 接受 |
+| write | chapter prose; refine uses sentence diff | 接受 |
+| review | findings + picks + chapter filter | 提交修复 |
+| revise | sentence diff + addressed findings | 确认落盘 |
+| finalize | per-chapter ledger, unverified evidence flagged | 接受（阻断时二次确认） |
+| plan / rewrite_entity / structure_review | plan diff / file preview / findings | 接受 |
+
+Context travels with the card instead of sending the author back to the unit
+page: the unit contract, the parent volume seed (for outline), and the gate +
+continuity summary (for finalize) are collapsible sections inside it. Review
+picks live in `ReviewFindingsEditor` (extracted from the old review panel), so
+the selection rules exist once.
+
+## Progressive data loading
+
+The book APIs are **slim-only**: there is no full-snapshot response. iOS and the
+desktop fetch the workspace in three tiers, so the first screen never decodes
+the multi-MB snapshot. (Android renders only the skeleton tier today; see
+"Platform scope".)
+
+| Tier | Request | Carries |
+|---|---|---|
+| 1 · skeleton | `GET /books/:id` | summary, unit metadata, cast names, primary action, continuity — no raw text |
+| 2 · panel files | `GET /books/:id?include=files` | skeleton + the documents the outline/bible panels render (outlines, canon, bible, run state, continuity); unit raws stay out |
+| 3 · detail on demand | `GET /candidates/:id`, `GET /runs/:id`, `GET /books/:id/file` | one candidate's prose/diff/plan, one run's per-call records, one unit's outline/prose |
+
+The list endpoints are slim by default: runs drop `calls`/`contextSummary` and
+carry precomputed totals (`inputTokens`/`outputTokens`/`durationMs`/`cacheRead`/
+`cacheCreation`); candidates drop the bulk payloads but keep `findings` (the
+review panel renders from the list) and add `has*` flags telling the client
+which detail to fetch on expand. `limit`/`offset` page the run list;
+`candidates/history?kind=review` narrows the archive. The only full responses
+left are the single-resource detail endpoints (`/runs/:id`, `/candidates/:id`,
+`/books/:id/file`).
+
+On iOS `BookWorkspaceStore` owns the tiers: `open()` loads tier 1 + slim
+activity; `ensureFiles()` (idempotent per revision) loads tier 2 when the
+outline/bible tab opens; `candidateDetail()`/`loadHistory()` fetch tier 3 on
+expand. A save/accept refreshes only the skeleton + slim activity, re-fetching
+panel files only if they were already on screen. The desktop store
+(`frontend/src/shared/stores/app.ts`) mirrors this with `loadBook` /
+`loadBookFiles` / `candidateDetail` / `loadCandidateHistory`.
+
+Measured on a real 12.8 MB book: the skeleton is ~24 KB (0.2%), panel files
+~5 MB (39%, the canon/outline documents themselves). The byte budget is locked
+by `NativeAppTests.testURLSessionReadsRealGoCoreREST` (first screen < 100 KB)
+and the Go projection tests.
+
+## Copy
+
+Wording follows `docs/mobile-copy.md` — the single glossary; a term change
+touches both platforms in the same change (AGENTS.md rule 11). Each platform
+keeps exactly one source of strings:
+
+| Platform | File |
+|---|---|
+| Android | `native-android/app/src/main/res/values/strings.xml` — views call `stringResource` |
+| iOS | `native-ios/Sources/Core/Copy.swift` — views call `Copy.…` |
+
+No Chinese literal belongs in a view file. The domain vocabulary in
+`Models.kt` / `Models.swift` (`statusTitle`, run kind/status labels) follows the
+same tables.
 
 ## iCloud sharing (iOS + macOS)
 
@@ -56,6 +201,8 @@ An iCloud container is not stored under `CloudDocs`: it is its own directory
 named after the container identifier. `iCloud.com.danmo.novel` materializes as
 `iCloud~com~danmo~novel` (older Xcode used `<TEAMID>~iCloud~com~danmo~novel`),
 and both names are accepted.
+
+### Library root: one decision, per system
 
 The choice is made by system, once, inside the core
 (`runtimepaths.DefaultLibraryRoot`): on macOS the library is the container, on
@@ -75,21 +222,20 @@ every knowledge article to the new root — `books.MoveLibrary` — and then
 rebuilds the registry, so the shelf follows without a restart. A target that
 already holds a book with the same id is refused (409) rather than merged. The
 move is idempotent and never overwrites: an interrupted move finishes on the
-next request or launch.
+next request or launch. The same move runs once at startup when the platform
+default changed — how books in `~/.danmo-novel/library` reach iCloud the first
+time the container is visible. `libraryRoot` is per device and is never part of
+the shared settings snapshot.
 
-The same move runs once at startup when the platform default changed, which is
-how books in `~/.danmo-novel/library` end up in iCloud the first time the
-container is visible. `libraryRoot` is per device and is never part of the
-shared settings snapshot.
+### Entitlements and path hand-off
 
 The macOS app has no iCloud entitlement and cannot create the container. It
 uses the container directory only once iCloud has materialized it — in practice
 after the iOS app has opened its library once on the same account. Until then
-the app keeps its local library rather than writing into a directory that would
-never sync; Settings shows iCloud as not enabled.
+the app keeps its local library; Settings shows iCloud as not enabled.
 
-The iOS side gets the container because Xcode's automatic signing provisions it:
-with the entitlements file present and a team configured, `xcodebuild
+The iOS side gets the container because Xcode's automatic signing provisions
+it: with the entitlements file present and a team configured, `xcodebuild
 -allowProvisioningUpdates` enables iCloud Documents on the App ID
 (`com.danmo.novel`), creates `iCloud.com.danmo.novel`, and issues a profile
 carrying `com.apple.developer.icloud-container-identifiers` /
@@ -101,29 +247,31 @@ security cms -D -i <app>/embedded.mobileprovision | rg icloud
 ```
 
 `LocalCoreService` resolves the ubiquity container before starting the Go core,
-because an iOS app sandbox cannot see `~/Library/Mobile Documents`. It hands both
-paths over through `DanmonovelSetPaths`, not `setenv`: Go snapshots the process
-environment when its runtime starts, so a libc `setenv` from Swift afterwards is
-invisible to `os.Getenv` and the core silently falls back to its own sandbox.
-That binding call is the one place a host supplies the path. The Go side has no
-other platform branches: it scans the library on every start
+because an iOS app sandbox cannot see `~/Library/Mobile Documents`. It hands
+both paths over through `DanmonovelSetPaths`, not `setenv`: Go snapshots the
+process environment when its runtime starts, so a libc `setenv` from Swift
+afterwards is invisible to `os.Getenv` and the core silently falls back to its
+own sandbox. That binding call is the one place a host supplies the path. The
+Go side has no other platform branches: it scans the library on every start
 (`books.ScanLibrary`), reconciles the SQLite registry
 (`books.ReconcileRegistry`), and merges `model-settings.json`
 (`core/service/settingsync`).
 
-Before the core starts, the whole shared root is resolved for download. iCloud
-stores an undownloaded file as a hidden `<name>.icloud` entry, so the real path
-does not exist and `FileManager.enumerator` — which skips hidden files — never
-sees it. Two failures follow from that, and both were observed on device:
-`model-settings.json` looked absent, so the device pushed its empty provider list
-over the Mac's; and books on the other device looked missing. The app now walks
-the directory with hidden entries included, maps each placeholder back to its
-real URL, and requests the download (bounded at 20 s). As a second guard,
-`settingsync.Push` refuses to write when a snapshot exists but cannot be read, so
-an undownloaded file can never be overwritten — that mistake cost the Mac's
-provider list once during development.
+### Undownloaded placeholders
 
-What syncs:
+iCloud stores an undownloaded file as a hidden `<name>.icloud` entry, so the
+real path does not exist and `FileManager.enumerator` — which skips hidden
+files — never sees it. Two failures follow, both observed on device:
+`model-settings.json` looked absent, so the device pushed its empty provider
+list over the Mac's; and books on the other device looked missing. So before
+the core starts, `LocalCoreService` walks the shared root with hidden entries
+included, maps each placeholder back to its real URL, and requests the download
+(bounded at 20 s; timing out just continues with what is local and retries next
+launch). As a second guard, `settingsync.Push` refuses to write when a snapshot
+exists but cannot be read, so an undownloaded file can never be overwritten —
+that mistake cost the Mac's provider list once during development.
+
+### What syncs
 
 - Provider definitions (name, protocol, base URL, dialect, model list,
   enabled flags) and the per-stage model assignments, model parameters and
@@ -134,7 +282,7 @@ What syncs:
 - Settings merge per provider on `updatedAt`; the settings block is taken whole
   from whichever device changed it most recently.
 
-What does not sync:
+### What does not sync
 
 - `novel.db` (runs, candidates, review history). Two devices must not write one
   SQLite file; accepting a candidate on one device changes the book files, which
@@ -142,15 +290,9 @@ What does not sync:
 - Prose/outline files edited on both devices at the same time: last writer wins
   and iCloud may leave a conflict copy. There is no merge.
 
-iOS materializes placeholder files before starting the core (bounded ~15 s
-wait); the Go core does not use `NSFileCoordinator`. If iCloud is unavailable —
-signed out, entitlement missing, unsigned simulator build — the app falls back
-to its local sandbox and Settings says so. Android remains local-only.
-
-Store/platform prerequisites: enable iCloud Documents on the `com.danmo.novel`
-App ID, create the `iCloud.com.danmo.novel` container, and regenerate the
-provisioning profile; otherwise device archives sign but resolve no container at
-runtime.
+The Go core does not use `NSFileCoordinator`. If iCloud is unavailable — signed
+out, entitlement missing, unsigned simulator build — the iOS app falls back to
+its local sandbox and Settings says so. Android remains local-only.
 
 ## iPhone Duo
 
@@ -167,7 +309,7 @@ Apple's guidance comes from:
 - [Designing for iPhone Duo](https://developer.apple.com/design/human-interface-guidelines/designing-for-iphone-duo)
   and *Design for iPhone Duo* (poses, controls at the edge, Split View)
 
-This section is the checklist we hold ourselves to.
+This section is the checklist we hold ourselves to (AGENTS.md rule 10).
 
 ### Pre-flight before changing mobile layout
 
@@ -207,9 +349,9 @@ These are the patterns Apple flags. The `app-resizability` skill from
 3. **Never treat size class or idiom as a device.** A Duo app can have any
    combination of size classes, and regular width is not "iPad". In particular
    the inner display is *regular width in portrait* (669pt) — splitting there
-   leaves no readable column. Decide by the width and height of the space you
-   were given (we compare the offered width against a minimum that fits both
-   columns); never by `userInterfaceIdiom` or known device dimensions.
+   leaves no readable column. Decide by the offered width against a minimum
+   that fits both columns; never by `userInterfaceIdiom` or known device
+   dimensions.
 4. **Safe areas are asymmetric and can move.** A vertical bar sits on one edge,
    so leading and trailing insets differ. The bar can move to the left in
    landscape and Split View. Read each edge independently; never derive one edge
@@ -220,7 +362,10 @@ These are the patterns Apple flags. The `app-resizability` skill from
    material and overflow automatically. A hand-built bar (a `safeAreaInset`
    bottom strip, a custom `UIToolbar`) both adds spacing the platform says not
    to add and consumes the vertical space the side-rail design is meant to
-   reclaim.
+   reclaim. On a vertical bar the item's height is flexible and its width is
+   fixed, which suits symbols; text-only items stay on the horizontal axis, so
+   mixing them splits the bar across two axes. Always supply a title as well —
+   the system uses it in overflow menus.
 7. **Do not duplicate standard affordances or redraw system chrome.** The system
    supplies back; adding a second back control creates two paths with different
    targets. Likewise a disclosure chevron: `NavigationLink` gets the system one
@@ -243,20 +388,15 @@ These are the patterns Apple flags. The `app-resizability` skill from
 |---|---|
 | Shell | `TabView` + system tab bar; no custom bottom navigation. No custom `tint` either — the system accent is used so controls follow the user's tint choice and Increase Contrast |
 | Book shelf | System `List`. Regular width uses `List(selection:)` with `.listStyle(.sidebar)` — the system draws the selection highlight and, correctly for a sidebar, **no disclosure chevron**. Compact width uses `NavigationLink`, where the system draws and owns the chevron and back stack |
-| Book → reader | The shelf owns the only top-level `NavigationStack`; a single `ShelfRoute` enum (`book` / `reader`) is registered on both the compact stack and the split's detail stack, so the back sequence is always reader → unit list → shelf and a typed path can never drop a push |
+| Book → reader | The shelf owns the only top-level `NavigationStack`; a single `ShelfRoute` enum (`book` / `unit` / `reader`) is registered on both the compact stack and the split's detail stack, so the back sequence is always reader → unit work → unit list → shelf and a typed path can never drop a push |
 | Route type | `ShelfRoute` is shared by both stacks deliberately. A typed `NavigationStack(path:)` array only accepts its own element type, so a unit row pushing a bare `ReaderRoute` silently did nothing in compact width — the row just highlighted |
-| Wide layout | Width-based, not size-class-based: the split appears only when the offered width is ≥ 820pt, which is the minimum that fits a 300pt sidebar, a 500pt detail column and the divider. The system then resolves the sidebar to 320pt. On Duo that means the inner display **in landscape** (951pt window, 867pt usable after the 84pt vertical-bar safe area); inner portrait (669pt) and the outer display (466pt) read single-column. Size class alone was wrong — the inner display is regular width even in portrait, which squeezed the reading column to ~12 characters |
+| Wide layout | Width-based, not size-class-based: the split appears only when the offered width is ≥ 820pt, the minimum that fits a 300pt sidebar, a 500pt detail column and the divider; the system then resolves the sidebar to 320pt (measured numbers below). Size class alone was wrong — the inner display is regular width even in portrait, which squeezed the reading column to ~12 characters |
 | Expanded reading | With a unit open at that width the bookshelf column collapses (`.detailOnly`) and the detail becomes unit catalog + prose via the system `ArrangementView` with `.split.axes(.horizontal)` — not a hand-built `HStack`. The catalog is pinned as a fixed rail (`splitArrangementLayoutSize` + `splitArrangementFixedLayoutSize`, 240–360pt) so it never takes half the width; the prose pane declares a 420pt minimum. Below iOS 27.1, or whenever the detail column is narrower than 700pt (e.g. the bookshelf is revealed mid-read), it degrades to the single-pane reader instead of letting the arrangement drop the prose pane |
 | Shared title | The two panes share one navigation bar and it sits above the catalog, so its title is the **book**, never the open unit: a unit name there reads as the list's header and mislabels a catalogue of many units. The open unit is identified by the highlighted row plus the prose header, and only the standalone compact reader titles itself with the unit (`.navigationTitle` bubbles up from the pane, so the embedded reader passes `showsNavigationTitle: false`) |
 | Catalog contents | The catalog lists **every** unit grouped by volume, not only those with prose: hiding unwritten units made a full book look truncated. Unwritten ones are dimmed, carry a "正文尚未写作" hint, and get no `.tag` — in a selection `List` the tag is what makes a row selectable, so omitting it is what stops a tap from loading a missing prose file |
 | Reader | System toolbar holds chapter paging (`chevron.up`/`chevron.down`/`list.number`) and reading settings as symbol + title items, so iOS can move them to the vertical rail |
 | Text | Paragraphs are split once per chapter, not per frame; one selection scope per chapter |
 | Camera / status bar | They sit on the right edge of the outer display; the system bar avoids them, and our content never draws its own edge padding to compensate |
-
-Why symbol + title matters: on a vertical bar the item's height is flexible and
-its width is fixed, which suits symbols. Text-only items stay on the horizontal
-axis, so mixing them into the same group splits the bar across two axes. Always
-supply a title as well — the system uses it in overflow menus.
 
 ### Choosing the expanded container
 
@@ -327,8 +467,8 @@ a custom grid or a two-page reading spread.
 ### Measured facts on the Duo simulator
 
 Screenshots are 3× (2853×2007 landscape). Actual numbers from
-`XCUIApplication().windows.firstMatch.frame` and element frames, so they can be
-asserted instead of eyeballed:
+`XCUIApplication().windows.firstMatch.frame` and element frames — assert these
+instead of eyeballing:
 
 | Quantity | Value |
 |---|---|
@@ -354,7 +494,7 @@ Duo is used closed, fully open, and partially folded.
 - **Closed (outer display)** — wider and shorter than a traditional iPhone. This
   is exactly why controls move to the side.
 - **Fully open (inner display)** — room for a list and its selection side by
-  side, which is what the regular-width split is for. Browsing is shelf | unit
+  side, which is what the width-based split is for. Browsing is shelf | unit
   list; reading swaps to unit catalog | prose with the shelf column collapsed,
   and the system offers its own sidebar reveal control instead of a custom back
   button.
@@ -362,8 +502,8 @@ Duo is used closed, fully open, and partially folded.
   middle is harder to read and tap. Keep interactive content off the fold.
   A reading app can present a two-page spread, one page per side; a sheet or
   dialog should sit on one side rather than centred on the hinge. For layouts
-  that need to know where the fold is rather than just the insets, the
-  *Strike a pose* talk covers reserved regions; we do not use them yet.
+  that need to know where the fold is rather than just the insets, see
+  "Reserved regions" above; we do not use them yet.
 - **In Split View** — the app can be narrow again, and the bar follows the outer
   edge: right when the app is on the right, left when it is on the left.
 
@@ -404,13 +544,21 @@ only signal.
 | Pose | Automated | Manual |
 |---|---|---|
 | Duo inner display, portrait (669×951, single column) | UI test on the Duo simulator | — |
-| Duo inner display, landscape (951×669, split) | Frame assertions: window 951×669, sidebar 320pt, detail starts at x 340 | — |
-| Expanded reading pose (catalog + prose) | `catalog.row.*` exists, `book.row.*` gone, `阅读设置` hittable, navigation bar identifier is the **book** title | Visual check |
+| Duo inner display, landscape (951×669, split) | `testReadingPoseKeepsProseReachable` runs in landscape and exercises the split's detail stack | Frame check against the measured table: window 951×669, sidebar 320pt, detail starts at x 340 |
+| Expanded reading pose (catalog + prose) | Prose text + `阅读设置` hittable in landscape (`testReadingPoseKeepsProseReachable`). The catalog identifiers (`catalog.row.*`, no `book.row.*`) and the **book**-titled navigation bar are asserted manually | Visual check |
 | Catalog unit switch | Tapping another readable row swaps the prose chapter while the bar keeps the book title; unwritten rows have no tag, so tapping them changes nothing | Visual check |
 | Sidebar revealed while reading | UI test (`testReadingPoseKeepsProseReachable`): the detail column narrows, the arrangement can no longer hold two panes, and prose must remain reachable rather than stranding the user on a selection-only catalog | — |
 | Rotation landscape ↔ portrait | UI test (`testReaderSurvivesRotation`), including reader position | — |
-| Reader back → unit list | UI test (`testReaderBackReturnsToUnitList`) | — |
-| Compact width, unit tap → reader | UI test — guards the typed-path regression where a mismatched `NavigationStack(path:)` element type silently dropped the push | — |
+| Reader back → unit work → unit list | UI test (`testReaderBackReturnsToUnitList`): the unit row opens the production surface, the reader is one tap away, and back walks reader → unit work → unit list | — |
+| Chapter jump (上一章 / 下一章 / 章节目录) | UI test (`testChapterJumpStartsAtChapterTop`): the new chapter's heading must land inside the viewport near the top, so a preserved scroll offset cannot pass. Swipes target `reader.scroll` so the gesture lands on the prose pane in the expanded pose | Visual check |
+| Compact width, unit tap → unit work → reader | `testReaderBackReturnsToUnitList` in portrait — guards the typed-path regression where a mismatched `NavigationStack(path:)` element type silently dropped the push | — |
+| Book workspace panels + unit flow | UI test (`testBookWorkspacePanelsAndUnitFlow`): primary banner + the four panels render, unit work shows the four flow actions, outline/bible/task panels load | Visual check |
+| Task page is the confirmation surface | UI test (`testTaskPageIsTheConfirmationSurface`): inbox/empty state renders; the old 审校/候选 tabs are gone | — |
+| Finalize routes to the task page | UI test (`testFinalizeRoutesToTaskPage`): zero-LLM finalize on the sample book lands a candidate and routes to the task page; reject cleans up | — |
+| Chapter menu + editor sheet | UI test (`testChapterMenuAndEditorSheet`): 复制本章 / 编辑本章, dirty-cancel asks before discarding | — |
+| New-book sheet | UI test (`testNewBookUsesNativeSheet`) | Visual check |
+| Knowledge tab | UI test (`testKnowledgeTabOpensArticle`) | Visual check |
+| Settings stages / review / model config | UI test (`testSettingsShowsStagesAndReview`) | Visual check |
 | Outer display, compact width | UI test on iPhone 17 simulator | Check on device |
 | Partially folded (book / table / tent) | — | Required on device |
 | Split View, bar switching edges | — | Required on device |
@@ -421,7 +569,7 @@ Two behaviours that only show up in a specific pose, so they need a test in
 
 - **Pushing the reader.** Landscape exercises the split's detail stack; portrait
   exercises the compact stack. Passing in one pose says nothing about the other
-   — this is exactly how the typed-path bug shipped green.
+  — this is exactly how the typed-path bug shipped green.
 - **Back.** In landscape the control comes from the split view; in portrait it
   is the navigation stack's. Assert the destination, not the affordance.
 
@@ -463,7 +611,6 @@ Design rules, inherited from DanQing Studio so the two apps read as one family:
 - Render at 4× and downsample once — that is the whole anti-aliasing strategy,
   so no vector toolkit or design tool is required to change the art.
 
-
 ## Build
 
 ```bash
@@ -472,14 +619,23 @@ make pack-ios
 make pack-android
 ```
 
-Without `APPLE_TEAM_ID`, the iOS command builds an unsigned simulator app.
-With a team, it archives for iOS devices and exports an IPA. Select the
-export with `IOS_EXPORT_METHOD=debugging`, `release-testing` (TestFlight), or
+`make install-ios` (alias `make install`) is the debug loop: with an iPhone
+connected it rebuilds the gomobile core, regenerates the project, signs, installs
+and launches in one step. `DEVICE=<name or UDID>` picks among several connected
+phones, `SKIP_CORE=1` reuses the existing core, `NO_LAUNCH=1` installs without
+launching. A locked phone still gets the app installed; the script reports that
+instead of failing. The signing team comes from `APPLE_TEAM_ID`, or from the OU
+of the keychain's Apple Development certificate when unset.
+
+Without `APPLE_TEAM_ID`, `make pack-ios` builds an unsigned simulator app. With
+a team, it archives for iOS devices and exports an IPA. Select the export with
+`IOS_EXPORT_METHOD=debugging`, `release-testing` (TestFlight, the default), or
 `app-store-connect`. `RELEASE_VERSION` sets the app version.
 
 Android produces a debug APK and runs JVM tests and lint. The build requires
-JDK 21 (Temurin or another full JDK with `javac`) and Android SDK 36. A signed release AAB still
-requires the release keystore configuration; do not commit credentials.
+JDK 21 (Temurin or another full JDK with `javac`) and Android SDK 36. A signed
+release AAB still requires the release keystore configuration; do not commit
+credentials.
 
 CI builds these native projects directly. It installs no Rust/Tauri and builds
 no mobile frontend bundle; the only shared artifact is the gomobile core in
@@ -499,5 +655,9 @@ no mobile frontend bundle; the only shared artifact is the gomobile core in
   the productivity category. No self-updater or remote UI is bundled.
 - The bundled sample book gives reviewers a complete reading path without
   requiring a model key.
+- Store prerequisites: iCloud Documents enabled on the `com.danmo.novel` App
+  ID with the `iCloud.com.danmo.novel` container and a matching provisioning
+  profile (automatic signing handles this; verify per "Entitlements and
+  path hand-off").
 - Store acceptance still requires real-device accessibility, lifecycle,
   keyboard, interrupted-run, import/export, and complete workflow testing.

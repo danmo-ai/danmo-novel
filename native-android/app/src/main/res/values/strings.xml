@@ -1,0 +1,139 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  All user-visible copy. Canonical wording and the terms to avoid live in
+  docs/mobile-copy.md together with the iOS Copy.swift table; when the two
+  platforms disagree, that glossary decides which side changes.
+-->
+<resources>
+    <!-- Tabs / shell -->
+    <string name="tab_shelf">书架</string>
+    <string name="tab_logs">日志</string>
+    <string name="tab_settings">设置</string>
+    <string name="core_preparing">正在准备本地工作区…</string>
+    <string name="error_operation_failed">操作未完成</string>
+    <string name="error_core_start_failed">本地内核未能启动</string>
+    <string name="action_ok">好</string>
+    <string name="action_retry">重试</string>
+    <string name="action_refresh">刷新</string>
+    <string name="action_save">保存</string>
+    <string name="action_saving">正在保存…</string>
+    <string name="action_create">创建</string>
+    <string name="action_creating">正在创建…</string>
+
+    <!-- Shelf -->
+    <string name="shelf_title">我的书架</string>
+    <string name="shelf_refresh">刷新书架</string>
+    <string name="shelf_new_book">新建书籍</string>
+    <string name="shelf_empty_title">开始你的第一本书</string>
+    <string name="shelf_empty_body">书稿保存在本机。你可以先读一本完整示例，或从自己的灵感开始。</string>
+    <string name="shelf_open_demo">看看示例书</string>
+    <string name="shelf_meta">%1$s · %2$d 个单元 · %3$d 篇定稿</string>
+    <string name="shelf_candidates">%1$d 个候选待处理</string>
+    <string name="shelf_read_only">只读</string>
+    <string name="genre_unknown">未分类</string>
+
+    <!-- New book -->
+    <string name="new_book_name_label">书名</string>
+    <string name="new_book_genre_label">题材</string>
+    <string name="new_book_idea_hint">主角、困境、目标和核心冲突</string>
+    <string-array name="new_book_genres">
+        <item>玄幻</item>
+        <item>仙侠</item>
+        <item>都市</item>
+        <item>悬疑</item>
+        <item>言情</item>
+    </string-array>
+
+    <!-- Book detail -->
+    <string name="book_fallback_title">书籍</string>
+    <string name="book_back_to_shelf">返回书架</string>
+    <string name="book_refresh">刷新书籍</string>
+    <string name="book_not_loaded">尚未载入书籍</string>
+    <string name="book_no_units">这本书还没有写作单元</string>
+    <string name="book_meta">%1$s · %2$d 个单元</string>
+    <string name="book_meta_read_only">%1$s · %2$d 个单元 · 只读</string>
+    <string name="book_volume_title">第 %1$d 卷</string>
+    <string name="book_open_prose">阅读正文</string>
+    <string name="unit_meta">%1$s · 第 %2$d–%3$d 章 · %4$s</string>
+
+    <!-- Reader -->
+    <string name="reader_back_to_units">返回单元列表</string>
+    <string name="reader_empty">这个单元还没有可阅读的正文</string>
+    <string name="reader_empty_chapter">本章没有正文。</string>
+    <string name="reader_body_fallback_title">正文</string>
+    <string name="reader_unit_missing">找不到这个写作单元</string>
+    <string name="reader_no_final_prose">这个单元还没有已定稿正文</string>
+    <string name="error_unknown">发生未知错误，请重试</string>
+    <string name="reader_chapter_chip">第 %1$d 章</string>
+    <string name="reader_chapter_title">第 %1$d 章 %2$s</string>
+    <string name="reader_previous_chapter">上一章</string>
+    <string name="reader_next_chapter">下一章</string>
+
+    <!-- Settings: providers -->
+    <string name="settings_title">设置</string>
+    <string name="settings_providers_section">提供商</string>
+    <string name="settings_refresh_providers">刷新提供商</string>
+    <string name="settings_add_provider">添加提供商</string>
+    <string name="settings_key_note">密钥只保存在本机，不会出现在页面或日志中。模型调用只连接你配置的服务。</string>
+    <string name="settings_no_providers_title">还没有提供商</string>
+    <string name="settings_no_providers_body">添加兼容 OpenAI、Responses 或 Anthropic 协议的提供商。</string>
+    <string name="settings_provider_models">%1$d 个已启用模型 · %2$s</string>
+    <string name="settings_key_saved">已保存密钥</string>
+    <string name="settings_key_missing">未设置密钥</string>
+
+    <!-- Settings: provider editor -->
+    <string name="provider_add_title">添加提供商</string>
+    <string name="provider_edit_title">编辑提供商</string>
+    <string name="provider_back_to_settings">返回设置</string>
+    <string name="provider_name_label">名称</string>
+    <string name="provider_name_locked">已有提供商的名称不可更改</string>
+    <string name="provider_protocol_label">连接协议</string>
+    <string name="provider_base_url_label">Base URL</string>
+    <string name="provider_base_url_hint">留空时使用协议默认地址</string>
+    <string name="provider_api_key_label">API Key</string>
+    <string name="provider_api_key_keep">留空保持不变</string>
+    <string name="provider_api_key_hint">密钥只提交给本机内核，不会回显</string>
+    <string name="provider_dialect_label">默认协议方言</string>
+    <string name="provider_models_title">模型</string>
+    <string name="provider_models_hint">逐行维护模型 ID，并控制是否启用</string>
+    <string name="provider_model_add">添加模型</string>
+    <string name="provider_models_empty">尚未添加模型。点右上角加号添加模型 ID。</string>
+    <string name="provider_model_id_label">模型 ID</string>
+    <string name="provider_model_delete">删除模型</string>
+    <string name="provider_model_duplicate">模型 ID 不能重复</string>
+    <string name="provider_missing">找不到这个提供商</string>
+    <string name="dialect_auto">自动</string>
+    <string name="protocol_legacy_openai">OpenAI 兼容（旧配置）</string>
+
+    <!-- Logs -->
+    <string name="logs_title">模型日志</string>
+    <string name="logs_refresh">刷新日志</string>
+    <string name="logs_empty_title">暂无模型日志</string>
+    <string name="logs_empty_body">模型调用、耗时与失败原因会记录在这里。当前原生版本不会启动模型生成。</string>
+    <string name="logs_model_unknown">未指定模型</string>
+    <string name="logs_calls">%1$s · %2$d 次调用</string>
+    <string name="logs_run_id">运行 ID</string>
+    <string name="logs_book_id">书籍 ID</string>
+    <string name="logs_candidate_id">候选 ID</string>
+    <string name="logs_updated_at">更新时间</string>
+    <string name="logs_time_unknown">时间未记录</string>
+
+    <!-- Run kind / status (docs/mobile-copy.md, same labels as the desktop) -->
+    <string name="run_kind_plan">立项</string>
+    <string name="run_kind_idea">创意扩写</string>
+    <string name="run_kind_outline">细纲</string>
+    <string name="run_kind_write">正文</string>
+    <string name="run_kind_review">审校</string>
+    <string name="run_kind_revise">修订</string>
+    <string name="run_kind_finalize">定稿</string>
+    <string name="run_kind_unknown">未知任务</string>
+    <string name="run_status_pending">排队</string>
+    <string name="run_status_running">运行中</string>
+    <string name="run_status_waiting_accept">待接受</string>
+    <string name="run_status_succeeded">成功</string>
+    <string name="run_status_failed">失败</string>
+    <string name="run_status_cancelled">已取消</string>
+    <string name="run_status_rejected">已拒绝</string>
+    <string name="run_status_expired">已过期</string>
+    <string name="run_status_unknown">未知状态</string>
+</resources>

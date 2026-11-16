@@ -44,13 +44,20 @@ internal val apiJson = Json {
     encodeDefaults = true
 }
 
+/** OkHttp throws "method POST must have a request body." the moment a
+ * null body is attached to POST/PUT, so the body has to be decided before the
+ * builder's method() call instead of being patched in afterwards. */
+@PublishedApi
+internal fun buildCoreRequest(method: String, path: String, body: String): Request {
+    val requestBody = body.takeIf { it.isNotEmpty() }?.toRequestBody("application/json".toMediaType())
+    return Request.Builder().url("http://danmo.local$path").method(method, requestBody).build()
+}
+
 class NovelApi(private val core: LocalCore) {
     private val client = OkHttpClient.Builder().addInterceptor(LocalCoreInterceptor(core)).build()
 
     private suspend inline fun <reified T> request(method: String, path: String, body: String = ""): T {
-        val requestBuilder = Request.Builder().url("http://danmo.local$path").method(method, null)
-        if (body.isNotEmpty()) requestBuilder.method(method, body.toRequestBody("application/json".toMediaType()))
-        client.newCall(requestBuilder.build()).execute().use { response ->
+        client.newCall(buildCoreRequest(method, path, body)).execute().use { response ->
             val responseBody = response.body?.string().orEmpty()
             if (!response.isSuccessful) {
                 val message = runCatching { apiJson.decodeFromString<ErrorBody>(responseBody).error }.getOrNull()

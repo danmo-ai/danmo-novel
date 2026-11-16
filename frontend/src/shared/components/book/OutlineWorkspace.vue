@@ -19,7 +19,10 @@ const rawMode = ref(false)
 const rawDraft = ref('')
 const editing = ref<{ path: string; kind: string; entityId: string; field: string; value: string; label: string } | null>(null)
 const book = computed(() => store.currentBook)
-const bookRaw = computed(() => book.value?.files['outline/book_outline.md'] || '')
+// files 只在 include=files 的第二层响应里出现：骨架期 book 存在而 files 为
+// undefined，`?.files[...]` 会在这时抛 TypeError 打断整棵渲染树（大纲/设定/任务
+// 全部空白）。必须 `?.files?.[...]`——骨架期返回空串，文件到位后自动重算。
+const bookRaw = computed(() => book.value?.files?.['outline/book_outline.md'] || '')
 const bookDoc = computed(() => book.value?.structuredOutlines?.['outline/book_outline.md'])
 const volume = computed(() => book.value?.volumes.find((v) => v.volume === activeVolume.value) || book.value?.volumes[0])
 const units = computed(() => (book.value?.units || []).filter((u) => !volume.value || u.volume === volume.value.volume))

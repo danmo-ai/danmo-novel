@@ -26,11 +26,15 @@ data class UnitInfo(
     val hasProse: Boolean = false,
     val prosePath: String = "",
 ) {
+    val isFinished: Boolean get() = status == "reviewed" || status == "finalized"
+
     val statusTitle: String get() = when (status) {
-        "reviewed", "finalized" -> "已定稿"
+        "finalized" -> "已定稿"
+        "reviewed" -> "已审校"
         "drafted" -> "待审校"
         "accepted" -> "待写正文"
-        else -> "待写细纲"
+        "proposed" -> "待写细纲"
+        else -> status
     }
 }
 

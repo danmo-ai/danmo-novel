@@ -13,7 +13,7 @@ export DQ_FRONTEND_PORT
 .PHONY: help backend dev start stop frontend-install frontend-dev frontend-build \
 	dev-desktop test build build-sidecar clean set-release-secrets \
 	pack-prereqs pack-macos-desktop pack-linux-desktop pack-windows-desktop \
-	mobile-core pack-ios pack-android app-icon
+	mobile-core pack-ios pack-android install-ios install app-icon
 
 help:
 	@echo "Danmo Novel"
@@ -24,6 +24,7 @@ help:
 	@echo "  make pack-macos-desktop | pack-linux-desktop | pack-windows-desktop"
 	@echo "  make mobile-core      iOS/Android gomobile 内核"
 	@echo "  make pack-ios | pack-android                 原生 SwiftUI / Compose"
+	@echo "  make install-ios                            装到已连接的真机 iPhone（自动重建内核+签名+启动）"
 	@echo "  make app-icon                               重新生成 iOS/Android/桌面 图标"
 	@echo "  make set-release-secrets                    写入发布 secrets（证书从钥匙串导出）"
 
@@ -91,6 +92,16 @@ pack-ios:
 pack-android:
 	@chmod +x scripts/*.sh
 	@./scripts/pack_mobile.sh android
+
+# 真机调试安装：连接 iPhone 后一条命令完成内核重建、xcodegen、签名构建、
+# 安装与启动。多台真机时用 DEVICE=<名称或 UDID> 指定。
+install-ios:
+	@chmod +x scripts/*.sh
+	@DEVICE="$(DEVICE)" ./scripts/install_ios.sh
+
+# `make install` 是 install-ios 的简写：本项目只有 iOS/Android 两个原生端，
+# 而 Android 走 gradle installDebug，日常「装上真机」指的就是 iPhone。
+install: install-ios
 
 # 图标唯一来源是脚本；iOS/Android/桌面 三套资源都由它生成。
 app-icon:

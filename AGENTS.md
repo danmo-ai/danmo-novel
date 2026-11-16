@@ -40,6 +40,7 @@ Danmo Novel — controlled AI novel production workbench. Go backend + Vue 3 des
 8. **REST API changes ship with mobile.** Any REST API change must update the affected mobile code (`native-ios/`, `native-android/`) in the same change.
 9. **iOS is the mobile baseline.** New mobile features go out as an iOS test build first; once settled, Android replicates the iOS version.
 10. **Duo layout follows `docs/native-mobile.md`.** That file is the binding checklist for iPhone Duo: adapt by offered width (not orientation, not size class, not idiom), use system containers (`NavigationSplitView` / `ArrangementView`) instead of hand-built `HStack` columns, and keep bars system-owned. Read it before touching shelf, unit list or reader layout.
+11. **Copy follows `docs/mobile-copy.md`.** One glossary for both phones and the desktop wording it already agrees with. Strings live in `native-android/…/values/strings.xml` and `native-ios/Sources/Core/Copy.swift`; no Chinese literal in a view file, and a term change updates both sides in the same change.
 
 ## Commands
 
@@ -50,6 +51,7 @@ make test
 make build
 make pack-macos-desktop  # also pack-linux-desktop / pack-windows-desktop
 make pack-ios / pack-android # native SwiftUI / Compose + in-process Go REST
+make install-ios # debug install onto a connected iPhone (core + sign + launch)
 ```
 
 ## Reused assets

@@ -15,6 +15,8 @@ const modelFilter = ref('')
 const statusFilter = ref('')
 const query = ref('')
 const expanded = ref('')
+/** 展开行的完整 run（含逐调用明细）；列表本身只有预聚合汇总。 */
+const expandedRun = ref<Run | null>(null)
 
 const kindLabels = KIND_LABELS
 const statusLabels: Record<string, string> = { ...STATUS_LABELS }
@@ -27,24 +29,42 @@ const filtered = computed(() => runs.value.filter((r) => {
   if (query.value && !`${r.bookId} ${r.modelId} ${r.spec.unitId || ''} ${r.error || ''}`.toLowerCase().includes(query.value.toLowerCase())) return false
   return true
 }))
+// 列表行是精简版：汇总读预聚合字段；展开的完整 run 仍可从 calls 计算。
+function runInput(r: Run) { return r.inputTokens ?? (r.calls || []).reduce((n, c) => n + (c.promptTokens || 0), 0) }
+function runOutput(r: Run) { return r.outputTokens ?? (r.calls || []).reduce((n, c) => n + (c.completionTokens || 0), 0) }
+function runDurationMs(r: Run) { return r.durationMs ?? (r.calls || []).reduce((n, c) => n + (c.durationMs || 0), 0) }
 const totals = computed(() => {
   const acc = filtered.value.reduce((a, r) => {
     a.calls += r.callsUsed || 0
-    a.input += (r.calls || []).reduce((n, c) => n + (c.promptTokens || 0), 0)
-    a.output += (r.calls || []).reduce((n, c) => n + (c.completionTokens || 0), 0)
-    a.duration += (r.calls || []).reduce((n, c) => n + (c.durationMs || 0), 0)
+    a.input += runInput(r)
+    a.output += runOutput(r)
+    a.duration += runDurationMs(r)
+    a.cacheRead += r.cacheRead ?? (r.calls || []).reduce((n, c) => n + (c.cacheReadTokens || 0), 0)
+    a.cacheCreation += r.cacheCreation ?? (r.calls || []).reduce((n, c) => n + (c.cacheCreationTokens || 0), 0)
     return a
-  }, { calls: 0, input: 0, output: 0, duration: 0 })
+  }, { calls: 0, input: 0, output: 0, duration: 0, cacheRead: 0, cacheCreation: 0 })
   // 缓存命中是"重试成本"的直接指标：命中率接近 100% 说明修复重试几乎只付
   // repair 那几十 token 的钱。按当前筛选范围汇总，口径与输入 Token 一致。
-  const cache = cacheStat(filtered.value.flatMap((r) => r.calls || []))
+  const cache = {
+    read: acc.cacheRead, creation: acc.cacheCreation, prompt: acc.input,
+    ratio: acc.input > 0 ? acc.cacheRead / acc.input : 0,
+    hasData: acc.cacheRead > 0 || acc.cacheCreation > 0,
+  }
   return { ...acc, cache }
 })
 function bookTitle(id: string) { return store.books.find((b) => b.id === id)?.title || id }
 function date(iso: string) { return new Date(iso).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' }) }
-function duration(run: Run) { const ms = (run.calls || []).reduce((n, c) => n + (c.durationMs || 0), 0); return ms ? `${(ms / 1000).toFixed(1)}s` : '—' }
-function tokens(run: Run, key: 'promptTokens' | 'completionTokens') { return (run.calls || []).reduce((n, c) => n + (c[key] || 0), 0) }
-function runCache(run: Run) { return cacheStat(run.calls) }
+function duration(run: Run) { const ms = runDurationMs(run); return ms ? `${(ms / 1000).toFixed(1)}s` : '—' }
+function tokens(run: Run, key: 'promptTokens' | 'completionTokens') { return key === 'promptTokens' ? runInput(run) : runOutput(run) }
+function runCache(run: Run) {
+  if (run.cacheRead !== undefined || run.cacheCreation !== undefined) {
+    const read = run.cacheRead ?? 0
+    const creation = run.cacheCreation ?? 0
+    const prompt = runInput(run)
+    return { read, creation, prompt, ratio: prompt > 0 ? read / prompt : 0, hasData: read > 0 || creation > 0 }
+  }
+  return cacheStat(run.calls)
+}
 function cacheHit(c: CallRecord) { return callCacheText(c) }
 function target(run: Run) {
   const spec = run.spec || {}
@@ -62,8 +82,16 @@ async function load() {
   loading.value = true
   try {
     await store.loadBooks()
-    runs.value = (await api.get<Run[] | null>('/api/runs')) ?? []
+    runs.value = (await api.get<Run[] | null>('/api/runs?limit=200')) ?? []
   } catch (e) { store.fail(e) } finally { loading.value = false }
+}
+async function toggleExpand(id: string) {
+  if (expanded.value === id) { expanded.value = ''; expandedRun.value = null; return }
+  expanded.value = id
+  expandedRun.value = null
+  try {
+    expandedRun.value = await api.get<Run>(`/api/runs/${id}`)
+  } catch (e) { store.fail(e) }
 }
 function reset() { bookFilter.value = ''; kindFilter.value = ''; modelFilter.value = ''; statusFilter.value = ''; query.value = '' }
 onMounted(load)
@@ -95,7 +123,7 @@ onMounted(load)
     <div v-else class="run-table panel">
       <div class="table-header"><span>时间 / 书籍</span><span>类型 / 目标</span><span>模型</span><span>输入 / 输出</span><span>调用 / 耗时</span><span>状态</span><span></span></div>
       <article v-for="r in filtered" :key="r.id" class="run-record">
-        <button class="run-row" @click="expanded = expanded === r.id ? '' : r.id">
+        <button class="run-row" @click="toggleExpand(r.id)">
           <span class="time-book"><strong>{{ bookTitle(r.bookId) }}</strong><small>{{ date(r.createdAt) }}</small></span>
           <span class="kind-target"><strong>{{ runKindLabel(r.kind, r.spec?.rewriteMode || r.spec?.mode) }}</strong><small>{{ target(r) }}</small></span>
           <span class="model" :title="r.modelId">{{ r.modelId }}</span>
@@ -108,20 +136,23 @@ onMounted(load)
           <span class="expand">{{ expanded === r.id ? '−' : '+' }}</span>
         </button>
         <div v-if="expanded === r.id" class="run-details">
-          <div v-if="r.error" class="error-detail"><strong>错误</strong><p>{{ r.error }}</p></div>
-          <div class="detail-meta"><span>任务 ID：{{ r.id }}</span><span>基础版本：{{ r.spec.baseRevision || '未指定' }}</span><span v-if="r.candidateId">候选：{{ r.candidateId }}</span></div>
-          <div v-if="r.contextSummary?.length" class="context-detail"><strong>上下文</strong><span v-for="item in r.contextSummary" :key="item">{{ item }}</span></div>
-          <div v-if="runCache(r).hasData" class="cache-detail">
-            <strong>缓存</strong>
-            <span>命中 {{ runCache(r).read.toLocaleString() }} token（{{ hitRateText(runCache(r)) }}）</span>
-            <span v-if="runCache(r).creation">写入 {{ runCache(r).creation.toLocaleString() }} token</span>
-            <span class="hint">重试调用（step=repair）的命中率应接近 100%：repair 只追加在 payload 尾部，前缀不动。</span>
-          </div>
-          <table>
-            <thead><tr><th>#</th><th>调用用途</th><th>模型</th><th>输入 Token</th><th>缓存命中</th><th>缓存写入</th><th>输出 Token</th><th>耗时</th><th>开始时间</th></tr></thead>
-            <tbody><tr v-for="c in r.calls" :key="c.index"><td>{{ c.index }}</td><td>{{ c.step }}</td><td>{{ c.modelId }}</td><td>{{ c.promptTokens }}</td><td>{{ cacheHit(c) }}</td><td>{{ c.cacheCreationTokens ? c.cacheCreationTokens.toLocaleString() : '—' }}</td><td>{{ c.completionTokens }}</td><td>{{ (c.durationMs / 1000).toFixed(1) }}s</td><td>{{ date(c.startedAt) }}</td></tr></tbody>
-          </table>
-          <p v-if="!r.calls?.length" class="muted">尚无模型调用记录。</p>
+          <template v-if="expandedRun && expandedRun.id === r.id">
+            <div v-if="expandedRun.error" class="error-detail"><strong>错误</strong><p>{{ expandedRun.error }}</p></div>
+            <div class="detail-meta"><span>任务 ID：{{ expandedRun.id }}</span><span>基础版本：{{ expandedRun.spec.baseRevision || '未指定' }}</span><span v-if="expandedRun.candidateId">候选：{{ expandedRun.candidateId }}</span></div>
+            <div v-if="expandedRun.contextSummary?.length" class="context-detail"><strong>上下文</strong><span v-for="item in expandedRun.contextSummary" :key="item">{{ item }}</span></div>
+            <div v-if="runCache(expandedRun).hasData" class="cache-detail">
+              <strong>缓存</strong>
+              <span>命中 {{ runCache(expandedRun).read.toLocaleString() }} token（{{ hitRateText(runCache(expandedRun)) }}）</span>
+              <span v-if="runCache(expandedRun).creation">写入 {{ runCache(expandedRun).creation.toLocaleString() }} token</span>
+              <span class="hint">重试调用（step=repair）的命中率应接近 100%：repair 只追加在 payload 尾部，前缀不动。</span>
+            </div>
+            <table>
+              <thead><tr><th>#</th><th>调用用途</th><th>模型</th><th>输入 Token</th><th>缓存命中</th><th>缓存写入</th><th>输出 Token</th><th>耗时</th><th>开始时间</th></tr></thead>
+              <tbody><tr v-for="c in expandedRun.calls" :key="c.index"><td>{{ c.index }}</td><td>{{ c.step }}</td><td>{{ c.modelId }}</td><td>{{ c.promptTokens }}</td><td>{{ cacheHit(c) }}</td><td>{{ c.cacheCreationTokens ? c.cacheCreationTokens.toLocaleString() : '—' }}</td><td>{{ c.completionTokens }}</td><td>{{ (c.durationMs / 1000).toFixed(1) }}s</td><td>{{ date(c.startedAt) }}</td></tr></tbody>
+            </table>
+            <p v-if="!expandedRun.calls?.length" class="muted">尚无模型调用记录。</p>
+          </template>
+          <p v-else class="muted">正在加载调用明细…</p>
         </div>
       </article>
     </div>

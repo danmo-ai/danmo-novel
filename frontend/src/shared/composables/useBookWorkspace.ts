@@ -9,11 +9,10 @@ import { computed, onMounted, onUnmounted, ref, watch, type Ref } from 'vue'
 import { useAppStore } from '@/shared/stores/app'
 import { api } from '@/shared/api/client'
 import type { Candidate, CallRecord, UnitInfo } from '@/shared/types'
-import { planModeLabel as sharedPlanModeLabel } from '@/shared/utils/runLabels'
 import { cacheStat } from '@/shared/utils/tokenStats'
-import { parseStructuredMarkdown } from '@/shared/utils/structuredMarkdown'
+import { buildTaskItems } from '@/shared/utils/taskItems'
 
-export type WorkspaceView = 'setup' | 'write' | 'outline' | 'bible' | 'review'
+export type WorkspaceView = 'setup' | 'write' | 'outline' | 'bible' | 'tasks'
 
 export function useBookWorkspace(opts: { bookId: Ref<string>; view: Ref<WorkspaceView> }) {
   const { bookId, view } = opts
@@ -27,28 +26,14 @@ export function useBookWorkspace(opts: { bookId: Ref<string>; view: Ref<Workspac
   const modelId = ref('')
   const runDrawer = ref(false)
   /**
-   * 待审候选 = 「接受后会写文件」的候选。审校清单不在其中：它不写正文，唯一归属地是
-   * 审校页。两处都渲染同一批 findings 只会让作者在两份列表之间来回跳。
+   * 任务页是唯一确认地：runs 与候选融合成一条时间线（待确认/进行中/操作记录）。
+   * 立项工作台自带提案与立项候选的确认，所以那里不再重复列出 plan/idea。
    */
-  const pendingCandidates = computed(() => store.candidates.filter((c) => c.kind !== 'review'))
-  /**
-   * 审校页的修订候选已经在该单元的清单区就地展开（diff + 确认落盘），底部不再重复
-   * 一份。立项页的提案/立项候选同理：ProjectSetup 里已经带 diff 与接受按钮，
-   * 底部再列一遍只会让人以为有两批待办。
-   */
-  const listedCandidates = computed(() => {
-    if (view.value === 'setup') {
-      return pendingCandidates.value.filter((c) => c.kind !== 'plan' && c.kind !== 'idea')
-    }
-    if (view.value !== 'review') return pendingCandidates.value
-    const reviewUnits = new Set(store.candidates.filter((c) => c.kind === 'review' && c.unitId).map((c) => c.unitId))
-    return pendingCandidates.value.filter((c) => !(c.kind === 'revise' && c.unitId && reviewUnits.has(c.unitId)))
-  })
-  /** 定稿候选里"回证未在正文中找到"的 advisory：数量要在卡片顶部点出来。 */
-  function unverifiedEvidence(c: Candidate) {
-    return (c.findings || []).filter((f) => String(f.id || '').startsWith('evidence-'))
+  const taskItems = computed(() => buildTaskItems(store.candidates, store.runs, store.activeRun))
+  const pendingTaskCount = computed(() => taskItems.value.filter((i) => i.section === 'needsAction').length)
+  function pendingTasksOf(unitId: string) {
+    return taskItems.value.filter((i) => i.section === 'needsAction' && i.unitId === unitId)
   }
-
   /** 实时日志的缓存汇总：重试（step=repair）命中率应接近 100%。 */
   function runCacheOf(run: { calls?: CallRecord[] } | null | undefined) { return cacheStat(run?.calls) }
 
@@ -59,11 +44,14 @@ export function useBookWorkspace(opts: { bookId: Ref<string>; view: Ref<Workspac
   const editingOutline = ref(false)
   const isProseUnit = computed(() => Boolean(selectedUnit.value?.hasProse && selectedUnit.value.prosePath === editorPath.value))
   const stageLabels: Record<string, string> = { idea: '创意扩写', plan: '立项', outline: '细纲', write: '写作', review: '审校', structure_review: '结构审校', finalize: '定稿', revise: '修订', local_edit: '局部编辑', rewrite_entity: '重写设定' }
-  const hasBookOutline = computed(() => Boolean((store.currentBook?.files?.['outline/book_outline.md'] || '').trim()))
+  // 骨架响应不带 files；「有没有总纲」以服务端算好的 primary 为准
+  // （plan/idea 即尚未立项）。面板文件按需加载后才用于渲染。
+  const needsSetup = computed(() => store.primary?.kind === 'plan' || store.primary?.kind === 'idea')
+  const hasBookOutline = computed(() => !needsSetup.value)
   // 立项工作台只服务「还没有总纲」的书：它是 idea loop 到一次结构化立项的入口。
   // 总纲一旦落盘，优化与重新立项都归大纲 Tab，避免两个页面做同一件事。
-  const showSetupTab = computed(() => !hasBookOutline.value)
-  /** 创意提案是否已确认：提案段有内容才算，空模板不算。 */
+  const showSetupTab = computed(() => needsSetup.value)
+  /** 创意提案是否已确认：提案段有内容才算，空模板不算。（面板文件加载后可用） */
   const hasIdeaProposal = computed(() => {
     const raw = store.currentBook?.files?.['outline/idea.md'] || ''
     const idx = raw.split('\n').findIndex((line) => line.trim() === '## 创意提案')
@@ -106,7 +94,8 @@ export function useBookWorkspace(opts: { bookId: Ref<string>; view: Ref<Workspac
       return { label: '创意扩写', description: '先把 idea 扩成可立项的提案；提案接受后才进入结构化立项', target: '全书', stage: '创意扩写' }
     }
     if (p.kind === 'plan') {
-      if (!hasBookOutline.value) {
+      // 服务端对「无总纲」的书返回 plan(init)；有总纲时返回的是卷纲或单元步骤。
+      if (needsSetup.value) {
         return { label: '立项', description: '以已确认的创意提案为依据，一次生成总纲、全部设定与人物（不含卷纲）', target, stage: '立项' }
       }
       return { label: `生成卷纲 · 第 ${p.volume || 1} 卷`, description: '根据总纲生成当前卷纲，并只播种缺失单元', target, stage: '卷纲' }
@@ -122,7 +111,8 @@ export function useBookWorkspace(opts: { bookId: Ref<string>; view: Ref<Workspac
     await store.loadLLM().catch(() => {})
     await reload()
     // 还没有总纲的书先落在立项工作台：那里才是「下一步」能解释清楚的地方。
-    if (!hasBookOutline.value) view.value = 'setup'
+    if (needsSetup.value) view.value = 'setup'
+    await ensurePanelFiles()
   })
   onUnmounted(() => {
     if (pollTimer.value) clearInterval(pollTimer.value)
@@ -131,15 +121,28 @@ export function useBookWorkspace(opts: { bookId: Ref<string>; view: Ref<Workspac
   watch(selectedUnit, () => { editingProse.value = false; editingChapter.value = null; editingOutline.value = false; void openSelected() })
   watch(view, (next) => {
     if (next !== 'write') runDrawer.value = false
+    void ensurePanelFiles()
   })
   watch(view, () => {
     void openSelected()
   })
   // 立项候选被接受后总纲才出现：此刻作者还停在一个已经不该存在的 Tab 上，
   // 必须在同一帧迁走，否则页面剩一片空白。
-  watch(hasBookOutline, (done) => {
-    if (done && view.value === 'setup') view.value = 'outline'
+  watch(needsSetup, (needed) => {
+    if (!needed && view.value === 'setup') view.value = 'outline'
   })
+
+  /** 大纲/设定/立项面板需要文件；写作/审校/候选只用骨架。按需加载，幂等。 */
+  async function ensurePanelFiles() {
+    if (view.value === 'outline' || view.value === 'bible' || view.value === 'setup') {
+      await store.loadBookFiles(bookId.value).catch(() => {})
+      // 无单元书的编辑器落在 book-bible：文件到位后回填。
+      const book = store.currentBook
+      if (book && !book.units.length && editorPath.value === 'book-bible.md') {
+        editorContent.value = book.files?.['book-bible.md'] || ''
+      }
+    }
+  }
 
   async function reload() {
     await store.loadBook(bookId.value)
@@ -151,7 +154,7 @@ export function useBookWorkspace(opts: { bookId: Ref<string>; view: Ref<Workspac
     }
     if (!book.units.length) {
       editorPath.value = 'book-bible.md'
-      editorContent.value = book.files['book-bible.md'] || ''
+      editorContent.value = book.files?.['book-bible.md'] || ''
     } else if (selectedUnit.value) {
       await openSelected()
     }
@@ -172,6 +175,18 @@ export function useBookWorkspace(opts: { bookId: Ref<string>; view: Ref<Workspac
     } else {
       editorPath.value = u.outlinePath
       editorContent.value = u.outlineRaw || ''
+    }
+    // 骨架不带 outlineRaw；单元合同与细纲编辑都读它，按需取单个细纲文件回填。
+    if (!u.outlineRaw && u.outlinePath) {
+      try {
+        const raw = (await api.get<any>(`/api/books/${bookId.value}/file?path=${encodeURIComponent(u.outlinePath)}`)).content
+        editorContent.value = u.hasProse ? editorContent.value : raw
+        const book = store.currentBook
+        if (book) {
+          const idx = book.units.findIndex((x) => x.unitId === u.unitId)
+          if (idx >= 0) book.units[idx] = { ...book.units[idx], outlineRaw: raw }
+        }
+      } catch { /* 细纲尚未生成时保持空合同 */ }
     }
   }
 
@@ -322,56 +337,6 @@ export function useBookWorkspace(opts: { bookId: Ref<string>; view: Ref<Workspac
     })
   }
 
-  function planCandidateFiles(c: Candidate) {
-    const files: string[] = []
-    const mode = c.mode || ''
-    const keep = new Set((c as any).preservePaths || [])
-    if (mode === 'volume') {
-      if (c.planMarkdown?.volume_outline) files.push(`outline/volumes/${c.volumeId || 'v01'}.md`)
-      return files
-    }
-    if (c.planMarkdown?.book_outline && !keep.has('outline/book_outline.md')) files.push('outline/book_outline.md')
-    if (c.planSettings) files.push(...Object.keys(c.planSettings).filter((p) => !keep.has(p)))
-    if (c.planMarkdown?.cast_json) {
-      try {
-        const cast = JSON.parse(c.planMarkdown.cast_json) as { stem?: string }[]
-        for (const row of cast) {
-          if (row.stem && !keep.has(`canon/cast/${row.stem}.md`)) files.push(`canon/cast/${row.stem}.md`)
-        }
-      } catch { /* ignore */ }
-    }
-    return files
-  }
-
-  function planModeLabel(mode?: string) {
-    return sharedPlanModeLabel(mode)
-  }
-
-  // 候选对象的目标标识：优先具体单元/卷/目标文件；细纲批次取自单元合同，
-  // 避免把「目标卷」误显示成单元 id。
-  function candidateTarget(c: Candidate): string {
-    if (c.unitId) return c.unitId
-    if (c.targetPath) return c.targetPath
-    const units = c.unitOutlines ?? []
-    if (units.length === 1 && units[0]?.unitId) return units[0].unitId as string
-    if (units.length > 1) return `${c.volumeId || ''} · ${units.length} 个单元`
-    return c.volumeId || ''
-  }
-
-  function candidateStructure(c: Candidate, kind: 'book' | 'volume') {
-    const raw = kind === 'book' ? c.planMarkdown?.book_outline : c.planMarkdown?.volume_outline
-    if (!raw) return null
-    return parseStructuredMarkdown(raw, kind === 'book' ? 'book-outline/v1' : 'volume-outline/v1')
-  }
-
-  function planCastPreview(c: Candidate) {
-    try {
-      return JSON.stringify(JSON.parse(c.planMarkdown?.cast_json || '[]'), null, 2)
-    } catch {
-      return c.planMarkdown?.cast_json || ''
-    }
-  }
-
   async function confirmRun(payload: { instruction: string; knowledgeIds: string[]; preservePaths: string[]; rewriteMode?: string }) {
     const spec = confirmSpec.value
     confirmSpec.value = null
@@ -419,11 +384,12 @@ export function useBookWorkspace(opts: { bookId: Ref<string>; view: Ref<Workspac
     await runUnitAction(p.kind as 'outline' | 'write' | 'review' | 'finalize')
   }
 
-  /** 对当前选中单元启动生产/重做；审校与定稿会切到审校页便于看结果。 */
+  /**
+   * 对当前选中单元启动生产/重做。只负责发起：结果在任务页确认，所以不切页——
+   * 调用要跑几分钟，把作者送到一个此刻还空着的界面没有意义。
+   */
   function runUnitAction(kind: 'outline' | 'write' | 'review' | 'finalize') {
     if (!selectedUnit.value || busy.value) return
-    if (kind === 'review' || kind === 'finalize') view.value = 'review'
-    else if (kind === 'outline' || kind === 'write') view.value = 'write'
     start(kind)
   }
 
@@ -439,8 +405,9 @@ export function useBookWorkspace(opts: { bookId: Ref<string>; view: Ref<Workspac
       })
       if (c.kind === 'revise' && c.unitId) focusUnit(c.unitId)
       await reload()
-      // 归档后清单从「待审候选」消失，必须在历史里还能回看。
-      await Promise.all([store.loadRuns(bookId.value), store.loadCandidateHistory(bookId.value)])
+      // 归档后清单从「待审候选」消失，必须在历史里还能回看（历史已展开才刷）。
+      await store.loadRuns(bookId.value)
+      if (store.historyLoaded) await store.loadCandidateHistory(bookId.value)
     } catch (e: any) {
       const msg = e?.message || String(e)
       // 定稿候选自带本地门禁阻断时，接受会被服务端拒绝。"通过并定稿"若没有这一手，
@@ -508,8 +475,8 @@ export function useBookWorkspace(opts: { bookId: Ref<string>; view: Ref<Workspac
       for (const id of candidateIds) await store.rejectCandidate(id, reason)
       await Promise.all([
         store.loadCandidates(bookId.value),
-        store.loadCandidateHistory(bookId.value),
         store.loadRuns(bookId.value),
+        ...(store.historyLoaded ? [store.loadCandidateHistory(bookId.value)] : []),
       ])
       store.note('已丢弃审校清单；去写作页重新点「审校」才会生成新结论')
     } catch (e) {
@@ -581,13 +548,13 @@ export function useBookWorkspace(opts: { bookId: Ref<string>; view: Ref<Workspac
       : ''
     try {
       await store.rejectCandidate(c.id, reason)
-      await Promise.all([store.loadCandidates(bookId.value), store.loadCandidateHistory(bookId.value)])
+      await store.loadCandidates(bookId.value)
+      if (store.historyLoaded) await store.loadCandidateHistory(bookId.value)
       if (c.kind === 'revise') {
-        // 唯一的下一步入口在审校页：直接带作者过去，别让他自己找。
+        // 留在任务页：该单元的审校清单还在原地，可调整勾选后重试。
         if (c.unitId) focusUnit(c.unitId)
-        view.value = 'review'
         await store.loadRuns(bookId.value)
-        store.note('已丢弃这次修复，正文未改变；可在审校页调整勾选后重新自动修复')
+        store.note('已丢弃这次修复，正文未改变；可调整勾选后重新自动修复')
       } else if (c.kind === 'review') {
         await store.loadRuns(bookId.value)
         store.note('已丢弃这份审校清单；去写作页重新点「审校」才会生成新结论')
@@ -603,9 +570,6 @@ export function useBookWorkspace(opts: { bookId: Ref<string>; view: Ref<Workspac
     } catch (e) { store.fail(e) }
   }
 
-  function chapterText(c: Candidate) {
-    return (c.chapters || []).map((ch) => `## 第${ch.chapter}章 ${ch.title || ''}\n\n${ch.body}`).join('\n\n---\n\n')
-  }
   const statusText: Record<string, string> = {
     proposed: '待细纲', accepted: '待写', drafted: '草稿', reviewed: '已审校', finalized: '定稿',
   }
@@ -616,13 +580,13 @@ export function useBookWorkspace(opts: { bookId: Ref<string>; view: Ref<Workspac
     store, bookId, view,
     selectedUnit, editorPath, editorContent, saving, busy, modelId, runDrawer,
     editingProse, editingOutline, confirmSpec, confirmTitle,
-    listedCandidates, isProseUnit, hasBookOutline, showSetupTab, volumeGroups, primaryInfo,
+    taskItems, pendingTaskCount, pendingTasksOf,
+    isProseUnit, hasBookOutline, showSetupTab, volumeGroups, primaryInfo,
     stageLabels, statusText,
-    unverifiedEvidence, runCacheOf, toggleVolume, isCollapsed, defaultModelFor,
+    runCacheOf, toggleVolume, isCollapsed, defaultModelFor,
     saveFile, beginChapterEdit, cancelChapterEdit, saveChapterEdit, saveOutlineField,
     reviewStructure, repairStructure, start, startIdea, startRewrite, startPlan,
-    planCandidateFiles, planModeLabel, candidateTarget, candidateStructure, planCastPreview,
     confirmRun, primaryAction, runUnitAction, accept, reviseFindings,
-    focusUnit, rejectUnitFindings, retrySplitReview, reject, enableWrite, chapterText,
+    focusUnit, rejectUnitFindings, retrySplitReview, reject, enableWrite,
   }
 }

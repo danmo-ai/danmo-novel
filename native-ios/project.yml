@@ -54,6 +54,9 @@ targets:
       - path: UITests
     dependencies:
       - target: DanmoNovel
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
   DanmoNovelTests:
     type: bundle.unit-test
     platform: iOS
@@ -62,3 +65,6 @@ targets:
       - path: Tests
     dependencies:
       - target: DanmoNovel
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES

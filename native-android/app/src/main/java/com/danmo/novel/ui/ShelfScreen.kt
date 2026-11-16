@@ -3,6 +3,8 @@ package com.danmo.novel.ui
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -34,9 +36,12 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringArrayResource
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.danmo.novel.R
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -49,13 +54,13 @@ fun ShelfScreen(viewModel: LibraryViewModel, onOpenBook: (String) -> Unit) {
 
     Column(Modifier.fillMaxSize()) {
         TopAppBar(
-            title = { Text("我的书架") },
+            title = { Text(stringResource(R.string.shelf_title)) },
             actions = {
                 IconButton(onClick = viewModel::refreshBooks) {
-                    Icon(Icons.Default.Refresh, contentDescription = "刷新书架")
+                    Icon(Icons.Default.Refresh, contentDescription = stringResource(R.string.shelf_refresh))
                 }
                 IconButton(onClick = { creating = true }) {
-                    Icon(Icons.Default.Add, contentDescription = "新建书籍")
+                    Icon(Icons.Default.Add, contentDescription = stringResource(R.string.shelf_new_book))
                 }
             },
         )
@@ -66,21 +71,21 @@ fun ShelfScreen(viewModel: LibraryViewModel, onOpenBook: (String) -> Unit) {
                 verticalArrangement = Arrangement.Center,
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
-                Text("开始你的第一本书", style = MaterialTheme.typography.headlineSmall)
+                Text(stringResource(R.string.shelf_empty_title), style = MaterialTheme.typography.headlineSmall)
                 Text(
-                    "书稿保存在本机。先读一本完整示例，或从自己的灵感开始。",
+                    stringResource(R.string.shelf_empty_body),
                     modifier = Modifier.padding(vertical = 16.dp),
                     style = MaterialTheme.typography.bodyLarge,
                 )
                 Button(
                     enabled = !creatingBook,
                     onClick = { viewModel.createDemo { onOpenBook(it.summary.id) } },
-                ) { Text("看看示例书") }
+                ) { Text(stringResource(R.string.shelf_open_demo)) }
                 OutlinedButton(
                     enabled = !creatingBook,
                     onClick = { creating = true },
                     modifier = Modifier.padding(top = 8.dp),
-                ) { Text("新建书籍") }
+                ) { Text(stringResource(R.string.shelf_new_book)) }
             }
         } else {
             LazyColumn(Modifier.fillMaxSize()) {
@@ -89,8 +94,20 @@ fun ShelfScreen(viewModel: LibraryViewModel, onOpenBook: (String) -> Unit) {
                         headlineContent = { Text(book.title, fontWeight = FontWeight.SemiBold) },
                         supportingContent = {
                             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                Text("${book.genre.ifEmpty { "未分类" }} · ${book.unitCount} 个单元 · ${book.reviewedCount} 篇定稿")
-                                if (book.openCandidates > 0) Text("${book.openCandidates} 个候选待处理", color = MaterialTheme.colorScheme.primary)
+                                Text(
+                                    stringResource(
+                                        R.string.shelf_meta,
+                                        book.genre.ifEmpty { stringResource(R.string.genre_unknown) },
+                                        book.unitCount,
+                                        book.reviewedCount,
+                                    ),
+                                )
+                                if (book.openCandidates > 0) {
+                                    Text(
+                                        stringResource(R.string.shelf_candidates, book.openCandidates),
+                                        color = MaterialTheme.colorScheme.primary,
+                                    )
+                                }
                                 if (book.unitCount > 0) {
                                     LinearProgressIndicator(
                                         progress = { (book.reviewedCount.toFloat() / book.unitCount).coerceIn(0f, 1f) },
@@ -100,7 +117,9 @@ fun ShelfScreen(viewModel: LibraryViewModel, onOpenBook: (String) -> Unit) {
                             }
                         },
                         trailingContent = {
-                            if (book.readOnly) Text("只读", style = MaterialTheme.typography.labelMedium)
+                            if (book.readOnly) {
+                                Text(stringResource(R.string.shelf_read_only), style = MaterialTheme.typography.labelMedium)
+                            }
                         },
                         modifier = Modifier.clickable { onOpenBook(book.id) },
                     )
@@ -122,11 +141,12 @@ fun ShelfScreen(viewModel: LibraryViewModel, onOpenBook: (String) -> Unit) {
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 fun NewBookSheet(viewModel: LibraryViewModel, onDismiss: () -> Unit, onCreated: (String) -> Unit) {
+    val genres = stringArrayResource(R.array.new_book_genres).toList()
     var title by remember { mutableStateOf("") }
-    var genre by remember { mutableStateOf("玄幻") }
+    var genre by remember { mutableStateOf(genres.first()) }
     var idea by remember { mutableStateOf("") }
     val creating by viewModel.creatingBook.collectAsStateWithLifecycle()
 
@@ -135,18 +155,20 @@ fun NewBookSheet(viewModel: LibraryViewModel, onDismiss: () -> Unit, onCreated: 
             Modifier.padding(horizontal = 24.dp).padding(bottom = 32.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
-            Text("新建书籍", style = MaterialTheme.typography.headlineSmall)
+            Text(stringResource(R.string.shelf_new_book), style = MaterialTheme.typography.headlineSmall)
             OutlinedTextField(
                 value = title,
                 onValueChange = { title = it },
-                label = { Text("书名") },
+                label = { Text(stringResource(R.string.new_book_name_label)) },
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true,
                 enabled = !creating,
             )
-            Text("题材", style = MaterialTheme.typography.labelLarge)
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                listOf("玄幻", "都市", "悬疑", "言情").forEach { item ->
+            Text(stringResource(R.string.new_book_genre_label), style = MaterialTheme.typography.labelLarge)
+            // FlowRow, not Row: five chips at a large font scale overflow a Row
+            // and the last genre becomes unreachable.
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                genres.forEach { item ->
                     FilterChip(
                         selected = genre == item,
                         onClick = { genre = item },
@@ -158,7 +180,7 @@ fun NewBookSheet(viewModel: LibraryViewModel, onDismiss: () -> Unit, onCreated: 
             OutlinedTextField(
                 value = idea,
                 onValueChange = { idea = it },
-                label = { Text("主角、困境、目标和核心冲突") },
+                label = { Text(stringResource(R.string.new_book_idea_hint)) },
                 modifier = Modifier.fillMaxWidth(),
                 minLines = 3,
                 enabled = !creating,
@@ -171,7 +193,9 @@ fun NewBookSheet(viewModel: LibraryViewModel, onDismiss: () -> Unit, onCreated: 
                     }
                 },
                 modifier = Modifier.fillMaxWidth(),
-            ) { Text(if (creating) "正在创建…" else "创建") }
+            ) {
+                Text(stringResource(if (creating) R.string.action_creating else R.string.action_create))
+            }
         }
     }
 }

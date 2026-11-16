@@ -2,7 +2,8 @@
  * 审校页的全部视图模型：按单元分组的清单、勾选、章节筛选、历史归档。
  *
  * 这里只产出「该显示什么、能点什么」，不产出任何按钮文案以外的布局；
- * emit 的那几个动作通过 opts 回调传出去，由 ReviewWorkspace 决定点击后要不要换页。
+ * emit 的那几个动作通过 opts 回调传出去，由 ReviewFindingsEditor（任务页的确认卡
+ * 内嵌）决定点击后要不要换页。
  */
 import { computed, onMounted, reactive, ref, watch, type Ref } from 'vue'
 import { api } from '@/shared/api/client'
@@ -45,7 +46,8 @@ export function useReview(opts: {
       if (c.kind !== 'revise' || c.unitId !== unitId) continue
       if (!latest || new Date(c.createdAt) > new Date(latest.createdAt)) latest = c
     }
-    return latest
+    // 列表行只带元信息；diff 需要详情（有缓存则直接用）。
+    return latest ? store.resolvedCandidate(latest) : null
   }
 
   /** 修订候选本身不记「修了哪几条」，唯一可信来源是它对应 run 的 IssueIDs。 */
@@ -268,6 +270,20 @@ export function useReview(opts: {
     return ts ? new Date(ts).toLocaleString() : ''
   }
 
+  /** 历史归档与修订详情都是展开时才取：列表响应不再携带它们。 */
+  const archiveLoaded = computed(() => store.historyLoaded)
+  async function ensureArchive() {
+    const id = store.currentBook?.summary.id
+    if (id) await store.loadCandidateHistory(id).catch(() => {})
+  }
+  watch(groups, (list) => {
+    for (const g of list) {
+      if (g.revise && g.revise.hasChapters && !g.revise.chapters) {
+        void store.candidateDetail(g.revise.id)
+      }
+    }
+  }, { immediate: true })
+
   return {
     store, selectedUnit, busy, readOnly,
     groups, totalFindings, totalBlocking, reviewRuns, latestRun, rejectedRevises,
@@ -276,6 +292,7 @@ export function useReview(opts: {
     pickTitle, canRevise, copyFinding, archivedByCandidate,
     rulesSource, rulesSourceLabel, selectableCount, RULES_DOC_ID,
     archiveLabel, runStatusLabel, archivedAt,
+    archiveLoaded, ensureArchive,
     reviseSummary, keyOf,
     retrySplit: (unitId?: string) => opts.onRetrySplit?.(unitId),
     focusUnit: (unitId: string) => opts.onFocusUnit?.(unitId),

@@ -3,6 +3,7 @@ package com.danmo.novel.ui
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.danmo.novel.R
 import com.danmo.novel.data.BookDetail
 import com.danmo.novel.data.BookFile
 import com.danmo.novel.data.BookSummary
@@ -108,13 +109,14 @@ class LibraryViewModel(application: Application) : AndroidViewModel(application)
         _readerLoading.value = true
         _readerFile.value = null
         _readerUnit.value = null
+        val missingUnit = getApplication<Application>().getString(R.string.reader_unit_missing)
+        val missingProse = getApplication<Application>().getString(R.string.reader_no_final_prose)
         readerJob = viewModelScope.launch {
             awaitReady()
             runCatching {
                 val book = _detail.value?.takeIf { it.summary.id == bookId } ?: api.book(bookId).also { _detail.value = it }
-                val unit = book.units.firstOrNull { it.unitId == unitId }
-                    ?: error("找不到这个写作单元")
-                check(unit.hasProse && unit.prosePath.isNotBlank()) { "这个单元还没有已定稿正文" }
+                val unit = book.units.firstOrNull { it.unitId == unitId } ?: error(missingUnit)
+                check(unit.hasProse && unit.prosePath.isNotBlank()) { missingProse }
                 val file = api.file(bookId, unit.prosePath)
                 _readerUnit.value = unit
                 _readerFile.value = file
@@ -195,9 +197,10 @@ class LibraryViewModel(application: Application) : AndroidViewModel(application)
         core.stop()
         super.onCleared()
     }
-}
 
-private fun Throwable.displayMessage(): String? = when (this) {
-    is CancellationException -> null
-    else -> message?.takeIf { it.isNotBlank() } ?: "发生未知错误，请重试"
+    private fun Throwable.displayMessage(): String? = when (this) {
+        is CancellationException -> null
+        else -> message?.takeIf { it.isNotBlank() }
+            ?: getApplication<Application>().getString(R.string.error_unknown)
+    }
 }

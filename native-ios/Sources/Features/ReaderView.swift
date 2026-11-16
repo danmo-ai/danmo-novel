@@ -29,7 +29,7 @@ struct ReaderView: View {
             if let chapter = currentChapter {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 28) {
-                        Text("第 \(chapter.number) 章")
+                        Text(Copy.chapterHeading(chapter.number))
                             .font(.headline)
                             .foregroundStyle(.secondary)
                             .accessibilityIdentifier("reader.chapter")
@@ -56,14 +56,23 @@ struct ReaderView: View {
                 }
                 .scrollIndicators(.automatic)
                 .background(Color(.systemBackground))
+                .accessibilityIdentifier("reader.scroll")
+                // Switching chapters replaces the scroll content, but a
+                // `ScrollView` keeps its old point offset across that swap, so
+                // the reader landed mid-chapter (or mid-air when the next
+                // chapter was shorter) instead of on the chapter's first line.
+                // A per-chapter identity gives every chapter a fresh scroll
+                // origin — the same "jump to chapter start" the Android reader
+                // gets from `scrollTo(0)`.
+                .id(chapter.number)
             } else if let error {
                 ContentUnavailableView(
-                    "正文读取失败",
+                    Copy.readerFailed,
                     systemImage: "exclamationmark.triangle",
                     description: Text(error)
                 )
             } else {
-                ProgressView("正在打开正文…")
+                ProgressView(Copy.readerOpening)
             }
         }
     }
@@ -90,46 +99,51 @@ struct ReaderView: View {
                     Button {
                         selectChapter(offset: -1, from: chapter.number)
                     } label: {
-                        Label("上一章", systemImage: "chevron.up")
+                        Label(Copy.previousChapter, systemImage: "chevron.up")
                     }
                     .disabled(chapter.number == chapters.first?.number)
 
                     Button {
                         selectChapter(offset: 1, from: chapter.number)
                     } label: {
-                        Label("下一章", systemImage: "chevron.down")
+                        Label(Copy.nextChapter, systemImage: "chevron.down")
                     }
                     .disabled(chapter.number == chapters.last?.number)
 
                     Menu {
                         ForEach(chapters) { item in
-                            Button("第 \(item.number) 章 · \(item.title)") { setChapter(item.number) }
+                            Button(Copy.chapterMenuLabel(number: item.number, title: item.title)) {
+                                setChapter(item.number)
+                            }
                         }
                     } label: {
-                        Label("第 \(chapter.number) 章，共 \(chapters.count) 章", systemImage: "list.number")
+                        Label(
+                            Copy.chapterCountLabel(number: chapter.number, count: chapters.count),
+                            systemImage: "list.number"
+                        )
                     }
                 }
                 Button { showingSettings = true } label: {
-                    Label("阅读设置", systemImage: "textformat.size")
+                    Label(Copy.readerSettings, systemImage: "textformat.size")
                 }
             }
         }
         .sheet(isPresented: $showingSettings) {
             NavigationStack {
                 Form {
-                    Section("正文字号") {
+                    Section(Copy.readerFontSection) {
                         HStack {
-                            Text("小").font(.caption)
+                            Text(Copy.readerFontSmall).font(.caption)
                             Slider(value: $fontSize, in: 16...28, step: 1)
-                            Text("大").font(.title3)
+                            Text(Copy.readerFontLarge).font(.title3)
                         }
-                        Text("字号 \(Int(fontSize))")
+                        Text(Copy.readerFontSize(Int(fontSize)))
                             .foregroundStyle(.secondary)
                     }
                 }
-                .navigationTitle("阅读设置")
+                .navigationTitle(Copy.readerSettings)
                 .navigationBarTitleDisplayMode(.inline)
-                .toolbar { Button("完成") { showingSettings = false } }
+                .toolbar { Button(Copy.readerSettingsDone) { showingSettings = false } }
             }
             .presentationDetents([.height(230)])
         }
@@ -152,7 +166,7 @@ struct ReaderView: View {
             } else {
                 paragraphs = []
                 selectedChapter = nil
-                error = "这份正文还没有可识别的章节。"
+                error = Copy.readerUnrecognized
             }
         } catch {
             self.error = error.localizedDescription

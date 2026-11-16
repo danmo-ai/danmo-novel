@@ -8,21 +8,30 @@ struct ReaderRoute: Hashable {
     let unit: UnitInfo
 }
 
-/// A destination in the single-column (compact) shelf stack.
+/// A destination in the shelf's stacks (compact and split detail share it).
 enum ShelfRoute: Hashable {
     case book(String)
+    case unit(bookID: String, unitID: String)
     case reader(ReaderRoute)
 }
 
 struct ShelfView: View {
     @Environment(LocalCoreService.self) private var core
     @Environment(LibraryStore.self) private var library
+    @Environment(WorkspaceRegistry.self) private var registry
 
     @State private var showingNewBook = false
     @State private var isSeeding = false
     @State private var selectedBookID: String?
     @State private var compactPath: [ShelfRoute] = []
     @State private var detailPath: [ShelfRoute] = []
+    /// Live mirror of whichever path is on screen. `NavigationStack(path:)`
+    /// writes its binding back to [] when the stack leaves the hierarchy, so
+    /// reading `detailPath`/`compactPath` inside the *reverse* hand-off can see
+    /// an already-cleared value. These refs are updated from `onChange` while
+    /// the stack is still presented and are never cleared by SwiftUI.
+    @State private var liveDetail: [ShelfRoute] = []
+    @State private var liveCompact: [ShelfRoute] = []
     /// Collapses the bookshelf column while someone is reading, so the expanded
     /// layout becomes "unit catalog | prose" instead of "bookshelf | prose".
     @State private var columnVisibility: NavigationSplitViewVisibility = .doubleColumn
@@ -73,9 +82,13 @@ struct ShelfView: View {
                 handOff(split: split)
             }
             .onChange(of: detailPath) { _, path in
+                if usesSplit { liveDetail = path }
                 // Reading takes over the whole width: shelf column away, catalog
                 // and prose side by side.
                 columnVisibility = path.isEmpty ? .doubleColumn : .detailOnly
+            }
+            .onChange(of: compactPath) { _, path in
+                if !usesSplit { liveCompact = path }
             }
     }
 
@@ -100,7 +113,7 @@ struct ShelfView: View {
     private var sidebar: some View {
         Group {
             if library.isLoading && library.books.isEmpty {
-                ProgressView("正在打开书架…")
+                ProgressView(Copy.shelfLoading)
             } else if library.books.isEmpty {
                 emptyShelf
             } else {
@@ -113,7 +126,7 @@ struct ShelfView: View {
                     ForEach(library.books) { book in
                         BookRow(book: book)
                             .tag(book.id)
-                            .accessibilityHint("打开单元和正文")
+                            .accessibilityHint(Copy.shelfOpenBookHint)
                             .accessibilityIdentifier("book.row.\(book.id)")
                     }
                 }
@@ -121,7 +134,7 @@ struct ShelfView: View {
                 .refreshable { await library.loadBooks() }
             }
         }
-        .navigationTitle("我的书架")
+        .navigationTitle(Copy.shelfTitle)
         .toolbar { newBookToolbar }
     }
 
@@ -129,31 +142,58 @@ struct ShelfView: View {
         NavigationStack(path: $detailPath) {
             detailRoot
                 .navigationDestination(for: ShelfRoute.self) { route in
-                    switch route {
-                    case .book(let id):
-                        BookDetailView(bookID: id)
-                    case .reader(let route):
-                        // Expanded width gets the catalog + prose arrangement;
-                        // the compact stack pushes a single-page reader instead.
-                        if #available(iOS 27.1, *) {
-                            ReaderSplitView(bookID: route.bookID, unit: route.unit)
-                        } else {
-                            ReaderView(bookID: route.bookID, unit: route.unit)
-                        }
-                    }
+                    destination(route, path: $detailPath)
                 }
+        }
+    }
+
+    /// One destination builder for both stacks: the typed path is shared, so a
+    /// route pushed in one pose must resolve identically in the other.
+    @ViewBuilder
+    private func destination(_ route: ShelfRoute, path: Binding<[ShelfRoute]>) -> some View {
+        switch route {
+        case .book(let id):
+            BookDetailView(
+                bookID: id,
+                push: { path.wrappedValue.append($0) },
+                popToBook: { if !path.wrappedValue.isEmpty { path.wrappedValue.removeLast() } }
+            )
+        case .unit(let bookID, let unitID):
+            let workspace = registry.workspace(bookID: bookID)
+            UnitWorkView(
+                workspace: workspace,
+                unitID: unitID,
+                openTasks: {
+                    // Confirmation lives on the book's task page: pop back to
+                    // the book and select that tab.
+                    workspace.tab = .tasks
+                    if !path.wrappedValue.isEmpty { path.wrappedValue.removeLast() }
+                }
+            )
+        case .reader(let route):
+            // Expanded width gets the catalog + prose arrangement;
+            // the compact stack pushes a single-page reader instead.
+            if usesSplit, #available(iOS 27.1, *) {
+                ReaderSplitView(bookID: route.bookID, unit: route.unit)
+            } else {
+                ReaderView(bookID: route.bookID, unit: route.unit)
+            }
         }
     }
 
     @ViewBuilder
     private var detailRoot: some View {
         if let selectedBookID {
-            BookDetailView(bookID: selectedBookID)
+            BookDetailView(
+                bookID: selectedBookID,
+                push: { detailPath.append($0) },
+                popToBook: { detailPath = [] }
+            )
         } else {
             ContentUnavailableView(
-                "选择一本书",
+                Copy.shelfPickBookTitle,
                 systemImage: "books.vertical",
-                description: Text("在左侧选择书稿，查看单元并继续阅读。")
+                description: Text(Copy.shelfPickBookBody)
             )
         }
     }
@@ -164,7 +204,7 @@ struct ShelfView: View {
         NavigationStack(path: $compactPath) {
             Group {
                 if library.isLoading && library.books.isEmpty {
-                    ProgressView("正在打开书架…")
+                    ProgressView(Copy.shelfLoading)
                 } else if library.books.isEmpty {
                     emptyShelf
                 } else {
@@ -176,7 +216,7 @@ struct ShelfView: View {
                             NavigationLink(value: ShelfRoute.book(book.id)) {
                                 BookRow(book: book)
                             }
-                            .accessibilityHint("打开单元和正文")
+                            .accessibilityHint(Copy.shelfOpenBookHint)
                             .accessibilityIdentifier("book.row.\(book.id)")
                         }
                     }
@@ -184,16 +224,10 @@ struct ShelfView: View {
                     .refreshable { await library.loadBooks() }
                 }
             }
-            .navigationTitle("我的书架")
+            .navigationTitle(Copy.shelfTitle)
             .toolbar { newBookToolbar }
             .navigationDestination(for: ShelfRoute.self) { route in
-                switch route {
-                case .book(let id):
-                    BookDetailView(bookID: id)
-                case .reader(let route):
-                    // Compact width is one screen: a plain single-page reader.
-                    ReaderView(bookID: route.bookID, unit: route.unit)
-                }
+                destination(route, path: $compactPath)
             }
         }
     }
@@ -204,7 +238,7 @@ struct ShelfView: View {
     private var newBookToolbar: some ToolbarContent {
         ToolbarItem(placement: .primaryAction) {
             Button { showingNewBook = true } label: {
-                Label("新建书籍", systemImage: "plus")
+                Label(Copy.shelfNewBook, systemImage: "plus")
             }
             .disabled(!core.isReady)
         }
@@ -212,18 +246,18 @@ struct ShelfView: View {
 
     private var emptyShelf: some View {
         ContentUnavailableView {
-            Label("开始你的第一本书", systemImage: "books.vertical")
+            Label(Copy.shelfEmptyTitle, systemImage: "books.vertical")
         } description: {
-            Text("书稿保存在本机。你可以先读一本完整示例，或从自己的灵感开始。")
+            Text(Copy.shelfEmptyBody)
         } actions: {
             Button {
                 Task { await seedDemo() }
             } label: {
-                if isSeeding { ProgressView() } else { Text("看看示例书") }
+                if isSeeding { ProgressView() } else { Text(Copy.shelfOpenDemo) }
             }
             .buttonStyle(.borderedProminent)
             .disabled(isSeeding || !core.isReady)
-            Button("新建一本书") { showingNewBook = true }
+            Button(Copy.shelfNewBook) { showingNewBook = true }
                 .disabled(!core.isReady)
         }
     }
@@ -231,28 +265,43 @@ struct ShelfView: View {
     /// Carries the open book and reading position across the split boundary so
     /// rotating the Duo never drops the reader — the compact stack and the
     /// detail stack are different containers and cannot share a path.
+    ///
+    /// Reads the live mirrors, not the bindings: when a stack leaves the
+    /// hierarchy SwiftUI writes its `path` binding back to [], so the reverse
+    /// hand-off would otherwise see an empty source and drop the reader.
     private func handOff(split: Bool) {
         if split {
-            if case .reader(let route)? = compactPath.last {
+            let source = liveCompact
+            if case .reader(let route)? = source.last {
                 selectedBookID = route.bookID
-                detailPath = [.reader(route)]
-            } else if case .book(let id)? = compactPath.last {
+                detailPath = [.unit(bookID: route.bookID, unitID: route.unit.unitId), .reader(route)]
+            } else if case .unit(let bookID, let unitID)? = source.last {
+                selectedBookID = bookID
+                detailPath = [.unit(bookID: bookID, unitID: unitID)]
+            } else if case .book(let id)? = source.last {
                 selectedBookID = id
                 detailPath = []
             } else if selectedBookID == nil {
                 selectedBookID = library.books.first?.id
                 detailPath = []
             }
+            liveDetail = detailPath
             compactPath = []
+            liveCompact = []
             columnVisibility = detailPath.isEmpty ? .doubleColumn : .detailOnly
         } else {
+            // Carry the *whole* detail path, not just its last route: a reader
+            // pushed on top of unit work must keep its back stack, or rotating
+            // back strands the reader with no way to the unit list.
             var path: [ShelfRoute] = []
             if let bookID = selectedBookID {
                 path.append(.book(bookID))
-                if let last = detailPath.last { path.append(last) }
+                path.append(contentsOf: liveDetail)
             }
             compactPath = path
+            liveCompact = path
             detailPath = []
+            liveDetail = []
             columnVisibility = .doubleColumn
         }
     }
@@ -287,24 +336,24 @@ private struct BookRow: View {
                     .lineLimit(2)
                 Spacer()
                 if book.openCandidates > 0 {
-                    Label("待审", systemImage: "checkmark.circle")
+                    Label(Copy.candidates(book.openCandidates), systemImage: "checkmark.circle")
                         .font(.caption)
                         .foregroundStyle(.orange)
                 }
             }
             HStack {
-                Text(book.genre.isEmpty ? "未分类" : book.genre)
+                Text(book.genre.isEmpty ? Copy.genreUnknown : book.genre)
                 Text("·")
-                Text("\(book.unitCount) 个单元")
+                Text(Copy.unitCount(book.unitCount))
                 Spacer()
-                Text("\(book.reviewedCount) 篇定稿")
+                Text(Copy.reviewedCount(book.reviewedCount))
             }
             .font(.subheadline)
             .foregroundStyle(.secondary)
             if book.unitCount > 0 {
                 ProgressView(value: book.progress)
-                    .accessibilityLabel("定稿进度")
-                    .accessibilityValue("\(book.reviewedCount)/\(book.unitCount)")
+                    .accessibilityLabel(Copy.reviewProgressLabel)
+                    .accessibilityValue(Copy.reviewProgress(reviewed: book.reviewedCount, units: book.unitCount))
             }
         }
         .padding(.vertical, 8)

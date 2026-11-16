@@ -112,8 +112,8 @@ final class LocalCoreService: @unchecked Sendable {
                 self.syncEnabled = false
                 self.syncPath = nil
                 self.syncUnavailableReason = isolated
-                    ? "独立工作区：不连接 iCloud"
-                    : "iCloud 不可用（未登录或该构建未带 iCloud 能力）"
+                    ? Copy.isolatedWorkspace
+                    : Copy.iCloudUnavailable
             }
         }
 
@@ -122,7 +122,7 @@ final class LocalCoreService: @unchecked Sendable {
                 continuation.resume(with: Result { try CoreResult(DanmonovelStart(home.path)) })
             }
         }
-        guard result.ok else { throw APIError.message("本地内核启动失败") }
+        guard result.ok else { throw APIError.message(Copy.coreStartFailed) }
         Task { @MainActor in self.isReady = true }
     }
 

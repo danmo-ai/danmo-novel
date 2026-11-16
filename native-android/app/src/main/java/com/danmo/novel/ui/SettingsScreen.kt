@@ -44,12 +44,14 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.danmo.novel.R
 import com.danmo.novel.data.Provider
 import com.danmo.novel.data.ProviderModel
 import com.danmo.novel.data.ProviderRequest
@@ -68,13 +70,13 @@ fun SettingsScreen(
 
     Column(Modifier.fillMaxSize()) {
         TopAppBar(
-            title = { Text("模型服务") },
+            title = { Text(stringResource(R.string.settings_title)) },
             actions = {
                 IconButton(onClick = viewModel::loadProviders) {
-                    Icon(Icons.Default.Refresh, contentDescription = "刷新服务配置")
+                    Icon(Icons.Default.Refresh, contentDescription = stringResource(R.string.settings_refresh_providers))
                 }
                 IconButton(onClick = onAddProvider) {
-                    Icon(Icons.Default.Add, contentDescription = "添加模型服务")
+                    Icon(Icons.Default.Add, contentDescription = stringResource(R.string.settings_add_provider))
                 }
             },
         )
@@ -86,7 +88,14 @@ fun SettingsScreen(
         ) {
             item {
                 Text(
-                    "密钥只保存在本机内核中，接口不会返回密钥明文。保存配置不会发起模型生成。",
+                    stringResource(R.string.settings_providers_section),
+                    style = MaterialTheme.typography.titleSmall,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+            }
+            item {
+                Text(
+                    stringResource(R.string.settings_key_note),
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     style = MaterialTheme.typography.bodyMedium,
                 )
@@ -95,9 +104,9 @@ fun SettingsScreen(
                 item {
                     Card(Modifier.fillMaxWidth()) {
                         Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                            Text("尚未配置模型服务", style = MaterialTheme.typography.titleMedium)
-                            Text("添加兼容 OpenAI、Responses 或 Anthropic 协议的服务。")
-                            OutlinedButton(onClick = onAddProvider) { Text("添加服务") }
+                            Text(stringResource(R.string.settings_no_providers_title), style = MaterialTheme.typography.titleMedium)
+                            Text(stringResource(R.string.settings_no_providers_body))
+                            OutlinedButton(onClick = onAddProvider) { Text(stringResource(R.string.settings_add_provider)) }
                         }
                     }
                 }
@@ -110,7 +119,15 @@ fun SettingsScreen(
                         provider.baseUrl?.takeIf { it.isNotBlank() }?.let {
                             Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
-                        Text("${provider.models.count { it.enabled }} 个已启用模型 · ${if (provider.hasApiKey) "已保存密钥" else "未设置密钥"}")
+                        Text(
+                            stringResource(
+                                R.string.settings_provider_models,
+                                provider.models.count { it.enabled },
+                                stringResource(
+                                    if (provider.hasApiKey) R.string.settings_key_saved else R.string.settings_key_missing,
+                                ),
+                            ),
+                        )
                         if (provider.models.isNotEmpty()) {
                             Text(
                                 provider.models.joinToString("、") { it.name },
@@ -160,10 +177,19 @@ fun ProviderEditorScreen(viewModel: LibraryViewModel, providerId: String?, onBac
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text(if (providerId == null) "添加模型服务" else "编辑模型服务") },
+                title = {
+                    Text(
+                        stringResource(
+                            if (providerId == null) R.string.provider_add_title else R.string.provider_edit_title,
+                        ),
+                    )
+                },
                 navigationIcon = {
                     IconButton(onClick = onBack, enabled = !saving) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回设置")
+                        Icon(
+                            Icons.AutoMirrored.Filled.ArrowBack,
+                            contentDescription = stringResource(R.string.provider_back_to_settings),
+                        )
                     }
                 },
             )
@@ -175,8 +201,10 @@ fun ProviderEditorScreen(viewModel: LibraryViewModel, providerId: String?, onBac
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     if (loading) CircularProgressIndicator()
                     else Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Text("找不到这个模型服务")
-                        OutlinedButton(onClick = viewModel::loadProviders, modifier = Modifier.padding(top = 16.dp)) { Text("重试") }
+                        Text(stringResource(R.string.provider_missing))
+                        OutlinedButton(onClick = viewModel::loadProviders, modifier = Modifier.padding(top = 16.dp)) {
+                            Text(stringResource(R.string.action_retry))
+                        }
                     }
                 }
             } else {
@@ -189,8 +217,10 @@ fun ProviderEditorScreen(viewModel: LibraryViewModel, providerId: String?, onBac
                         OutlinedTextField(
                             value = name,
                             onValueChange = { name = it },
-                            label = { Text("服务名称") },
-                            supportingText = { if (providerId != null) Text("已有服务的名称不可更改") },
+                            label = { Text(stringResource(R.string.provider_name_label)) },
+                            supportingText = {
+                                if (providerId != null) Text(stringResource(R.string.provider_name_locked))
+                            },
                             enabled = providerId == null && !saving,
                             singleLine = true,
                             modifier = Modifier.fillMaxWidth(),
@@ -198,7 +228,7 @@ fun ProviderEditorScreen(viewModel: LibraryViewModel, providerId: String?, onBac
                     }
                     item {
                         ChoiceField(
-                            label = "连接协议",
+                            label = stringResource(R.string.provider_protocol_label),
                             value = protocol,
                             choices = protocolChoices(protocol),
                             onValueChange = { protocol = it },
@@ -209,8 +239,8 @@ fun ProviderEditorScreen(viewModel: LibraryViewModel, providerId: String?, onBac
                         OutlinedTextField(
                             value = baseUrl,
                             onValueChange = { baseUrl = it },
-                            label = { Text("Base URL") },
-                            placeholder = { Text("留空时使用协议默认地址") },
+                            label = { Text(stringResource(R.string.provider_base_url_label)) },
+                            placeholder = { Text(stringResource(R.string.provider_base_url_hint)) },
                             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
                             enabled = !saving,
                             singleLine = true,
@@ -221,9 +251,14 @@ fun ProviderEditorScreen(viewModel: LibraryViewModel, providerId: String?, onBac
                         OutlinedTextField(
                             value = apiKey,
                             onValueChange = { apiKey = it },
-                            label = { Text("API Key") },
+                            label = { Text(stringResource(R.string.provider_api_key_label)) },
                             supportingText = {
-                                Text(if (provider?.hasApiKey == true) "已有密钥；留空保持不变" else "密钥只提交给本机内核，不会回显")
+                                Text(
+                                    stringResource(
+                                        if (provider?.hasApiKey == true) R.string.provider_api_key_keep
+                                        else R.string.provider_api_key_hint,
+                                    ),
+                                )
                             },
                             visualTransformation = PasswordVisualTransformation(),
                             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
@@ -235,9 +270,9 @@ fun ProviderEditorScreen(viewModel: LibraryViewModel, providerId: String?, onBac
                     if (protocol == "openai" || protocol == "local") {
                         item {
                             ChoiceField(
-                                label = "默认协议方言",
+                                label = stringResource(R.string.provider_dialect_label),
                                 value = defaultDialect,
-                                choices = dialectChoices(defaultDialect),
+                                choices = dialectChoices(defaultDialect, stringResource(R.string.dialect_auto)),
                                 onValueChange = { defaultDialect = it },
                                 enabled = !saving,
                             )
@@ -246,17 +281,30 @@ fun ProviderEditorScreen(viewModel: LibraryViewModel, providerId: String?, onBac
                     item {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Column(Modifier.weight(1f)) {
-                                Text("模型", style = MaterialTheme.typography.titleMedium)
-                                Text("逐行维护模型 ID，并控制是否启用", style = MaterialTheme.typography.bodySmall)
+                                Text(stringResource(R.string.provider_models_title), style = MaterialTheme.typography.titleMedium)
+                                Text(
+                                    stringResource(R.string.provider_models_hint),
+                                    style = MaterialTheme.typography.bodySmall,
+                                )
                             }
                             IconButton(
                                 enabled = !saving,
                                 onClick = { models = models + ProviderModel("") },
-                            ) { Icon(Icons.Default.Add, contentDescription = "添加模型") }
+                            ) {
+                                Icon(
+                                    Icons.Default.Add,
+                                    contentDescription = stringResource(R.string.provider_model_add),
+                                )
+                            }
                         }
                     }
                     if (models.isEmpty()) {
-                        item { Text("尚未添加模型。点右上角加号添加模型 ID。", color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                        item {
+                            Text(
+                                stringResource(R.string.provider_models_empty),
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
                     }
                     items(models.size, key = { index -> "model-$index" }) { index ->
                         val model = models[index]
@@ -269,7 +317,7 @@ fun ProviderEditorScreen(viewModel: LibraryViewModel, providerId: String?, onBac
                                 onValueChange = { value ->
                                     models = models.toMutableList().also { it[index] = model.copy(name = value) }
                                 },
-                                label = { Text("模型 ID") },
+                                label = { Text(stringResource(R.string.provider_model_id_label)) },
                                 isError = model.name.isBlank(),
                                 enabled = !saving,
                                 singleLine = true,
@@ -285,11 +333,21 @@ fun ProviderEditorScreen(viewModel: LibraryViewModel, providerId: String?, onBac
                             IconButton(
                                 enabled = !saving,
                                 onClick = { models = models.filterIndexed { i, _ -> i != index } },
-                            ) { Icon(Icons.Default.Delete, contentDescription = "删除模型") }
+                            ) {
+                                Icon(
+                                    Icons.Default.Delete,
+                                    contentDescription = stringResource(R.string.provider_model_delete),
+                                )
+                            }
                         }
                     }
                     if (duplicateNames) {
-                        item { Text("模型 ID 不能重复", color = MaterialTheme.colorScheme.error) }
+                        item {
+                            Text(
+                                stringResource(R.string.provider_model_duplicate),
+                                color = MaterialTheme.colorScheme.error,
+                            )
+                        }
                     }
                     item {
                         Button(
@@ -309,7 +367,9 @@ fun ProviderEditorScreen(viewModel: LibraryViewModel, providerId: String?, onBac
                                 )
                             },
                             modifier = Modifier.fillMaxWidth(),
-                        ) { Text(if (saving) "正在保存…" else "保存") }
+                        ) {
+                            Text(stringResource(if (saving) R.string.action_saving else R.string.action_save))
+                        }
                     }
                 }
             }
@@ -327,9 +387,10 @@ private fun ChoiceField(
     enabled: Boolean,
 ) {
     var expanded by remember { mutableStateOf(false) }
+    val autoLabel = stringResource(R.string.dialect_auto)
     ExposedDropdownMenuBox(expanded = expanded, onExpandedChange = { if (enabled) expanded = it }) {
         OutlinedTextField(
-            value = choices.firstOrNull { it.first == value }?.second ?: value.ifEmpty { "自动" },
+            value = choices.firstOrNull { it.first == value }?.second ?: value.ifEmpty { autoLabel },
             onValueChange = {},
             readOnly = true,
             enabled = enabled,
@@ -360,9 +421,9 @@ private fun protocolChoices(current: String): List<Pair<String, String>> {
     return if (defaults.any { it.first == current }) defaults else defaults + (current to current)
 }
 
-private fun dialectChoices(current: String): List<Pair<String, String>> {
+private fun dialectChoices(current: String, autoLabel: String): List<Pair<String, String>> {
     val defaults = listOf(
-        "" to "自动",
+        "" to autoLabel,
         "openai" to "OpenAI",
         "deepseek" to "DeepSeek",
         "qwen" to "Qwen",
@@ -377,10 +438,11 @@ private fun dialectChoices(current: String): List<Pair<String, String>> {
     return if (defaults.any { it.first == current }) defaults else defaults + (current to current)
 }
 
+@Composable
 private fun protocolName(protocol: String): String = when (protocol) {
     "openai" -> "OpenAI Chat Completions"
     "openai_responses" -> "OpenAI Responses"
     "anthropic" -> "Anthropic Messages"
-    "local" -> "OpenAI 兼容（旧配置）"
+    "local" -> stringResource(R.string.protocol_legacy_openai)
     else -> protocol
 }

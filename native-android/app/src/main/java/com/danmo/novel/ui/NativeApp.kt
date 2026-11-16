@@ -1,5 +1,6 @@
 package com.danmo.novel.ui
 
+import androidx.annotation.StringRes
 import androidx.compose.animation.AnimatedContentTransitionScope
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.layout.fillMaxSize
@@ -18,6 +19,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringResource
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavGraph.Companion.findStartDestination
@@ -25,18 +27,19 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
+import com.danmo.novel.R
 import com.danmo.novel.data.pathSegment
 
 private const val ShelfRoute = "shelf"
 private const val RunsRoute = "runs"
 private const val SettingsRoute = "settings"
 
-private data class TopLevelDestination(val route: String, val label: String)
+private data class TopLevelDestination(val route: String, @StringRes val label: Int)
 
 private val topLevelDestinations = listOf(
-    TopLevelDestination(ShelfRoute, "书架"),
-    TopLevelDestination(RunsRoute, "运行记录"),
-    TopLevelDestination(SettingsRoute, "设置"),
+    TopLevelDestination(ShelfRoute, R.string.tab_shelf),
+    TopLevelDestination(RunsRoute, R.string.tab_logs),
+    TopLevelDestination(SettingsRoute, R.string.tab_settings),
 )
 
 @Composable
@@ -53,6 +56,7 @@ fun NativeApp(viewModel: LibraryViewModel = viewModel()) {
             if (showNavigation) {
                 NavigationBar {
                     topLevelDestinations.forEach { destination ->
+                        val label = stringResource(destination.label)
                         NavigationBarItem(
                             selected = route == destination.route,
                             onClick = {
@@ -68,9 +72,9 @@ fun NativeApp(viewModel: LibraryViewModel = viewModel()) {
                                     RunsRoute -> Icons.Default.History
                                     else -> Icons.Default.Settings
                                 }
-                                Icon(icon, contentDescription = destination.label)
+                                Icon(icon, contentDescription = label)
                             },
-                            label = { Text(destination.label) },
+                            label = { Text(label) },
                         )
                     }
                 }
@@ -136,7 +140,7 @@ fun NativeApp(viewModel: LibraryViewModel = viewModel()) {
         }
     }
 
-    if (!ready) LoadingDialog("正在准备本地工作区…")
+    if (!ready) LoadingDialog(stringResource(R.string.core_preparing))
     error?.let { message ->
         AlertDialog(
             onDismissRequest = viewModel::dismissError,
@@ -144,9 +148,9 @@ fun NativeApp(viewModel: LibraryViewModel = viewModel()) {
                 TextButton(onClick = {
                     viewModel.dismissError()
                     if (!ready) viewModel.start()
-                }) { Text(if (ready) "好" else "重试") }
+                }) { Text(stringResource(if (ready) R.string.action_ok else R.string.action_retry)) }
             },
-            title = { Text(if (ready) "操作未完成" else "本地内核未能启动") },
+            title = { Text(stringResource(if (ready) R.string.error_operation_failed else R.string.error_core_start_failed)) },
             text = { Text(message) },
         )
     }
