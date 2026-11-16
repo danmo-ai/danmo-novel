@@ -4,7 +4,10 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 PLATFORM="${1:-ios}"
 CONFIGURATION="${CONFIGURATION:-Debug}"
-VERSION="${RELEASE_VERSION#v}"
+# RELEASE_VERSION is optional. Under `set -u` a bare ${RELEASE_VERSION#v}
+# aborts the script when the variable is unset, which is what the Android CI
+# job hit: the iOS job happened to pass it, the Android job did not.
+VERSION="${RELEASE_VERSION:-}"
 VERSION="${VERSION:-0.1.0}"
 cd "$ROOT_DIR"
 case "$PLATFORM" in ios|android) ;; *) echo 'Usage: pack_mobile.sh ios|android' >&2; exit 2 ;; esac
@@ -16,8 +19,21 @@ if [[ "$PLATFORM" == "ios" ]]; then
   command -v xcodegen >/dev/null || { echo 'ERROR: brew install xcodegen' >&2; exit 1; }
   cd native-ios
   RELEASE_VERSION="$VERSION" APPLE_TEAM_ID="${APPLE_TEAM_ID:-}" xcodegen generate
-  if [[ -z "${APPLE_TEAM_ID:-}" ]]; then
-    echo '==> 没有 APPLE_TEAM_ID：构建未签名模拟器包'
+  # Branch on a real signing identity, not on APPLE_TEAM_ID. The team id is a
+  # repository secret that exists even when no certificate was imported, and
+  # archiving without an identity fails with "No profiles were found". A local
+  # machine with the team id but no cert hits the same wall.
+  HAS_SIGNING_IDENTITY=0
+  if [[ -n "${APPLE_TEAM_ID:-}" ]] && security find-identity -p codesigning -v 2>/dev/null \
+      | grep -qE 'Apple (Development|Distribution)|iPhone (Developer|Distribution)'; then
+    HAS_SIGNING_IDENTITY=1
+  fi
+  if [[ "$HAS_SIGNING_IDENTITY" == "0" ]]; then
+    if [[ -n "${APPLE_TEAM_ID:-}" ]]; then
+      echo "==> APPLE_TEAM_ID=$APPLE_TEAM_ID 但钥匙串里没有 iOS 签名身份：构建未签名模拟器包"
+    else
+      echo '==> 没有 APPLE_TEAM_ID：构建未签名模拟器包'
+    fi
     xcodebuild -project DanmoNovel.xcodeproj -scheme DanmoNovel \
       -configuration Debug -destination 'generic/platform=iOS Simulator' \
       CODE_SIGNING_ALLOWED=NO build
