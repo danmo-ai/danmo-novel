@@ -18,6 +18,9 @@ export const useAppStore = defineStore('app', () => {
   const assignments = ref<{ role: string; modelId: string }[]>([])
   const toast = ref('')
   const error = ref('')
+  /** 书架取数状态：失败时保留上一次的书，绝不把「请求失败」显示成「书架是空的」。 */
+  const booksLoading = ref(false)
+  const booksError = ref('')
   /** 连续性状态摘要：已建到哪个单元、多少人物状态、多少未回收伏笔。 */
   const continuity = ref<{ units: number; lastUnit?: string; afterCh?: number; cast: number; openLoops: number } | null>(null)
 
@@ -34,7 +37,20 @@ export const useAppStore = defineStore('app', () => {
   function note(msg: string) { toast.value = msg; setTimeout(() => { if (toast.value === msg) toast.value = '' }, 4000) }
   function fail(e: any) { error.value = e?.message || String(e); setTimeout(() => { if (error.value) error.value = '' }, 8000) }
 
-  async function loadBooks() { books.value = (await api.get<BookSummary[] | null>('/api/books')) ?? [] }
+  async function loadBooks() {
+    booksLoading.value = true
+    booksError.value = ''
+    try {
+      books.value = (await api.get<BookSummary[] | null>('/api/books')) ?? []
+    } catch (e: any) {
+      // Keep the previous shelf: an empty result must mean "no books", never
+      // "the request failed". The shelf shows booksError with a retry instead.
+      booksError.value = e?.message || String(e)
+      throw e
+    } finally {
+      booksLoading.value = false
+    }
+  }
 
   /** 第一层：导航骨架 + 摘要级活动。不含面板文件、候选正文与历史归档。 */
   async function loadBook(id: string) {
@@ -189,6 +205,7 @@ export const useAppStore = defineStore('app', () => {
   return {
     books, currentBook, primary, continuity, candidates, candidateHistory, runs, activeRun,
     providers, models, presets, assignments, toast, error,
+    booksLoading, booksError,
     filesLoadedRevision, historyLoaded, candidateDetails,
     note, fail, loadBooks, loadBook, loadBookFiles, filesReady,
     loadCandidates, loadCandidateHistory, loadRuns,

@@ -39,9 +39,24 @@ const seeding = ref(false)
 const GENRES = ['玄幻', '仙侠', '都市', '悬疑', '言情']
 
 onMounted(async () => {
-  await store.loadBooks()
+  await loadShelf()
   await store.loadLLM().catch(() => {})
 })
+
+/**
+ * 书架取数。
+ *
+ * 失败时保留本地已有的书，也不落进「书架还是空的」——那会把一次超时说成
+ * 「书没了」。iCloud 里某本书的正文还没下载完时，读取会阻塞到下载结束；
+ * 书架现在只读摘要，但进程或网络仍可能失败，所以这里始终留一条重试的出路。
+ */
+async function loadShelf() {
+  try {
+    await store.loadBooks()
+  } catch (e) {
+    store.fail(e)
+  }
+}
 
 function slugify(s: string) {
   return s
@@ -76,7 +91,7 @@ async function createBook() {
     const res = await api.post<any>('/api/books', form.value)
     showCreate.value = false
     resetForm()
-    await store.loadBooks()
+    await loadShelf()
     // 新书没有总纲，BookView 会落在「立项」工作台：先扩写创意再生成结构化立项。
     router.push(`/books/${res.summary.id}`)
   } catch (e) { store.fail(e) }
@@ -91,7 +106,7 @@ async function openSample() {
   seeding.value = true
   try {
     const { id } = await seedSampleBook()
-    await store.loadBooks()
+    await loadShelf()
     router.push(`/books/${id}`)
   } catch (e) {
     store.fail(e)
@@ -129,7 +144,17 @@ function primaryLabel(b: any) {
         <span class="pill" :class="{ warn: b.openCandidates }">{{ primaryLabel(b) }}</span>
       </div>
     </button>
-    <div v-if="!store.books.length" class="empty panel">
+    <div v-if="!store.books.length && store.booksError" class="empty panel">
+      <h2>书架没能加载出来</h2>
+      <p>书还在磁盘上，只是这次请求失败了：{{ store.booksError }}</p>
+      <div class="empty-actions">
+        <button class="primary" @click="loadShelf">重试</button>
+      </div>
+    </div>
+    <div v-else-if="store.booksLoading && !store.books.length" class="empty panel">
+      <h2>正在读取书架…</h2>
+    </div>
+    <div v-else-if="!store.books.length" class="empty panel">
       <h2>书架还是空的</h2>
       <p>从一句灵感开始新建一本书；或者先打开示例书，看看一本完整的小书长什么样——总纲、设定、卷纲、细纲和正文都已写好，不调用模型。</p>
       <div class="empty-actions">

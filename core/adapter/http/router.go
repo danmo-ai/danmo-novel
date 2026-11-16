@@ -566,14 +566,20 @@ func registerBooks(api *gin.RouterGroup, app *App) {
 		}
 		out := make([]domain.BookSummary, 0, len(listed))
 		for _, b := range listed {
-			snap, err := books.LoadBook(b.RootPath, b.ReadOnly)
-			if err != nil {
+			// Summary-only: the shelf must not read a single chapter body.
+			// A body that iCloud has not downloaded yet blocks on read, and one
+			// cold file used to stall the whole shelf request (blank shelf).
+			summary, ok := shelfSummary(b, shelfReadTimeout)
+			if !ok {
+				// Still blocked (a placeholder even for the state/outline
+				// files): show the registry row so the book stays on the shelf,
+				// just without fresh counts.
 				out = append(out, b)
 				continue
 			}
-			open, _ := app.Store.ListOpenCandidates(c.Request.Context(), snap.Summary.ID)
-			snap.Summary.OpenCandidates = len(open)
-			out = append(out, snap.Summary)
+			open, _ := app.Store.ListOpenCandidates(c.Request.Context(), summary.ID)
+			summary.OpenCandidates = len(open)
+			out = append(out, summary)
 		}
 		c.JSON(200, out)
 	})

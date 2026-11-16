@@ -20,3 +20,7 @@ native-ios/xcode-skills/
 native-android/.gradle/
 native-android/**/build/
 native-android/local.properties
+
+# IDE / local tooling state
+native-android/.idea/
+native-ios/.swiftpm/
