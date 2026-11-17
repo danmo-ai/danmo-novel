@@ -433,6 +433,13 @@ Rules that come with `ArrangementView`:
 - `ArrangementView` and its modifiers are **iOS 27.1+**. Our deployment target is
   17.0, so every use is behind `if #available(iOS 27.1, *)` with a single-pane
   fallback.
+- `#available` is **not enough to compile**: an SDK that predates the type does
+  not declare it, and a missing type is a compile error rather than a runtime
+  guard. Xcode 26 ships the iOS 26.5 SDK, so the `ArrangementView` reference also
+  sits behind `#if compiler(>=6.4)` (Swift 6.4 = Xcode 27) in
+  `ArrangementPane.swift`, with the reader as the else-branch. CI additionally
+  selects the newest installed Xcode, because a runner default that lags behind
+  the API set turns every new UIKit/SwiftUI feature into a build failure.
 
 ### Reserved regions (fold and cameras)
 

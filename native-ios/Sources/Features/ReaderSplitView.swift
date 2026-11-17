@@ -93,23 +93,19 @@ struct ReaderSplitView: View {
     }
 
     private var twoPane: some View {
-        ArrangementView {
-            catalog
-                // A catalog is a fixed rail, not a proportional half: without
-                // this the split hands it half the width and the prose column
-                // drops to a phone-sized measure.
-                .splitArrangementLayoutSize(minWidth: 240, idealWidth: 300, maxWidth: 360)
-                .splitArrangementFixedLayoutSize(horizontal: true)
-        } secondary: {
-            ReaderView(bookID: bookID, unit: currentUnit, showsNavigationTitle: false)
-                // Declare the prose column's minimum too, so the arrangement
-                // prefers keeping both panes when they do fit.
-                .splitArrangementLayoutSize(minWidth: 420)
-                // A new unit must rebuild reader state (chapters, paragraphs,
-                // selected chapter) instead of mutating the previous unit's.
-                .id(currentUnit.unitId)
-        }
-        .arrangementViewStyle(.split.axes(.horizontal))
+        // `ArrangementView` is iOS 27.1+, which is newer than the SDK Xcode 26
+        // ships. Availability annotations are a runtime check; a missing type is
+        // a compile error, so the whole arrangement lives behind a compile-time
+        // SDK check and older toolchains fall back to the single-pane reader.
+        ArrangementPane(catalog: AnyView(catalog), reader: AnyView(readerPane))
+    }
+
+    /// The prose column of the two-pane reading pose.
+    private var readerPane: some View {
+        ReaderView(bookID: bookID, unit: currentUnit, showsNavigationTitle: false)
+            // A new unit must rebuild reader state (chapters, paragraphs,
+            // selected chapter) instead of mutating the previous unit's.
+            .id(currentUnit.unitId)
     }
 
     @ViewBuilder
