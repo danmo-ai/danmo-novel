@@ -171,9 +171,10 @@ struct ShelfView: View {
                 }
             )
         case .reader(let route):
-            // Expanded width gets the catalog + prose arrangement;
-            // the compact stack pushes a single-page reader instead.
-            if usesSplit, #available(iOS 27.1, *) {
+            // Expanded width gets the catalog + prose split; the compact stack
+            // pushes a single-page reader instead. The split is a
+            // NavigationSplitView (iOS 16+), so no availability gate is needed.
+            if usesSplit {
                 ReaderSplitView(bookID: route.bookID, unit: route.unit)
             } else {
                 ReaderView(bookID: route.bookID, unit: route.unit)

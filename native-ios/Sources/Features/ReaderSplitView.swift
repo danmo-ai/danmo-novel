@@ -15,7 +15,6 @@ import SwiftUI
 /// arrangement to always fit two panes.
 ///
 /// Compact width never reaches this view; it pushes a plain `ReaderView`.
-@available(iOS 27.1, *)
 struct ReaderSplitView: View {
     @Environment(LibraryStore.self) private var library
     let bookID: String
@@ -93,11 +92,15 @@ struct ReaderSplitView: View {
     }
 
     private var twoPane: some View {
-        // `ArrangementView` is iOS 27.1+, which is newer than the SDK Xcode 26
-        // ships. Availability annotations are a runtime check; a missing type is
-        // a compile error, so the whole arrangement lives behind a compile-time
-        // SDK check and older toolchains fall back to the single-pane reader.
-        ArrangementPane(catalog: AnyView(catalog), reader: AnyView(readerPane))
+        // System split container (iOS 16+), not the iOS 27.1-only
+        // `ArrangementView`: the SDK bundled with Xcode 26 has no such type, so
+        // that spelling cannot compile on CI at all. See `ArrangementPane`.
+        ArrangementPane(
+            bookTitle: bookTitle,
+            catalog: AnyView(catalog),
+            reader: AnyView(readerPane),
+            selection: $currentUnitID
+        )
     }
 
     /// The prose column of the two-pane reading pose.

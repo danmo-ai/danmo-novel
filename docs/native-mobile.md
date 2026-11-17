@@ -38,7 +38,7 @@ version, starting with `ShelfScreen.kt` / `BookScreen.kt`.
 | `Sources/Features/ShelfView.swift` | The only top-level navigator: `NavigationSplitView` at ≥ 820pt, `NavigationStack` below it, `ShelfRoute` (`book`/`unit`/`reader`), cross-pose hand-off, `columnVisibility` |
 | `Sources/Features/BookDetailView.swift` | The book workspace shell: primary banner + 写作/大纲/设定/任务 panels; no `NavigationStack` of its own |
 | `Sources/Features/UnitWorkView.swift` | One unit's production surface: flow actions, contract, prose, manual editing |
-| `Sources/Features/ReaderSplitView.swift` | Expanded reading pose: unit catalog + prose via `ArrangementView` (iOS 27.1+ only) |
+| `Sources/Features/ReaderSplitView.swift` | Expanded reading pose: unit catalog + prose via a `NavigationSplitView` (`ArrangementPane.swift`; `ArrangementView` is iOS 27.1+ and CI has no Xcode 27) |
 | `Sources/Features/ReaderView.swift` | Prose rendering, chapter paging toolbar; used both standalone and as the arrangement's secondary pane |
 | `Sources/Core/BookWorkspaceStore.swift` | Per-book data + actions (runs, candidates, polling, accept/reject, saves); `WorkspaceRegistry` shares one store per open book |
 | `Sources/Core/NovelAPI.swift` | `URLSession` over the in-process core; slim-only book/run/candidate responses + `include=files` panel tier |
@@ -435,11 +435,15 @@ Rules that come with `ArrangementView`:
   fallback.
 - `#available` is **not enough to compile**: an SDK that predates the type does
   not declare it, and a missing type is a compile error rather than a runtime
-  guard. Xcode 26 ships the iOS 26.5 SDK, so the `ArrangementView` reference also
-  sits behind `#if compiler(>=6.4)` (Swift 6.4 = Xcode 27) in
-  `ArrangementPane.swift`, with the reader as the else-branch. CI additionally
-  selects the newest installed Xcode, because a runner default that lags behind
-  the API set turns every new UIKit/SwiftUI feature into a build failure.
+  guard. CI runs whatever Xcode the runner image ships (currently 26.6, no
+  Xcode 27 available), so anything spelled only with iOS 27 APIs can never pass
+  `mobile.yml`. This is why the reading split is a **`NavigationSplitView`**
+  (`ArrangementPane.swift`): it is the same system container used for
+  shelf → book navigation, available from iOS 16, and it keeps the bars
+  system-owned. `ArrangementView` remains the better container *if* the
+  toolchain has it, but it cannot be a hard dependency while CI has no Xcode 27.
+  Do not reintroduce it behind `#if compiler(...)` alone — wrap the whole type
+  declaration, not just the `body`, or the type is still compiled.
 
 ### Reserved regions (fold and cameras)
 
